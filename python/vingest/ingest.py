@@ -1,7 +1,10 @@
 """Planning and executing the copy: camera originals -> house folder structure.
 
+Media files keep the names they arrive with. The only name this module composes
+is the session folder's, whose `Dur-` token comes from the master's duration.
+
 The plan is always built and returned before anything touches the disk, so the
-GUI can show every rename and every destination path for approval first.
+GUI can show every destination path for approval first.
 """
 
 from __future__ import annotations
@@ -149,7 +152,8 @@ def build_plan(spec: dict, progress=None) -> dict:
         when = _session_date(master, date_override)
 
         session_folder = naming.build_session_folder(
-            title, when, master.duration if master else None)
+            title, when, master.duration if master else None,
+            add_date=spec.get("add_date", True))
         job_folder = naming.build_job_folder(job_number, when) if job_number else ""
 
         dest_root = Path(t.get("dest_root") or t["source_root"])
@@ -167,20 +171,24 @@ def build_plan(spec: dict, progress=None) -> dict:
 
         taken: set[str] = set()
         if master is not None:
-            name = naming.dedupe(
-                naming.build_name(Path(master.path).stem, when, master.duration,
-                                  Path(master.path).suffix),
-                taken)
+            # The file's own name is kept exactly as it arrives; dedupe only
+            # guards against two sources colliding in one destination folder.
+            name = naming.dedupe(Path(master.path).name, taken)
             taken.add(name)
             plan.items.append(PlanItem(
                 src=master.path, dst=str(session_path / name), size=master.size,
                 kind="master", duration=master.duration, codec=master.family,
                 original_name=Path(master.path).name))
-            if master.error:
-                plan.warnings.append(f"Master could not be probed: {master.error}")
-            elif master.duration is None:
+            if master.duration is None:
+                # The folder's whole reason to consult the media is this token,
+                # so say plainly what will be missing rather than just "probe failed".
+                detail = f" ({master.error})" if master.error else ""
                 plan.warnings.append(
-                    "Master has no readable duration — the folder Dur- token will be blank.")
+                    f"Could not read the duration of {Path(master.path).name}{detail}, "
+                    f"so the folder will be created without a Dur- token. "
+                    f"Check the file plays, or choose a different master.")
+            elif master.error:
+                plan.warnings.append(f"Master probed with a warning: {master.error}")
 
         clips_root = session_path / naming.CLIPS_DIRNAME
         for cam_key, paths in sorted((t.get("cams") or {}).items(),
@@ -190,13 +198,7 @@ def build_plan(spec: dict, progress=None) -> dict:
             cam_taken: set[str] = set()
             for p in paths:
                 info = get(p)
-                # Each clip is dated from its own last-modified stamp, not the
-                # session date: a shoot can roll past midnight.
-                clip_when = info.shoot_datetime().date()
-                name = naming.dedupe(
-                    naming.build_name(Path(p).stem, clip_when, info.duration,
-                                      Path(p).suffix),
-                    cam_taken)
+                name = naming.dedupe(Path(p).name, cam_taken)
                 cam_taken.add(name)
                 plan.items.append(PlanItem(
                     src=p, dst=str(cam_dir / name), size=info.size, kind="clip",

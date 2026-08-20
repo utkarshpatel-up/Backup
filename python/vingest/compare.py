@@ -19,16 +19,23 @@ from .probe import is_junk, is_video, probe
 from .report import MANIFEST_DIR
 
 
-def _rel_key(root: Path, path: Path) -> str:
-    """Path relative to the session root, with Dur-/Dt- tokens stripped.
+def _rel_key(root: Path, path: Path, taken: set[str] | None = None) -> str:
+    """Relative path used to line the same shot up across drives.
 
-    The two SSDs hold the same shot at different durations only by rounding,
-    but ProRes and H.265 files can differ by a frame, which would otherwise make
-    every filename look mismatched.
+    The extension is left out of the key: the ProRes and H.265 recordings of one
+    shot are often written as .mov and .mp4, and dropping the suffix is what
+    lets them pair instead of both reporting as missing. Any Dur-/Dt- tokens are
+    stripped too, so folders organised by an older version still line up.
+
+    If two files in one folder would collapse to the same key (an "a.mov" beside
+    an "a.mp4"), the extension is put back for the second one so neither is lost.
     """
     rel = path.relative_to(root)
-    parts = list(rel.parts[:-1]) + [naming.strip_tokens(rel.stem) + rel.suffix.lower()]
-    return "/".join(p.lower() for p in parts)
+    parts = list(rel.parts[:-1]) + [naming.strip_tokens(rel.stem)]
+    key = "/".join(p.lower() for p in parts)
+    if taken is not None and key in taken:
+        key = f"{key}{rel.suffix.lower()}"
+    return key
 
 
 def snapshot(root: str | Path, with_duration: bool = True,
@@ -62,6 +69,7 @@ def snapshot(root: str | Path, with_duration: bool = True,
             entry = {
                 "name": fn,
                 "rel": "/".join(p.relative_to(root).parts),
+                "ext": p.suffix.lower(),
                 "size": st.st_size,
                 "mtime": st.st_mtime,
                 "duration": None,
@@ -76,7 +84,7 @@ def snapshot(root: str | Path, with_duration: bool = True,
                 info = probe(p)
                 entry["duration"] = info.duration
                 entry["codec"] = info.family
-            files[_rel_key(root, p)] = entry
+            files[_rel_key(root, p, set(files))] = entry
             total += st.st_size
             if progress and len(files) % 10 == 0:
                 progress({"stage": "index", "root": str(root), "count": len(files)})
@@ -139,6 +147,13 @@ def compare(snapshots: list[dict], duration_tol: float = 1.0,
                         "a": side["declared_duration"], "b": round(side["duration"], 2),
                         "detail": f"{side['name']}: Dur- token disagrees with the file",
                     })
+
+            if a.get("ext") != b.get("ext"):
+                issues.append({
+                    "field": "extension", "severity": "info",
+                    "a": a.get("ext"), "b": b.get("ext"),
+                    "detail": f"different container: {a.get('ext')} vs {b.get('ext')}",
+                })
 
             if a["size"] != b["size"]:
                 pct = abs(a["size"] - b["size"]) / max(a["size"], 1) * 100

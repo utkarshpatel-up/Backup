@@ -25,11 +25,11 @@ const STEPS = [
   { key: 'sources', label: 'Sources', title: 'Sources',
     hint: 'Plug in both SSDs. The app probes each one and works out which holds ProRes and which holds H.265.' },
   { key: 'session', label: 'Session', title: 'Session name',
-    hint: 'The Dur- token is filled in from the master file automatically.' },
+    hint: 'Type the folder name as it should read. Only the Dur- token is filled in for you.' },
   { key: 'cameras', label: 'Cameras', title: 'Camera assignment',
     hint: 'Choose which clip belongs to which cam. The same choice is mirrored onto the other SSD.' },
   { key: 'copy', label: 'Copy', title: 'Review and copy',
-    hint: 'Nothing is written until you press Start. Every rename is listed below first.' },
+    hint: 'Nothing is written until you press Start. Files keep their own names — only the folder name gains Dur-.' },
   { key: 'verify', label: 'Verify', title: 'Compare copies',
     hint: 'Check the two SSDs (and the SD card) hold the same session, file for file.' },
 ];
@@ -312,16 +312,19 @@ function renderSession() {
       <label class="field"><span>Shoot date</span>
         <input type="date" id="fDate" value="${esc(date)}" /></label>
     </div>
-    <label class="field"><span>Title</span>
+    <label class="field"><span>Folder name</span>
       <input type="text" id="fTitle" value="${esc(state.session.title)}"
         placeholder="Adalaj Soneri Satsang Experience session of USA and Canada Satsang Trip, General Satsang E." /></label>
-    <div class="preview-name">
-      ${job ? `📁 ${esc(job)} <b>Dt-${esc(dateLabel.replace(/-/g, ' ').replace(/ (\d{2})$/, ' 20$1'))}</b><br>` : ''}
-      <span class="${job ? 'indent1' : ''}" style="display:inline-block">
-        📁 ${esc(title)} <b>Dt-${esc(dateLabel)}</b> <b>Dur-${esc(durLabel)}</b></span>
-    </div>
+    <label class="row" style="margin:-4px 0 12px;font-size:12px;color:var(--muted)">
+      <input type="checkbox" id="fAutoDate" style="width:auto;margin:0"
+        ${state.session.addDate === false ? '' : 'checked'} />
+      Append the Dt- token too (skipped automatically if you type one yourself)
+    </label>
+    <div class="preview-name">${sessionPreview()}</div>
+    <p class="hint" style="margin:8px 0 0">Bold parts are added for you. Everything
+      else is exactly what you typed, and no media file is renamed.</p>
     ${dur == null ? `<div class="note warn" style="margin-top:10px">
-       Pick the master file on the Cameras step — the Dur- token comes from it.</div>` : ''}
+       Mark the master file on the Cameras step — the Dur- token is read from it.</div>` : ''}
   </div>
 
   <div class="card">
@@ -354,6 +357,31 @@ function renderSession() {
   </div>`;
 }
 
+/** The exact folder name that will be created, with generated parts in bold. */
+function sessionPreview() {
+  const master = masterInfo();
+  const date = state.session.date || (master ? master.shoot_iso.slice(0, 10) : '');
+  const job = state.session.jobNumber.trim();
+  const typed = state.session.title.trim() || 'Folder name';
+  const durLabel = master && master.duration != null ? fmtDur(master.duration) : '…';
+  const hasOwnDate = /\bDt-\d{1,2}-[A-Za-z]{3}-\d{2,4}\b/.test(typed);
+  const wantDate = state.session.addDate !== false && date && !hasOwnDate;
+
+  const jobLine = job && date
+    ? `📁 ${esc(job)} <b>Dt-${esc(jobDateLabel(date))}</b><br>` : '';
+  return jobLine +
+    `<span class="${jobLine ? 'indent1' : ''}" style="display:inline-block">📁 ` +
+    `${esc(typed.replace(/\s*\bDur-(?:\d+h)?(?:\d+m)?\d+s\b/i, ''))}` +
+    `${wantDate ? ` <b>Dt-${esc(formatDateToken(date))}</b>` : ''}` +
+    ` <b>Dur-${esc(durLabel)}</b></span>`;
+}
+
+function jobDateLabel(iso) {
+  const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const [y, m, d] = iso.split('-').map(Number);
+  return `${String(d).padStart(2, '0')} ${M[m - 1]} ${y}`;
+}
+
 function formatDateToken(iso) {
   const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const [y, m, d] = iso.split('-').map(Number);
@@ -369,6 +397,9 @@ function wireSession() {
   bind('fJob', 'jobNumber');
   bind('fTitle', 'title');
   bind('fDate', 'date');
+  $('fAutoDate')?.addEventListener('change', (e) => {
+    state.session.addDate = e.target.checked; updatePreviewOnly();
+  });
   $('fMode').value = state.session.mode || 'copy';
   $('fVerify').value = state.session.verify || 'size';
   $('fMode')?.addEventListener('change', (e) => { state.session.mode = e.target.value; });
@@ -385,17 +416,8 @@ function wireSession() {
 
 /** Re-render only the name preview, so typing does not steal focus. */
 function updatePreviewOnly() {
-  const master = masterInfo();
-  const date = state.session.date || (master ? master.shoot_iso.slice(0, 10) : '');
   const box = document.querySelector('.preview-name');
-  if (!box || !date) return;
-  const job = state.session.jobNumber.trim();
-  const title = state.session.title.trim() || 'Session title';
-  const durLabel = master && master.duration != null ? fmtDur(master.duration) : '…';
-  box.innerHTML =
-    (job ? `📁 ${esc(job)} <b>Dt-${esc(formatDateToken(date).replace(/-/g, ' ').replace(/ (\d{2})$/, ' 20$1'))}</b><br>` : '') +
-    `<span class="${job ? 'indent1' : ''}" style="display:inline-block">📁 ${esc(title)} ` +
-    `<b>Dt-${esc(formatDateToken(date))}</b> <b>Dur-${esc(durLabel)}</b></span>`;
+  if (box) box.innerHTML = sessionPreview();
 }
 
 /* ------------------------------------------------------------ step: cameras */
@@ -616,6 +638,7 @@ function buildSpec() {
     title: state.session.title,
     job_number: state.session.jobNumber,
     date: state.session.date || undefined,
+    add_date: state.session.addDate !== false,
     mode: state.session.mode || 'copy',
     verify: state.session.verify || 'size',
     targets,
@@ -647,7 +670,8 @@ function renderCopy() {
         ${t.job_folder ? `<div class="dir">📁 ${esc(t.job_folder)}</div>` : ''}
         <div class="dir ${t.job_folder ? 'indent1' : ''}">📁 ${esc(t.session_folder)}</div>
         ${t.items.filter((i) => i.kind === 'master').map((i) => `
-          <div class="ren indent2">🎬 ${esc(i.original_name)} → <b>${esc(i.dst.split(/[\\/]/).pop())}</b></div>`).join('')}
+          <div class="ren indent2">🎬 <b>${esc(i.original_name)}</b>
+            <span style="color:var(--muted)">· ${fmtDur(i.duration)} · sets the Dur- token</span></div>`).join('')}
         <div class="dir indent2">📁 Clips for Insert</div>
         ${camGroups(t)}
       </div>
@@ -680,8 +704,11 @@ function camGroups(t) {
   return Object.keys(byCam).sort((a, b) => a - b).map((cam) => `
     <div class="dir indent3">📁 Cam-${String(cam).padStart(2, '0')}</div>
     ${byCam[cam].map((i) => `<div class="ren indent3" style="padding-left:72px">
-      ${esc(i.original_name)} → <b>${esc(i.dst.split(/[\\/]/).pop())}</b>
-      <span style="color:var(--muted)">· ${fmtBytes(i.size)}</span></div>`).join('')}`).join('');
+      <b>${esc(i.original_name)}</b>
+      <span style="color:var(--muted)">· ${fmtDur(i.duration)} · ${fmtBytes(i.size)}${
+        i.original_name !== i.dst.split(/[\\/]/).pop()
+          ? ` · renamed to ${esc(i.dst.split(/[\\/]/).pop())} to avoid a clash` : ''}</span>
+      </div>`).join('')}`).join('');
 }
 
 function renderRunResult() {
@@ -930,7 +957,7 @@ function footerHint() {
   switch (state.step) {
     case 0: return state.sources.length ? `${state.sources.length} source(s) selected`
                                         : 'Add at least one source to continue';
-    case 1: return state.session.title.trim() ? '' : 'A title is recommended before copying';
+    case 1: return state.session.title.trim() ? '' : 'Enter the folder name before copying';
     case 2: return masterInfo() ? `Master: ${masterInfo().name}` : 'Mark one file as Master to continue';
     case 3: return state.runResult ? 'Copy finished' : '';
     default: return '';

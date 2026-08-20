@@ -1,13 +1,17 @@
-"""Filename / folder-name construction and parsing.
+"""Folder-name construction and parsing.
 
 House convention (from the reference tree):
 
     3017 Dt-16 Aug 2026/
       Adalaj Soneri ... General Satsang E. Dt-16-Aug-26 Dur-54m1s/
-        <master original name> Dt-16-Aug-26 Dur-54m1s.mov
+        <master file, name untouched>
         Clips for Insert/
           Cam-01/  Cam-02/  Cam-03/
-            C0031 Dt-16-Aug-26 Dur-2m14s.mov
+            <clips, names untouched>
+
+Media files are NEVER renamed — they arrive already named correctly. The only
+name this module generates is the session folder's, and the only part of that
+which is derived from the media is the `Dur-` token.
 """
 
 from __future__ import annotations
@@ -115,25 +119,25 @@ def sanitize(name: str, replacement: str = "-") -> str:
     return name or "untitled"
 
 
-def build_name(base: str, when=None, seconds: float | None = None,
-               ext: str = "", four_digit_year: bool = False) -> str:
-    """'C0031' + 16 Aug 26 + 134s -> 'C0031 Dt-16-Aug-26 Dur-2m14s.mov'.
+def build_session_folder(title: str, when=None, seconds: float | None = None,
+                        add_date: bool = True) -> str:
+    """Complete the session folder name; only `Dur-` is derived from the media.
 
-    Any Dt-/Dur- tokens already on `base` are replaced, so re-running the
-    ingest over an already-named file is a no-op rather than a pile-up.
+    The title is taken as given — whatever the operator typed, or whatever the
+    imported zip already called it — and is not otherwise reformatted. A `Dur-`
+    token already on the name is replaced rather than appended to, so running
+    the ingest twice cannot produce "... Dur-54m1s Dur-54m1s".
+
+    A `Dt-` token is added only when `add_date` is on AND the name does not
+    already carry one; a date the operator typed themselves always wins.
     """
-    out = strip_tokens(base)
-    if when is not None:
-        out += f" Dt-{fmt_date(when, four_digit_year)}"
+    base = DUR_TOKEN_RE.sub("", title)
+    base = re.sub(r"\s{2,}", " ", base).strip()
+    if add_date and when is not None and not DATE_TOKEN_RE.search(base):
+        base += f" Dt-{fmt_date(when)}"
     if seconds is not None:
-        out += f" Dur-{fmt_duration(seconds)}"
-    if ext and not ext.startswith("."):
-        ext = "." + ext
-    return sanitize(out) + ext.lower()
-
-
-def build_session_folder(title: str, when=None, seconds: float | None = None) -> str:
-    return build_name(title, when, seconds, ext="")
+        base += f" Dur-{fmt_duration(seconds)}"
+    return sanitize(base)
 
 
 def build_job_folder(job_number: str, when) -> str:

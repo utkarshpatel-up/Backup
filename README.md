@@ -6,19 +6,34 @@ itself, and then proves the two drives match.
 
 ```
 3017 Dt-16 Aug 2026/
-  Adalaj Soneri … General Satsang E. Dt-16-Aug-26 Dur-54m1s/
-    MASTER01 Dt-16-Aug-26 Dur-54m1s.mov
+  Adalaj Soneri … General Satsang E. Dt-16-Aug-26 Dur-54m1s/   ← only Dur- is generated
+    Adalaj Soneri … - Program.mov                              ← name untouched
     Clips for Insert/
-      Cam-01/  C0031 Dt-16-Aug-26 Dur-2m14s.mov
+      Cam-01/  Cam A - Wide - Take 1.mov                       ← name untouched
       Cam-02/  …
       Cam-03/  …
     _manifest/   manifest 16-Aug-26 142633.json + .csv
 ```
 
-`Dur-` comes from ffprobe. `Dt-` comes from the file's last-modified time
-(falling back to the container's creation time when that is earlier and more
-trustworthy). Each clip is dated from its **own** timestamp, so a shoot that
-rolls past midnight is dated correctly per clip.
+## The naming rule
+
+**Media files are never renamed.** They arrive already named — from the zip, the
+card, or the editor — and land in their cam folder byte-identical, name
+included. Case, spaces, punctuation and extension all survive.
+
+**The session folder is the only generated name**, and the only part of it
+derived from the media is `Dur-`, read from the master file with ffprobe.
+Everything before it is exactly what you typed. `Dur-` is *replaced* rather than
+appended, so running the ingest twice never yields `… Dur-54m1s Dur-54m1s`.
+
+`Dt-` is appended from the shoot-date field as a convenience, and is skipped
+automatically if the name you typed already contains a `Dt-` token — a date you
+wrote yourself always wins. The whole behaviour can be switched off with the
+**Append the Dt- token too** checkbox, leaving `Dur-` as the only addition.
+
+The one case where a filename changes: if two different source files would land
+in the same cam folder under the same name, the second becomes `name (2).ext`
+rather than silently overwriting the first. The plan flags it when it happens.
 
 ## Running it
 
@@ -39,15 +54,17 @@ remembers the choice.
    yours to override. Folders and `.zip` archives can be added as sources too;
    a zip is extracted to a temp folder with its original timestamps restored,
    because the naming depends on them.
-2. **Session** — job number, title, shoot date, with a live preview of the exact
-   folder name. Choose copy vs move and the verification level.
+2. **Session** — job number, folder name, shoot date, with a live preview of the
+   exact folder that will be created; generated parts are shown in bold so you
+   can see precisely what the app is adding. Choose copy vs move and the
+   verification level.
 3. **Cameras** — every clip listed with length, codec, resolution and
    last-modified time. Mark one file **Master** and assign the rest to cams.
    *Auto-suggest* groups by resolution + fps + codec as a starting point.
    **Mirror** matches your choices onto the second SSD: by filename stem first,
    then by duration + wall-clock time when the stems disagree.
-4. **Copy** — the full plan is shown first: every source file, its destination
-   folder, and its new name. Nothing is written until you press Start.
+4. **Copy** — the full plan is shown first: every source file and the folder it
+   lands in. Nothing is written until you press Start.
    Progress shows throughput and ETA and can be cancelled mid-file.
 5. **Verify** — compares the session folders (and the SD card, if you add it).
 
@@ -56,14 +73,14 @@ remembers the choice.
 **Size differences between drives are not errors.** The whole point of the two
 SSDs is that they hold different encodings. The comparison only treats a size
 difference as a fault when *both sides are the same codec family*; across
-families it is reported as expected. What it does check strictly is duration,
-presence, folder tree, and whether each filename's `Dur-` token agrees with the
-actual media — a name that lies about its own content is flagged.
+families it is reported as expected. The same goes for the container: the two
+drives often write `.mov` and `.mp4` for one shot, so the extension is left out
+of the matching key and a difference is reported as information rather than a
+missing file. What it does check strictly is duration, presence and folder tree.
 
-**Re-running is safe.** Renames are idempotent: the `Dt-`/`Dur-` tokens are
-stripped before being re-applied, so a second pass never produces
-`… Dur-54m1s Dur-54m1s.mov`. Files already present at the right size are
-skipped, so an interrupted transfer resumes rather than restarting.
+**Re-running is safe.** The folder name is idempotent (see above), and files
+already present at the right size are skipped, so an interrupted transfer
+resumes rather than restarting.
 
 **A cancelled copy leaves no half-file wearing a real name.** Files are written
 to `.vingest-part` and renamed only once complete and verified. In move mode,
@@ -95,9 +112,11 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-38 tests covering duration formatting, name idempotency, exFAT
-case-insensitive de-duplication, cross-drive pairing, comparison severity
-rules, and the cancel-leaves-no-partial-file guarantee.
+45 tests covering duration formatting, the "filenames are never changed"
+contract, folder-name idempotency, exFAT case-insensitive de-duplication,
+cross-drive pairing, `.mov`/`.mp4` tolerance, comparison severity rules, and the
+cancel-leaves-no-partial-file guarantee. Tests needing real media are skipped
+automatically when ffmpeg is absent.
 
 ## Architecture
 
@@ -109,7 +128,7 @@ responsive.
 
 | Module | Role |
 |---|---|
-| `python/vingest/naming.py` | Folder/file name construction, parsing, sanitising |
+| `python/vingest/naming.py` | Session/job folder names, token parsing, sanitising |
 | `python/vingest/probe.py` | ffprobe wrapper, codec-family classification, role assignment |
 | `python/vingest/sources.py` | Volume detection (mac/Win/Linux), zip handling, eject |
 | `python/vingest/ingest.py` | Cross-drive pairing, plan building, copy execution |

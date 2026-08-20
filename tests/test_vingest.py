@@ -5,6 +5,8 @@
 
 import datetime as dt
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,7 +14,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-from vingest import compare, ingest, naming  # noqa: E402
+from vingest import compare, ingest, naming, probe  # noqa: E402
+
+HAVE_FFMPEG = shutil.which("ffmpeg") is not None and probe.configure().get("ffprobe")
+needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not installed")
+
+
+def make_clip(path: Path, seconds: int) -> Path:
+    """A real, probeable video file — the Dur- token has to come from somewhere."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+         "-i", f"testsrc=size=160x120:rate=25:duration={seconds}",
+         "-c:v", "libx264", "-preset", "ultrafast", "-t", str(seconds), str(path)],
+        check=True, capture_output=True)
+    return path
 
 REFERENCE_TITLE = ("Adalaj Soneri Satsang Experience session of USA and Canada "
                    "Satsang Trip, General Satsang E.")
@@ -51,23 +66,29 @@ class TestNaming:
         assert "Satsang E. Dt-" in naming.build_session_folder(
             REFERENCE_TITLE, dt.date(2026, 8, 16), 10)
 
-    def test_clip_name(self):
-        assert naming.build_name("C0031", dt.date(2026, 8, 16), 134, ".MOV") \
-            == "C0031 Dt-16-Aug-26 Dur-2m14s.mov"
+    def test_typed_date_wins_over_the_generated_one(self):
+        # The operator typed Dt- themselves; we must not add a second token.
+        out = naming.build_session_folder(
+            REFERENCE_TITLE + " Dt-16-Aug-26", dt.date(2020, 1, 1), 3241.9)
+        assert out == REFERENCE_FOLDER
+        assert out.count("Dt-") == 1
 
-    def test_rename_is_idempotent(self):
-        once = naming.build_name("C0031", dt.date(2026, 8, 16), 134, ".mov")
-        twice = naming.build_name(Path(once).stem, dt.date(2026, 8, 16), 134, ".mov")
-        assert once == twice, "re-running the ingest must not stack tokens"
+    def test_folder_naming_is_idempotent(self):
+        once = naming.build_session_folder(REFERENCE_TITLE, dt.date(2026, 8, 16), 3241.9)
+        twice = naming.build_session_folder(once, dt.date(2026, 8, 16), 3241.9)
+        assert once == twice == REFERENCE_FOLDER
 
     def test_duration_change_replaces_rather_than_appends(self):
-        first = naming.build_name("C0031", dt.date(2026, 8, 16), 134, ".mov")
-        second = naming.build_name(Path(first).stem, dt.date(2026, 8, 16), 200, ".mov")
-        assert second == "C0031 Dt-16-Aug-26 Dur-3m20s.mov"
-        assert second.count("Dur-") == 1
+        out = naming.build_session_folder(REFERENCE_FOLDER, dt.date(2026, 8, 16), 3300)
+        assert out.count("Dur-") == 1 and out.endswith("Dur-55m0s")
+
+    def test_add_date_can_be_switched_off(self):
+        assert naming.build_session_folder(
+            REFERENCE_TITLE, dt.date(2026, 8, 16), 3241.9, add_date=False) \
+            == REFERENCE_TITLE + " Dur-54m1s"
 
     def test_illegal_characters_are_replaced(self):
-        out = naming.build_name('bad/name:with*chars?', dt.date(2026, 8, 16), 5, ".mov")
+        out = naming.build_session_folder('bad/name:with*chars?', dt.date(2026, 8, 16), 5)
         assert not any(c in out for c in '/:*?"<>|')
 
     def test_windows_reserved_names(self):
@@ -131,8 +152,18 @@ class TestCompare:
         return {"root": "/x", "dirs": [], "files": files}
 
     def _entry(self, name, size, duration, codec, declared=None):
-        return {"name": name, "rel": name, "size": size, "mtime": 0,
+        return {"name": name, "rel": name, "ext": Path(name).suffix.lower(),
+                "size": size, "mtime": 0,
                 "duration": duration, "codec": codec, "declared_duration": declared}
+
+    def test_mov_and_mp4_of_the_same_shot_pair_up(self):
+        # The drives often use different containers; that must not read as missing.
+        a = self._snap({"c0031": self._entry("C0031.mov", 5_000_000, 9.0, "prores")})
+        b = self._snap({"c0031": self._entry("C0031.mp4", 80_000, 9.0, "h265")})
+        r = compare.compare([a, b])
+        assert r["ok"] and not r["pairs"][0]["missing_from_other"]
+        assert any(i["field"] == "extension"
+                   for m in r["pairs"][0]["mismatched"] for i in m["issues"])
 
     def test_same_footage_different_codec_is_not_an_error(self):
         a = self._snap({"m.mov": self._entry("m.mov", 50_000_000, 64.0, "prores")})
@@ -168,6 +199,81 @@ class TestCompare:
 
 
 class TestPlan:
+    def test_media_filenames_are_never_changed(self, tmp_path):
+        """The core contract: files arrive named correctly and stay that way."""
+        src = tmp_path / "SSD"
+        src.mkdir()
+        originals = ["Master Take 01.mov", "C0031.MP4", "weird name (2).mxf"]
+        for n in originals:
+            (src / n).write_bytes(b"x" * 100)
+
+        plan = ingest.build_plan({
+            "title": REFERENCE_TITLE, "job_number": "3017", "date": "2026-08-16",
+            "mode": "copy", "verify": "size",
+            "targets": [{"role": "prores", "source_root": str(src),
+                         "dest_root": str(tmp_path / "out"),
+                         "master": str(src / "Master Take 01.mov"),
+                         "cams": {"1": [str(src / "C0031.MP4")],
+                                  "2": [str(src / "weird name (2).mxf")]}}],
+        })
+        landed = {Path(i["dst"]).name for i in plan["targets"][0]["items"]}
+        assert landed == set(originals), "filenames must survive the copy untouched"
+        for item in plan["targets"][0]["items"]:
+            assert "Dur-" not in Path(item["dst"]).name
+            assert "Dt-" not in Path(item["dst"]).name
+
+    @needs_ffmpeg
+    def test_only_the_session_folder_carries_the_tokens(self, tmp_path):
+        src = tmp_path / "SSD"; src.mkdir()
+        make_clip(src / "M.mov", 65)
+        plan = ingest.build_plan({
+            "title": REFERENCE_TITLE, "job_number": "3017", "date": "2026-08-16",
+            "mode": "copy", "targets": [{
+                "role": "prores", "source_root": str(src), "dest_root": str(tmp_path / "o"),
+                "master": str(src / "M.mov"), "cams": {}}]})
+        t = plan["targets"][0]
+        assert t["session_folder"].endswith("Dt-16-Aug-26 Dur-1m5s")
+        assert "Dur-" not in t["job_folder"]          # job folder uses the spaced date only
+        assert Path(t["items"][0]["dst"]).name == "M.mov", "master keeps its own name"
+
+    @needs_ffmpeg
+    def test_duration_comes_from_the_master_not_the_clips(self, tmp_path):
+        src = tmp_path / "SSD"; src.mkdir()
+        make_clip(src / "MASTER.mov", 65)
+        make_clip(src / "C0031.mov", 3)
+        plan = ingest.build_plan({
+            "title": "T", "date": "2026-08-16", "mode": "copy", "targets": [{
+                "role": "prores", "source_root": str(src), "dest_root": str(tmp_path / "o"),
+                "master": str(src / "MASTER.mov"),
+                "cams": {"1": [str(src / "C0031.mov")]}}]})
+        assert plan["targets"][0]["session_folder"].endswith("Dur-1m5s")
+
+    def test_unreadable_master_warns_instead_of_guessing(self, tmp_path):
+        src = tmp_path / "SSD"; src.mkdir()
+        (src / "M.mov").write_bytes(b"not actually video")
+        plan = ingest.build_plan({
+            "title": REFERENCE_TITLE, "date": "2026-08-16", "mode": "copy", "targets": [{
+                "role": "prores", "source_root": str(src), "dest_root": str(tmp_path / "o"),
+                "master": str(src / "M.mov"), "cams": {}}]})
+        assert "Dur-" not in plan["targets"][0]["session_folder"]
+        assert any("Dur-" in w for w in plan["warnings"]), "a missing duration must be surfaced"
+
+    def test_same_name_from_two_cams_does_not_overwrite(self, tmp_path):
+        # Two bodies both writing C0001.mov into one cam folder must both survive.
+        src = tmp_path / "SSD"; src.mkdir()
+        (src / "a").mkdir(); (src / "b").mkdir()
+        (src / "a" / "C0001.mov").write_bytes(b"x")
+        (src / "b" / "C0001.mov").write_bytes(b"y")
+        (src / "M.mov").write_bytes(b"m")
+        plan = ingest.build_plan({
+            "title": "T", "date": "2026-08-16", "mode": "copy", "targets": [{
+                "role": "prores", "source_root": str(src), "dest_root": str(tmp_path / "o"),
+                "master": str(src / "M.mov"),
+                "cams": {"1": [str(src / "a" / "C0001.mov"), str(src / "b" / "C0001.mov")]}}]})
+        names = [Path(i["dst"]).name for i in plan["targets"][0]["items"] if i["kind"] == "clip"]
+        assert names == ["C0001.mov", "C0001 (2).mov"]
+        assert len(set(names)) == 2
+
     def test_master_and_clips_land_in_the_right_folders(self, tmp_path):
         src = tmp_path / "SSD"
         src.mkdir()
@@ -188,7 +294,6 @@ class TestPlan:
         assert t["job_folder"] == "3017 Dt-16 Aug 2026"
         assert t["session_folder"].startswith(REFERENCE_TITLE)
 
-        dests = {Path(i["dst"]).name: i["dst"] for i in t["items"]}
         master = next(i for i in t["items"] if i["kind"] == "master")
         assert Path(master["dst"]).parent.name == t["session_folder"]
         for item in (i for i in t["items"] if i["kind"] == "clip"):

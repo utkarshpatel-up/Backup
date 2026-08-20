@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-from vingest import compare, ingest, naming, probe  # noqa: E402
+from vingest import compare, ingest, naming, probe, structure  # noqa: E402
 
 HAVE_FFMPEG = shutil.which("ffmpeg") is not None and probe.configure().get("ffprobe")
 needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not installed")
@@ -335,3 +335,155 @@ class TestPlan:
         out = tmp_path / "out"
         leftovers = [p for p in out.rglob("*") if p.is_file()]
         assert not leftovers, f"cancel left files behind: {leftovers}"
+
+
+class TestStructureDetection:
+    """The session folder is read off the drive, never invented."""
+
+    def _house(self, tmp_path, session_name, master_seconds=None):
+        job = tmp_path / "3017 Dt-16 Aug 2026"
+        session = job / session_name
+        for cam in ("Cam-01", "Cam-02", "Cam-03"):
+            (session / "Clips for Insert" / cam).mkdir(parents=True)
+        if master_seconds:
+            make_clip(session / "Program.mov", master_seconds)
+        return session
+
+    def test_finds_the_folder_holding_clips_for_insert(self, tmp_path):
+        session = self._house(tmp_path, "Some Session Dt-16-Aug-26")
+        d = structure.detect(tmp_path, probe_masters=False)
+        assert d.session_path == str(session)
+        assert d.confidence == "strong"
+        assert d.job_name == "3017 Dt-16 Aug 2026"
+        assert sorted(d.cams) == ["1", "2", "3"]
+
+    def test_reports_the_name_it_found_without_altering_it(self, tmp_path):
+        name = REFERENCE_TITLE + " Dt-16-Aug-26"
+        self._house(tmp_path, name)
+        d = structure.detect(tmp_path, probe_masters=False)
+        assert d.session_name == name
+        assert d.base_name == name          # no Dur- to strip yet
+        assert d.has_dur is False
+
+    def test_recognises_a_folder_that_already_has_its_token(self, tmp_path):
+        self._house(tmp_path, REFERENCE_FOLDER)
+        d = structure.detect(tmp_path, probe_masters=False)
+        assert d.has_dur and d.current_dur == 3241
+        assert d.base_name == REFERENCE_TITLE + " Dt-16-Aug-26"
+
+    def test_falls_back_to_a_dated_folder_name(self, tmp_path):
+        (tmp_path / "Some Session Dt-16-Aug-26").mkdir()
+        d = structure.detect(tmp_path, probe_masters=False)
+        assert d.session_path and d.confidence == "weak"
+
+    def test_says_so_when_nothing_is_recognisable(self, tmp_path):
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        d = structure.detect(tmp_path, probe_masters=False)
+        assert d.session_path is None and "by hand" in d.reason
+
+    @needs_ffmpeg
+    def test_master_is_the_longest_file_at_the_session_root(self, tmp_path):
+        session = self._house(tmp_path, "S Dt-16-Aug-26")
+        make_clip(session / "short.mov", 2)
+        make_clip(session / "Program.mov", 20)
+        d = structure.detect(tmp_path)
+        assert structure.pick_master(d)["name"] == "Program.mov"
+
+    @needs_ffmpeg
+    def test_clips_already_filed_are_not_offered_as_loose(self, tmp_path):
+        session = self._house(tmp_path, "S Dt-16-Aug-26", master_seconds=20)
+        make_clip(session / "Clips for Insert" / "Cam-01" / "filed.mov", 2)
+        make_clip(session / "loose.mov", 3)
+        d = structure.detect(tmp_path)
+        assert [Path(p).name for p in d.cams["1"]] == ["filed.mov"]
+        assert "filed.mov" not in [Path(p).name for p in d.loose_clips]
+
+
+class TestInPlacePlan:
+    """Completing a folder that already exists, rather than building a new one."""
+
+    def _house(self, tmp_path, session_name):
+        session = tmp_path / "3017 Dt-16 Aug 2026" / session_name
+        for cam in ("Cam-01", "Cam-02"):
+            (session / "Clips for Insert" / cam).mkdir(parents=True)
+        return session
+
+    def _plan(self, tmp_path, session, mode="move"):
+        det = structure.detect(tmp_path).to_dict()
+        master = structure.pick_master(det)
+        loose = structure.unfiled_clips(det, master["path"])
+        return ingest.build_plan({
+            "mode": mode, "verify": "size", "targets": [{
+                "role": "prores", "source_root": str(tmp_path),
+                "session_source": det["session_path"],
+                "master": master["path"],
+                "cams": {"1": loose[:1]} if loose else {}}]})
+
+    @needs_ffmpeg
+    def test_only_the_dur_token_is_added_to_the_existing_name(self, tmp_path):
+        original = REFERENCE_TITLE + " Dt-16-Aug-26"
+        session = self._house(tmp_path, original)
+        make_clip(session / "Program.mov", 65)
+        plan = self._plan(tmp_path, session)
+        t = plan["targets"][0]
+        assert t["in_place"] is True
+        assert t["rename_from"] == original
+        assert t["rename_to"] == original + " Dur-1m5s"
+
+    @needs_ffmpeg
+    def test_no_rename_when_the_token_is_already_correct(self, tmp_path):
+        session = self._house(tmp_path, REFERENCE_TITLE + " Dt-16-Aug-26 Dur-1m5s")
+        make_clip(session / "Program.mov", 65)
+        t = self._plan(tmp_path, session)["targets"][0]
+        assert t["rename_to"] == "", "an already-correct folder must not be renamed"
+
+    @needs_ffmpeg
+    def test_a_wrong_token_is_corrected_not_appended(self, tmp_path):
+        session = self._house(tmp_path, REFERENCE_TITLE + " Dt-16-Aug-26 Dur-99m9s")
+        make_clip(session / "Program.mov", 65)
+        t = self._plan(tmp_path, session)["targets"][0]
+        assert t["rename_to"].endswith("Dur-1m5s")
+        assert t["rename_to"].count("Dur-") == 1
+
+    @needs_ffmpeg
+    def test_the_folder_is_renamed_only_after_the_files_land(self, tmp_path):
+        original = "Session Dt-16-Aug-26"
+        session = self._house(tmp_path, original)
+        make_clip(session / "Program.mov", 65)
+        make_clip(session / "Loose Clip.mov", 3)
+        plan = self._plan(tmp_path, session)
+        res = ingest.execute_plan(plan)
+        assert res["failed"] == 0
+        assert res["renames"][0]["done"] is True
+
+        final = session.parent / (original + " Dur-1m5s")
+        assert final.is_dir() and not session.exists()
+        assert (final / "Program.mov").exists(), "master stays put, name intact"
+        assert (final / "Clips for Insert" / "Cam-01" / "Loose Clip.mov").exists()
+
+    @needs_ffmpeg
+    def test_a_cancelled_run_leaves_the_folder_name_alone(self, tmp_path):
+        original = "Session Dt-16-Aug-26"
+        session = self._house(tmp_path, original)
+        make_clip(session / "Program.mov", 65)
+        make_clip(session / "Loose Clip.mov", 3)
+        plan = self._plan(tmp_path, session)
+        res = ingest.execute_plan(plan, should_cancel=lambda: True)
+        assert res["cancelled"]
+        assert not res["renames"][0]["done"]
+        assert session.is_dir(), "a half-done run must not label the folder as finished"
+
+    @needs_ffmpeg
+    def test_a_clip_already_in_its_cam_folder_is_not_work(self, tmp_path):
+        session = self._house(tmp_path, "S Dt-16-Aug-26")
+        make_clip(session / "Program.mov", 65)
+        filed = session / "Clips for Insert" / "Cam-01" / "already.mov"
+        make_clip(filed, 2)
+        det = structure.detect(tmp_path).to_dict()
+        plan = ingest.build_plan({"mode": "move", "targets": [{
+            "role": "prores", "source_root": str(tmp_path),
+            "session_source": det["session_path"],
+            "master": structure.pick_master(det)["path"],
+            "cams": {"1": [str(filed)]}}]})
+        assert plan["targets"][0]["items"] == [], "no-op moves must not be planned"

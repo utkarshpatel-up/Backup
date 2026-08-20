@@ -9,6 +9,8 @@ const state = {
   sources: [],          // {path, label, kind, role, report}
   assignment: null,
   scans: {},            // sourcePath -> {files, suggestion}
+  detected: {},         // sourcePath -> the session folder found on it
+  masters: {},          // sourcePath -> chosen master file path
   pairing: null,
   session: { title: '', jobNumber: '', date: '', destMode: 'inPlace', destRoots: {} },
   assign: {},           // primary file path -> 'master' | cam number | 'skip'
@@ -24,8 +26,8 @@ const state = {
 const STEPS = [
   { key: 'sources', label: 'Sources', title: 'Sources',
     hint: 'Plug in both SSDs. The app probes each one and works out which holds ProRes and which holds H.265.' },
-  { key: 'session', label: 'Session', title: 'Session name',
-    hint: 'Type the folder name as it should read. Only the Dur- token is filled in for you.' },
+  { key: 'session', label: 'Folder', title: 'Session folder',
+    hint: 'The folder is already named. The app reads it from the drive and appends the Dur- token.' },
   { key: 'cameras', label: 'Cameras', title: 'Camera assignment',
     hint: 'Choose which clip belongs to which cam. The same choice is mirrored onto the other SSD.' },
   { key: 'copy', label: 'Copy', title: 'Review and copy',
@@ -105,8 +107,8 @@ function stepReady(i) {
   switch (i) {
     case 0: return true;
     case 1: return state.sources.length > 0;
-    case 2: return state.sources.length > 0 && !!primarySource();
-    case 3: return !!Object.values(state.assign).find((v) => v === 'master');
+    case 2: return !!detection() && !!chosenMaster();
+    case 3: return !!chosenMaster();
     case 4: return true;
     default: return false;
   }
@@ -116,6 +118,23 @@ function primarySource() {
   return state.sources.find((s) => s.role === 'prores')
       || state.sources.find((s) => s.role === 'h265')
       || state.sources[0];
+}
+
+/** The detection result for the primary source. */
+function detection() {
+  const src = primarySource();
+  return src ? state.detected[src.path] : null;
+}
+
+/** The master file chosen for the primary source, as a probed file record. */
+function chosenMaster() {
+  const src = primarySource();
+  const d = detection();
+  if (!src || !d) return null;
+  const pick = state.masters[src.path];
+  const pool = (d.master_candidates || []).concat(
+    (state.scans[src.path] || {}).files || []);
+  return pool.find((f) => f.path === pick) || d.suggested_master || null;
 }
 
 function secondarySource() {
@@ -293,59 +312,93 @@ async function classifySources() {
 /* ------------------------------------------------------------ step: session */
 
 function renderSession() {
-  const master = masterInfo();
-  const dur = master ? master.duration : null;
-  const date = state.session.date || (master ? master.shoot_iso.slice(0, 10) : '');
+  const src = primarySource();
+  if (!src) return `<div class="empty"><div class="big">📁</div>Add a source first.</div>`;
 
-  const title = state.session.title.trim() || 'Session title';
-  const job = state.session.jobNumber.trim();
+  const d = state.detected[src.path];
+  if (!d) {
+    return `<div class="card">
+      <h3>Read the folder from the drive</h3>
+      <p class="hint">The app looks for the session folder on
+        <span class="mono">${esc(src.label)}</span> — the one holding
+        “Clips for Insert” — and reads its name from the disk.</p>
+      <button class="primary" id="btnDetect">Find the session folder</button>
+    </div>`;
+  }
+
+  if (!d.session_path) {
+    return `<div class="card">
+      <h3>No session folder recognised</h3>
+      <div class="note warn">${esc(d.reason)}</div>
+      <p class="hint">Point the app at the folder yourself, or build a new one from a
+        name you type.</p>
+      <div class="row">
+        <button class="primary" id="btnPickSession">Choose the session folder…</button>
+        <button id="btnCreateMode">Create a new folder instead</button>
+      </div>
+      ${state.session.destMode === 'create' ? createFolderForm() : ''}
+    </div>`;
+  }
+
+  const master = chosenMaster();
+  const dur = master ? master.duration : null;
+  const base = d.base_name || d.session_name;
   const durLabel = dur != null ? fmtDur(dur) : '…';
-  const dateLabel = date ? formatDateToken(date) : '…';
+  const already = d.has_dur && d.current_dur != null;
+  const unchanged = already && dur != null && Math.abs(d.current_dur - dur) < 1;
 
   return `
   <div class="card">
-    <h3>Name the session</h3>
-    <p class="hint">Type the title exactly as it should read. The date and duration tokens are appended for you.</p>
-    <div class="grid2">
-      <label class="field"><span>Job number</span>
-        <input type="text" id="fJob" value="${esc(state.session.jobNumber)}" placeholder="3017" /></label>
-      <label class="field"><span>Shoot date</span>
-        <input type="date" id="fDate" value="${esc(date)}" /></label>
+    <h3>Folder found on the drive</h3>
+    <p class="hint">${esc(d.reason)} Nothing here was typed — it is read from the disk.</p>
+    <div class="preview-name">
+      ${d.job_name ? `📁 ${esc(d.job_name)}<br>` : ''}
+      <span class="${d.job_name ? 'indent1' : ''}" style="display:inline-block">📁
+        ${esc(base)} <b>Dur-${esc(durLabel)}</b></span>
     </div>
-    <label class="field"><span>Folder name</span>
-      <input type="text" id="fTitle" value="${esc(state.session.title)}"
-        placeholder="Adalaj Soneri Satsang Experience session of USA and Canada Satsang Trip, General Satsang E." /></label>
-    <label class="row" style="margin:-4px 0 12px;font-size:12px;color:var(--muted)">
-      <input type="checkbox" id="fAutoDate" style="width:auto;margin:0"
-        ${state.session.addDate === false ? '' : 'checked'} />
-      Append the Dt- token too (skipped automatically if you type one yourself)
-    </label>
-    <div class="preview-name">${sessionPreview()}</div>
-    <p class="hint" style="margin:8px 0 0">Bold parts are added for you. Everything
-      else is exactly what you typed, and no media file is renamed.</p>
-    ${dur == null ? `<div class="note warn" style="margin-top:10px">
-       Mark the master file on the Cameras step — the Dur- token is read from it.</div>` : ''}
+    <p class="hint" style="margin:8px 0 0">
+      The bold <b>Dur-${esc(durLabel)}</b> is the only part the app adds. Everything else
+      is the folder's existing name, left exactly as it is.</p>
+    ${already ? `<div class="note ${unchanged ? 'ok' : 'warn'}" style="margin-top:10px">
+      ${unchanged
+        ? `This folder already reads <b>Dur-${esc(fmtDur(d.current_dur))}</b> and matches the
+           master, so its name will not change.`
+        : `This folder currently reads <b>Dur-${esc(fmtDur(d.current_dur))}</b>, but the master
+           is <b>${esc(durLabel)}</b>. The token will be corrected.`}
+    </div>` : ''}
+    <div class="row" style="margin-top:12px">
+      <button class="sm ghost" id="btnRedetect">Look again</button>
+      <button class="sm ghost" id="btnPickSession">Choose a different folder…</button>
+    </div>
   </div>
 
   <div class="card">
-    <h3>Where to write</h3>
-    <p class="hint">Building the structure on each drive in place is the normal choice — nothing moves between drives.</p>
-    <div class="seg" style="margin-bottom:12px">
-      <button data-dest="inPlace" class="${state.session.destMode === 'inPlace' ? 'on' : ''}">On each source drive</button>
-      <button data-dest="custom" class="${state.session.destMode === 'custom' ? 'on' : ''}">Choose folders</button>
-    </div>
-    ${state.session.destMode === 'custom' ? state.sources.map((s) => `
-      <div class="row" style="margin-bottom:8px">
-        <span class="badge ${s.role}">${esc(s.label)}</span>
-        <span class="mono" style="flex:1;color:var(--muted)">
-          ${esc(state.session.destRoots[s.path] || s.path)}</span>
-        <button class="sm" data-dest-pick="${esc(s.path)}">Choose…</button>
-      </div>`).join('') : ''}
-    <div class="grid2" style="margin-top:6px">
+    <h3>Master file</h3>
+    <p class="hint">The Dur- token is read from this file. The app picked the longest
+      recording sitting at the top of the session folder.</p>
+    ${(d.master_candidates || []).length ? `
+      <table><thead><tr><th style="width:1%"></th><th>File</th>
+        <th class="num">Length</th><th>Codec</th><th class="num">Size</th></tr></thead>
+      <tbody>${d.master_candidates.map((c) => `
+        <tr><td><input type="radio" name="master" data-master="${esc(c.path)}"
+              ${master && c.path === master.path ? 'checked' : ''} style="width:auto" /></td>
+          <td class="mono">${esc(c.name)}</td>
+          <td class="num">${esc(fmtClock(c.duration))}</td>
+          <td><span class="badge ${esc(c.family || '')}">${esc(c.video_codec || '?')}</span></td>
+          <td class="num">${fmtBytes(c.size)}</td></tr>`).join('')}
+      </tbody></table>`
+      : `<div class="note err">No video file sits directly in the session folder, so
+         there is nothing to read a duration from. Put the program recording there,
+         or choose a different folder.</div>`}
+  </div>
+
+  <div class="card">
+    <h3>Filing the clips</h3>
+    <div class="grid2">
       <label class="field"><span>Transfer mode</span>
         <select id="fMode">
-          <option value="copy">Copy (leave originals in place)</option>
-          <option value="move">Move (remove originals after verifying)</option>
+          <option value="move">Move into the cam folders (same drive)</option>
+          <option value="copy">Copy, leaving the originals where they are</option>
         </select></label>
       <label class="field"><span>Verification</span>
         <select id="fVerify">
@@ -354,25 +407,41 @@ function renderSession() {
           <option value="none">None</option>
         </select></label>
     </div>
+    <p class="hint" style="margin:0">Moving is the usual choice when the clips are already
+      on the right drive and only need filing — copying leaves a second copy behind at the
+      folder's top level.</p>
   </div>`;
 }
 
-/** The exact folder name that will be created, with generated parts in bold. */
+function createFolderForm() {
+  return `
+    <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+      <div class="grid2">
+        <label class="field"><span>Job number</span>
+          <input type="text" id="fJob" value="${esc(state.session.jobNumber)}" placeholder="3017" /></label>
+        <label class="field"><span>Shoot date</span>
+          <input type="date" id="fDate" value="${esc(state.session.date)}" /></label>
+      </div>
+      <label class="field"><span>Folder name</span>
+        <input type="text" id="fTitle" value="${esc(state.session.title)}"
+          placeholder="Adalaj Soneri … General Satsang E." /></label>
+      <div class="preview-name">${sessionPreview()}</div>
+    </div>`;
+}
+
+/** Preview for the fallback path where no folder exists yet and one is typed. */
 function sessionPreview() {
-  const master = masterInfo();
+  const master = chosenMaster();
   const date = state.session.date || (master ? master.shoot_iso.slice(0, 10) : '');
   const job = state.session.jobNumber.trim();
   const typed = state.session.title.trim() || 'Folder name';
   const durLabel = master && master.duration != null ? fmtDur(master.duration) : '…';
   const hasOwnDate = /\bDt-\d{1,2}-[A-Za-z]{3}-\d{2,4}\b/.test(typed);
-  const wantDate = state.session.addDate !== false && date && !hasOwnDate;
-
-  const jobLine = job && date
-    ? `📁 ${esc(job)} <b>Dt-${esc(jobDateLabel(date))}</b><br>` : '';
+  const jobLine = job && date ? `📁 ${esc(job)} <b>Dt-${esc(jobDateLabel(date))}</b><br>` : '';
   return jobLine +
     `<span class="${jobLine ? 'indent1' : ''}" style="display:inline-block">📁 ` +
     `${esc(typed.replace(/\s*\bDur-(?:\d+h)?(?:\d+m)?\d+s\b/i, ''))}` +
-    `${wantDate ? ` <b>Dt-${esc(formatDateToken(date))}</b>` : ''}` +
+    `${date && !hasOwnDate ? ` <b>Dt-${esc(formatDateToken(date))}</b>` : ''}` +
     ` <b>Dur-${esc(durLabel)}</b></span>`;
 }
 
@@ -389,44 +458,66 @@ function formatDateToken(iso) {
 }
 
 function wireSession() {
-  const bind = (id, key) => $(id)?.addEventListener('input', (e) => {
-    state.session[key] = e.target.value;
-    if (id === 'fTitle' || id === 'fJob') updatePreviewOnly();
-    else render();
+  $('btnDetect')?.addEventListener('click', () => detectStructure(primarySource()));
+  $('btnRedetect')?.addEventListener('click', () => detectStructure(primarySource(), true));
+  $('btnCreateMode')?.addEventListener('click', () => {
+    state.session.destMode = 'create'; render();
   });
-  bind('fJob', 'jobNumber');
-  bind('fTitle', 'title');
-  bind('fDate', 'date');
-  $('fAutoDate')?.addEventListener('change', (e) => {
-    state.session.addDate = e.target.checked; updatePreviewOnly();
+  $('btnPickSession')?.addEventListener('click', async () => {
+    const chosen = await window.api.pickFolder('Choose the session folder');
+    if (chosen) await detectStructure(primarySource(), true, chosen);
   });
-  $('fMode').value = state.session.mode || 'copy';
-  $('fVerify').value = state.session.verify || 'size';
-  $('fMode')?.addEventListener('change', (e) => { state.session.mode = e.target.value; });
-  $('fVerify')?.addEventListener('change', (e) => { state.session.verify = e.target.value; });
 
-  document.querySelectorAll('[data-dest]').forEach((b) => b.addEventListener('click', () => {
-    state.session.destMode = b.dataset.dest; render();
+  document.querySelectorAll('[data-master]').forEach((r) => r.addEventListener('change', () => {
+    state.masters[primarySource().path] = r.dataset.master;
+    state.plan = null;
+    render();
   }));
-  document.querySelectorAll('[data-dest-pick]').forEach((b) => b.addEventListener('click', async () => {
-    const p = await window.api.pickFolder('Choose a destination folder');
-    if (p) { state.session.destRoots[b.dataset.destPick] = p; render(); }
+
+  ['fJob', 'fTitle', 'fDate'].forEach((id) => $(id)?.addEventListener('input', (e) => {
+    state.session[{ fJob: 'jobNumber', fTitle: 'title', fDate: 'date' }[id]] = e.target.value;
+    const box = document.querySelector('.preview-name');
+    if (box) box.innerHTML = sessionPreview();
   }));
+
+  if ($('fMode')) {
+    $('fMode').value = state.session.mode || 'move';
+    $('fMode').addEventListener('change', (e) => {
+      state.session.mode = e.target.value; state.plan = null;
+    });
+    $('fVerify').value = state.session.verify || 'size';
+    $('fVerify').addEventListener('change', (e) => {
+      state.session.verify = e.target.value; state.plan = null;
+    });
+  }
 }
 
-/** Re-render only the name preview, so typing does not steal focus. */
-function updatePreviewOnly() {
-  const box = document.querySelector('.preview-name');
-  if (box) box.innerHTML = sessionPreview();
+/** Read the session folder off a source and seed the cam assignment from it. */
+async function detectStructure(src, force = false, overrideRoot = null) {
+  if (!src || (state.detected[src.path] && !force)) return;
+  try {
+    const d = await call('detect_structure', { root: overrideRoot || src.path },
+      { label: `Reading ${src.label}` });
+    state.detected[src.path] = d;
+    if (d.suggested_master && !state.masters[src.path]) {
+      state.masters[src.path] = d.suggested_master.path;
+    }
+    // Clips already filed into a cam folder keep that cam; the rest start unassigned.
+    state.assign = {};
+    for (const [cam, paths] of Object.entries(d.cams || {})) {
+      for (const path of paths) state.assign[path] = Number(cam);
+    }
+    state.camCount = Math.max(3, ...Object.keys(d.cams || {}).map(Number), 0);
+    state.plan = null;
+    if (!d.session_path) toast(d.reason, 'err');
+    render();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 /* ------------------------------------------------------------ step: cameras */
 
 function masterInfo() {
-  const src = primarySource();
-  if (!src || !state.scans[src.path]) return null;
-  const path = Object.keys(state.assign).find((p) => state.assign[p] === 'master');
-  return state.scans[src.path].files.find((f) => f.path === path) || null;
+  return chosenMaster();
 }
 
 function renderCameras() {
@@ -444,17 +535,19 @@ function renderCameras() {
   }
 
   const cams = Array.from({ length: state.camCount }, (_, i) => i + 1);
+  const master = chosenMaster();
+  // The master was settled on the Folder step; it is not a cam clip.
+  const files = scan.files.filter((f) => !master || f.path !== master.path);
   const counts = {};
   cams.forEach((n) => { counts[n] = 0; });
-  let masterCount = 0, skipped = 0;
-  for (const f of scan.files) {
+  let skipped = 0;
+  for (const f of files) {
     const a = state.assign[f.path];
-    if (a === 'master') masterCount++;
-    else if (a === 'skip' || a === undefined) skipped++;
+    if (a === undefined || a === 'skip') skipped++;
     else counts[a] = (counts[a] || 0) + 1;
   }
 
-  const rows = scan.files.map((f) => {
+  const rows = files.map((f) => {
     const a = state.assign[f.path] ?? 'skip';
     return `<tr>
       <td><div style="font-weight:600">${esc(f.name)}</div>
@@ -464,7 +557,6 @@ function renderCameras() {
       <td>${esc(fmtTime(f.shoot_iso))}</td>
       <td class="num">${fmtBytes(f.size)}</td>
       <td><div class="seg">
-        <button class="${a === 'master' ? 'on master' : ''}" data-assign="master" data-file="${esc(f.path)}">Master</button>
         ${cams.map((n) => `<button class="${a === n ? 'on' : ''}" data-assign="${n}"
            data-file="${esc(f.path)}">${n}</button>`).join('')}
         <button class="${a === 'skip' ? 'on skip' : ''}" data-assign="skip" data-file="${esc(f.path)}">Skip</button>
@@ -487,11 +579,13 @@ function renderCameras() {
   return `
   <div class="card">
     <h3>Assign clips to cameras</h3>
-    <p class="hint">Exactly one file must be the <b>Master</b> — it sets the session's Dur- token.
-      Everything marked with a number lands in that Cam folder. Skipped files are not copied.</p>
+    <p class="hint">Each clip goes to the numbered Cam folder you pick. Skipped clips stay
+      where they are. Clips already filed in a cam folder are pre-selected.</p>
+    ${master ? `<div class="note info">Master: <b>${esc(master.name)}</b>
+      (${esc(fmtDur(master.duration))}) — stays at the top of the session folder and sets
+      the Dur- token. Change it on the Folder step.</div>` : ''}
     <div class="row" style="margin-bottom:12px">
       <button class="sm" id="btnAutoGroup">Auto-suggest by camera</button>
-      <button class="sm" id="btnLongestMaster">Longest file = master</button>
       <button class="sm" id="btnAddCam">Add cam (${state.camCount})</button>
       <button class="sm" id="btnRemoveCam" ${state.camCount <= 1 ? 'disabled' : ''}>Remove cam</button>
       <button class="sm" id="btnClearAssign">Clear all</button>
@@ -500,7 +594,6 @@ function renderCameras() {
       <button class="sm ghost" id="btnRescanFiles">Re-scan</button>
     </div>
     <div class="row" style="margin-bottom:6px">
-      <span class="badge ${masterCount === 1 ? 'ok' : 'warn'}">Master: ${masterCount}</span>
       ${cams.map((n) => `<span class="badge">Cam-${String(n).padStart(2, '0')}: ${counts[n] || 0}</span>`).join('')}
       <span class="badge">Skipped: ${skipped}</span>
     </div>
@@ -519,15 +612,7 @@ function wireCameras() {
 
   document.querySelectorAll('[data-assign]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.assign;
-    if (v === 'master') {
-      // Only one master per session; clear any previous choice.
-      for (const k of Object.keys(state.assign)) {
-        if (state.assign[k] === 'master') state.assign[k] = 'skip';
-      }
-      state.assign[b.dataset.file] = 'master';
-    } else {
-      state.assign[b.dataset.file] = v === 'skip' ? 'skip' : Number(v);
-    }
+    state.assign[b.dataset.file] = v === 'skip' ? 'skip' : Number(v);
     state.plan = null;
     render();
   }));
@@ -544,27 +629,14 @@ function wireCameras() {
     state.assign = {}; state.pairing = null; state.plan = null; render();
   });
 
-  $('btnLongestMaster')?.addEventListener('click', () => {
-    const files = state.scans[primarySource().path].files;
-    const longest = files.reduce((a, b) =>
-      ((b.duration || 0) > (a?.duration || 0) ? b : a), null);
-    if (!longest) return;
-    Object.keys(state.assign).forEach((k) => {
-      if (state.assign[k] === 'master') state.assign[k] = 'skip';
-    });
-    state.assign[longest.path] = 'master';
-    toast(`Master set to ${longest.name} (${fmtDur(longest.duration)})`, 'ok');
-    render();
-  });
-
   $('btnAutoGroup')?.addEventListener('click', () => {
     const scan = state.scans[primarySource().path];
-    const master = Object.keys(state.assign).find((k) => state.assign[k] === 'master');
+    const master = chosenMaster();
     let cam = 0;
     for (const g of scan.suggestion.groups) {
       cam++;
       for (const f of g.files) {
-        if (f.path === master) continue;
+        if (master && f.path === master.path) continue;
         state.assign[f.path] = cam;
       }
     }
@@ -609,7 +681,7 @@ function buildSpec() {
   const camsFor = (mapPath) => {
     const cams = {};
     for (const [p, v] of Object.entries(state.assign)) {
-      if (v === 'skip' || v === 'master' || v === undefined) continue;
+      if (v === 'skip' || v === undefined || typeof v !== 'number') continue;
       const mapped = mapPath(p);
       if (!mapped) continue;
       (cams[v] = cams[v] || []).push(mapped);
@@ -620,8 +692,11 @@ function buildSpec() {
   const destFor = (s) => (state.session.destMode === 'custom'
     ? (state.session.destRoots[s.path] || s.path) : s.path);
 
+  const sessionOf = (src) => (state.detected[src.path] || {}).session_path || null;
+
   targets.push({
     role: a.role, source_root: a.path, dest_root: destFor(a),
+    session_source: sessionOf(a),
     master: master ? master.path : null, cams: camsFor((p) => p),
   });
 
@@ -629,6 +704,7 @@ function buildSpec() {
     const m = state.pairing.matches;
     targets.push({
       role: b.role, source_root: b.path, dest_root: destFor(b),
+      session_source: sessionOf(b),
       master: master ? (m[master.path] || null) : null,
       cams: camsFor((p) => m[p] || null),
     });
@@ -639,7 +715,7 @@ function buildSpec() {
     job_number: state.session.jobNumber,
     date: state.session.date || undefined,
     add_date: state.session.addDate !== false,
-    mode: state.session.mode || 'copy',
+    mode: state.session.mode || 'move',
     verify: state.session.verify || 'size',
     targets,
   };
@@ -662,16 +738,24 @@ function renderCopy() {
   const p = state.plan;
   const trees = p.targets.map((t) => `
     <div class="card">
-      <h3><span class="badge ${t.role}">${esc(t.role)}</span> ${esc(t.session_folder.slice(0, 60))}…</h3>
-      <p class="hint">${esc(t.dest_root)} · ${t.items.length} files ·
+      <h3><span class="badge ${t.role}">${esc(t.role)}</span>
+        ${t.in_place ? 'Completing the existing folder' : 'Creating a new folder'}</h3>
+      <p class="hint">${esc(t.dest_root)} · ${t.items.length} file(s) to file ·
         ${fmtBytes(t.total_bytes)} · ${fmtBytes(t.free_bytes)} free</p>
+      ${t.rename_to ? `<div class="note info">
+          <div>Folder renamed:</div>
+          <div class="mono" style="margin-top:4px;opacity:.7">${esc(t.rename_from)}</div>
+          <div class="mono" style="margin-top:2px">↳ ${esc(t.rename_to)}</div>
+        </div>`
+        : t.in_place ? `<div class="note ok">The folder name is already complete —
+            only the clips need filing.</div>` : ''}
       ${t.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
       <div class="tree">
         ${t.job_folder ? `<div class="dir">📁 ${esc(t.job_folder)}</div>` : ''}
         <div class="dir ${t.job_folder ? 'indent1' : ''}">📁 ${esc(t.session_folder)}</div>
-        ${t.items.filter((i) => i.kind === 'master').map((i) => `
-          <div class="ren indent2">🎬 <b>${esc(i.original_name)}</b>
-            <span style="color:var(--muted)">· ${fmtDur(i.duration)} · sets the Dur- token</span></div>`).join('')}
+        <div class="ren indent2">🎬 <b>${esc(masterName(t))}</b>
+          <span style="color:var(--muted)">· sets the Dur- token${
+            t.items.some((i) => i.kind === 'master') ? '' : ' · already in place'}</span></div>
         <div class="dir indent2">📁 Clips for Insert</div>
         ${camGroups(t)}
       </div>
@@ -684,8 +768,9 @@ function renderCopy() {
        — review the details on each drive below.</div>` : ''}
     <div class="card">
       <div class="row">
-        <div><b>${p.item_count} files</b> · ${fmtBytes(p.total_bytes)} total ·
-          mode <b>${esc(p.mode)}</b> · verify <b>${esc(p.verify)}</b></div>
+        <div><b>${p.item_count} file(s) to file</b> · ${fmtBytes(p.total_bytes)} ·
+          mode <b>${esc(p.mode)}</b> · verify <b>${esc(p.verify)}</b>
+          ${(p.renames || []).length ? `· <b>${p.renames.length} folder rename(s)</b>` : ''}</div>
         <div class="spacer"></div>
         <button class="sm" id="btnReplan">Rebuild plan</button>
         <button class="primary" id="btnRun" ${state.busy ? 'disabled' : ''}>
@@ -694,6 +779,13 @@ function renderCopy() {
     </div>
     ${status}
     ${trees}`;
+}
+
+function masterName(t) {
+  const item = t.items.find((i) => i.kind === 'master');
+  if (item) return item.original_name;
+  const m = chosenMaster();
+  return m ? m.name : '—';
 }
 
 function camGroups(t) {
@@ -716,11 +808,14 @@ function renderRunResult() {
   const kind = r.failed ? 'err' : r.cancelled ? 'warn' : 'ok';
   return `<div class="card">
     <div class="note ${kind}">
-      <b>${r.cancelled ? 'Cancelled.' : r.failed ? 'Finished with errors.' : 'Copy complete.'}</b>
-      ${r.copied} copied, ${r.skipped} already present, ${r.failed} failed ·
+      <b>${r.cancelled ? 'Cancelled.' : r.failed ? 'Finished with errors.' : 'Done.'}</b>
+      ${r.copied} filed, ${r.skipped} already present, ${r.failed} failed ·
       ${fmtBytes(r.bytes)} in ${r.seconds}s
-      ${r.seconds > 0 ? `(${fmtBytes(r.bytes / r.seconds)}/s)` : ''}
+      ${r.seconds > 0 && r.bytes ? `(${fmtBytes(r.bytes / r.seconds)}/s)` : ''}
     </div>
+    ${(r.renames || []).map((rn) => `<div class="note ${rn.done ? 'ok' : 'warn'}">
+      ${rn.done ? `Folder renamed to <span class="mono">${esc(rn.to)}</span>`
+                : `Folder not renamed — ${esc(rn.message)}`}</div>`).join('')}
     ${r.errors.map((e) => `<div class="note err mono">${esc(e)}</div>`).join('')}
     <div class="row">
       ${(r.manifests || []).map((m) => `<button class="sm" data-open="${esc(m.json)}">
@@ -757,14 +852,18 @@ async function doPlan() {
 
 async function doRun() {
   const p = state.plan;
+  const renames = (p.renames || []).map((r) => `\n  ${r.from}\n    ↳ ${r.to}`).join('');
   const ok = await window.api.confirm({
-    message: p.mode === 'move'
-      ? `Move ${p.item_count} files into the new structure?`
-      : `Copy ${p.item_count} files (${fmtBytes(p.total_bytes)})?`,
-    detail: p.mode === 'move'
-      ? 'Originals are deleted from the source once each file verifies. This cannot be undone.'
-      : 'Originals stay where they are. Existing, matching files are skipped.',
-    confirmLabel: p.mode === 'move' ? 'Move files' : 'Start copy',
+    message: p.item_count
+      ? `File ${p.item_count} clip(s) and rename the session folder?`
+      : 'Rename the session folder?',
+    detail:
+      (p.mode === 'move'
+        ? 'Clips are moved into their cam folders. On the same drive this is instant.\n'
+        : 'Clips are copied, leaving the originals where they are.\n') +
+      (renames ? `\nFolder rename:${renames}\n` : '') +
+      '\nThe folder is renamed only after every file lands successfully.',
+    confirmLabel: 'Go ahead',
     danger: p.mode === 'move',
   });
   if (!ok) return;
@@ -898,6 +997,7 @@ function goStep(i) {
   if (!stepReady(i)) return;
   state.step = i;
   render();
+  if (i === 1) detectStructure(primarySource());
   if (i === 2) scanSource(primarySource());
 }
 
@@ -957,8 +1057,12 @@ function footerHint() {
   switch (state.step) {
     case 0: return state.sources.length ? `${state.sources.length} source(s) selected`
                                         : 'Add at least one source to continue';
-    case 1: return state.session.title.trim() ? '' : 'Enter the folder name before copying';
-    case 2: return masterInfo() ? `Master: ${masterInfo().name}` : 'Mark one file as Master to continue';
+    case 1: return chosenMaster() ? `Dur- will read ${fmtDur(chosenMaster().duration)}`
+                                  : 'Find the session folder to continue';
+    case 2: {
+      const n = Object.values(state.assign).filter((v) => typeof v === 'number').length;
+      return n ? `${n} clip(s) assigned` : 'Assign clips to cam folders';
+    }
     case 3: return state.runResult ? 'Copy finished' : '';
     default: return '';
   }

@@ -24,9 +24,10 @@ from .probe import MediaInfo, probe, scan_videos
 @dataclass
 class PlanItem:
     src: str
-    dst: str
-    size: int
-    kind: str                 # master | clip
+    dst: str                  # where the file is written (inside staging_path)
+    final_dst: str = ""       # same file once the folder rename has happened
+    size: int = 0
+    kind: str = "clip"        # master | clip
     cam: int | None = None
     duration: float | None = None
     codec: str | None = None
@@ -44,8 +45,12 @@ class TargetPlan:
     source_root: str
     dest_root: str
     job_folder: str
-    session_folder: str
-    session_path: str
+    session_folder: str       # the name the folder ends up with
+    session_path: str         # where it ends up
+    staging_path: str = ""    # where files are written before the rename
+    rename_from: str = ""     # existing folder name, when one was found
+    rename_to: str = ""       # same name plus the Dur- token
+    in_place: bool = False    # True when completing a folder that already exists
     items: list[PlanItem] = field(default_factory=list)
     total_bytes: int = 0
     free_bytes: int = 0
@@ -129,9 +134,18 @@ def _session_date(master: MediaInfo | None, override: str | None) -> _dt.date:
 def build_plan(spec: dict, progress=None) -> dict:
     """Turn the GUI's selections into a full, reviewable copy plan.
 
+    Two shapes of target are supported:
+
+    * **In place** — the target carries `session_source`, the existing session
+      folder found on the drive. Its name is already correct apart from the
+      `Dur-` token, so files are filed into it as-is and the folder itself is
+      renamed at the very end.
+    * **Create** — no `session_source`. A folder is built from `title` under
+      `dest_root`. Used when organising loose files that were never structured.
+
     `spec` keys: title, job_number, date (ISO, optional), mode (copy|move),
-    verify (none|size|hash), targets[] with role/source_root/dest_root/master/
-    cams{cam_index: [paths]}/extras[].
+    verify (none|size|hash), targets[] with role/source_root/dest_root/
+    session_source/master/cams{cam_index: [paths]}.
     """
     title = (spec.get("title") or "Untitled Session").strip()
     job_number = (spec.get("job_number") or "").strip()
@@ -151,14 +165,29 @@ def build_plan(spec: dict, progress=None) -> dict:
         master = get(master_path) if master_path else None
         when = _session_date(master, date_override)
 
-        session_folder = naming.build_session_folder(
-            title, when, master.duration if master else None,
-            add_date=spec.get("add_date", True))
-        job_folder = naming.build_job_folder(job_number, when) if job_number else ""
+        duration = master.duration if master else None
+        existing = t.get("session_source")
 
-        dest_root = Path(t.get("dest_root") or t["source_root"])
-        session_path = dest_root / job_folder / session_folder if job_folder \
-            else dest_root / session_folder
+        if existing:
+            # The folder is already named; only the Dur- token is ours to add.
+            existing_path = Path(existing)
+            base = naming.DUR_TOKEN_RE.sub("", existing_path.name).strip()
+            session_folder = naming.sanitize(
+                base + (f" Dur-{naming.fmt_duration(duration)}" if duration is not None else ""))
+            session_path = existing_path.parent / session_folder
+            staging_path = existing_path
+            job_folder = existing_path.parent.name if existing_path.parent != existing_path.parent.parent else ""
+            dest_root = existing_path.parent
+            in_place = True
+        else:
+            session_folder = naming.build_session_folder(
+                title, when, duration, add_date=spec.get("add_date", True))
+            job_folder = naming.build_job_folder(job_number, when) if job_number else ""
+            dest_root = Path(t.get("dest_root") or t["source_root"])
+            session_path = dest_root / job_folder / session_folder if job_folder \
+                else dest_root / session_folder
+            staging_path = session_path
+            in_place = False
 
         plan = TargetPlan(
             role=t.get("role", "other"),
@@ -167,7 +196,13 @@ def build_plan(spec: dict, progress=None) -> dict:
             job_folder=job_folder,
             session_folder=session_folder,
             session_path=str(session_path),
+            staging_path=str(staging_path),
+            rename_from=Path(existing).name if existing else "",
+            rename_to=session_folder if existing else "",
+            in_place=in_place,
         )
+        if in_place and plan.rename_from == plan.rename_to:
+            plan.rename_to = ""          # already complete; nothing to rename
 
         taken: set[str] = set()
         if master is not None:
@@ -176,7 +211,8 @@ def build_plan(spec: dict, progress=None) -> dict:
             name = naming.dedupe(Path(master.path).name, taken)
             taken.add(name)
             plan.items.append(PlanItem(
-                src=master.path, dst=str(session_path / name), size=master.size,
+                src=master.path, dst=str(staging_path / name),
+                final_dst=str(session_path / name), size=master.size,
                 kind="master", duration=master.duration, codec=master.family,
                 original_name=Path(master.path).name))
             if master.duration is None:
@@ -185,28 +221,34 @@ def build_plan(spec: dict, progress=None) -> dict:
                 detail = f" ({master.error})" if master.error else ""
                 plan.warnings.append(
                     f"Could not read the duration of {Path(master.path).name}{detail}, "
-                    f"so the folder will be created without a Dur- token. "
+                    f"so the folder cannot be given its Dur- token. "
                     f"Check the file plays, or choose a different master.")
             elif master.error:
                 plan.warnings.append(f"Master probed with a warning: {master.error}")
 
-        clips_root = session_path / naming.CLIPS_DIRNAME
+        clips_root = staging_path / naming.CLIPS_DIRNAME
+        final_clips_root = session_path / naming.CLIPS_DIRNAME
         for cam_key, paths in sorted((t.get("cams") or {}).items(),
                                      key=lambda kv: int(kv[0])):
             cam_index = int(cam_key)
             cam_dir = clips_root / naming.cam_folder(cam_index)
+            final_cam_dir = final_clips_root / naming.cam_folder(cam_index)
             cam_taken: set[str] = set()
             for p in paths:
                 info = get(p)
                 name = naming.dedupe(Path(p).name, cam_taken)
                 cam_taken.add(name)
                 plan.items.append(PlanItem(
-                    src=p, dst=str(cam_dir / name), size=info.size, kind="clip",
+                    src=p, dst=str(cam_dir / name),
+                    final_dst=str(final_cam_dir / name), size=info.size, kind="clip",
                     cam=cam_index, duration=info.duration, codec=info.family,
                     original_name=Path(p).name))
                 if info.error:
                     plan.warnings.append(f"{Path(p).name}: {info.error}")
 
+        # In place, a clip already filed in the right cam folder needs no copy.
+        plan.items = [i for i in plan.items
+                      if os.path.normcase(i.src) != os.path.normcase(i.dst)]
         plan.total_bytes = sum(i.size for i in plan.items)
         try:
             plan.free_bytes = shutil.disk_usage(dest_root).free
@@ -222,6 +264,13 @@ def build_plan(spec: dict, progress=None) -> dict:
         if spec.get("mode") == "move" and not same_volume:
             plan.warnings.append(
                 "Move crosses volumes — files will be copied then deleted, which is slow.")
+
+        if in_place and plan.rename_to:
+            clash = session_path
+            if clash.exists() and os.path.normcase(str(clash)) != os.path.normcase(str(staging_path)):
+                plan.warnings.append(
+                    f"A folder called “{session_folder}” already exists here, so the "
+                    f"rename would collide. Move or remove it first.")
 
         # Two different sources must never write into one session folder.
         for other in targets_out:
@@ -239,6 +288,8 @@ def build_plan(spec: dict, progress=None) -> dict:
         "targets": [t.to_dict() for t in targets_out],
         "total_bytes": sum(t.total_bytes for t in targets_out),
         "item_count": sum(len(t.items) for t in targets_out),
+        "renames": [{"role": t.role, "from": t.rename_from, "to": t.rename_to}
+                    for t in targets_out if t.rename_to],
         "warnings": [w for t in targets_out for w in t.warnings],
     }
 
@@ -323,8 +374,13 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
             })
 
     for target in plan.get("targets", []):
-        Path(target["session_path"]).mkdir(parents=True, exist_ok=True)
+        Path(target.get("staging_path") or target["session_path"]).mkdir(
+            parents=True, exist_ok=True)
         for item in target["items"]:
+            # Checked per item, not just inside the copy loop: a same-volume move
+            # never enters that loop, so Cancel would otherwise do nothing at all.
+            if should_cancel():
+                cancelled = True
             if cancelled:
                 item["status"] = "skipped"
                 item["message"] = "Cancelled"
@@ -356,20 +412,26 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                         _acc["n"] = 0
                         emit(current=src.name, target=target["role"])
 
-                if mode == "move" and _same_volume(src.parent, dst.parent):
-                    src.replace(dst)          # instant within a volume
+                renamed = mode == "move" and _same_volume(src.parent, dst.parent)
+                if renamed:
+                    src.replace(dst)          # atomic within a volume
                     done_bytes += item["size"]
                 else:
                     _copy_with_progress(src, dst, on_chunk, should_cancel)
 
-                problem = _verify(src, dst, verify)
+                if renamed:
+                    # A rename within one filesystem cannot corrupt data, and it
+                    # leaves no source to compare against — just confirm it landed.
+                    problem = _verify_moved(dst, item["size"])
+                else:
+                    problem = _verify(src, dst, verify)
+
                 if problem:
                     item["status"] = "failed"
                     item["message"] = problem
                     errors.append(f"{src.name}: {problem}")
                 else:
-                    if mode == "move" and src.exists() and \
-                            not _same_volume(src.parent, dst.parent):
+                    if mode == "move" and not renamed and src.exists():
                         src.unlink()
                     item["status"] = "done"
                     item["message"] = ""
@@ -384,6 +446,41 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                 errors.append(f"{src.name}: {e}")
             results.append(item)
 
+    # The folder rename happens last, and only if every file landed. Renaming
+    # first would invalidate the source paths of anything living inside it, and
+    # renaming after a failure would label an incomplete folder as finished.
+    renames = []
+    for target in plan.get("targets", []):
+        if not target.get("rename_to"):
+            continue
+        staging = Path(target["staging_path"])
+        final = Path(target["session_path"])
+        record = {"role": target.get("role"), "from": target.get("rename_from"),
+                  "to": target.get("rename_to"), "done": False, "message": ""}
+        if cancelled or errors:
+            record["message"] = ("Left as-is: the copy did not finish cleanly, so the "
+                                 "folder keeps its original name.")
+        elif not staging.exists():
+            record["message"] = "Source folder no longer exists"
+        elif staging == final:
+            record["done"] = True
+        elif final.exists():
+            record["message"] = f"“{final.name}” already exists — renamed nothing."
+            errors.append(record["message"])
+        else:
+            try:
+                staging.rename(final)
+                record["done"] = True
+            except OSError as e:
+                record["message"] = f"Could not rename the session folder: {e}"
+                errors.append(record["message"])
+        renames.append(record)
+
+    # Report the post-rename location, which is what the operator will look for.
+    for item in results:
+        if item.get("final_dst") and any(r["done"] for r in renames):
+            item["dst"] = item["final_dst"]
+
     ok = sum(1 for i in results if i["status"] == "done")
     return {
         "completed": not cancelled,
@@ -393,9 +490,20 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
         "failed": sum(1 for i in results if i["status"] == "failed"),
         "bytes": done_bytes,
         "seconds": round(time.time() - started, 1),
+        "renames": renames,
         "errors": errors,
         "items": results,
     }
+
+
+def _verify_moved(dst: Path, expected: int) -> str | None:
+    """Confirm a same-volume move actually produced the file it promised."""
+    try:
+        size = dst.stat().st_size
+    except OSError as e:
+        return f"Moved file is missing: {e}"
+    return None if size == expected else \
+        f"Moved file is {size} bytes, expected {expected}"
 
 
 def _verify(src: Path, dst: Path, mode: str) -> str | None:

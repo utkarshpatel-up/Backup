@@ -16,7 +16,7 @@ import threading
 import traceback
 from pathlib import Path
 
-from . import __version__, compare, ingest, naming, probe, report, sources
+from . import __version__, compare, ingest, naming, probe, report, sources, structure
 from .hashing import algorithm
 
 _LOCK = threading.Lock()
@@ -79,6 +79,17 @@ def m_classify(p, req_id):
     emit({"stage": "classify", "done": len(roots), "total": len(roots)})
     return {"reports": [r.to_dict() for r in reports],
             "assignment": probe.assign_roles(reports)}
+
+
+def m_detect_structure(p, _id):
+    """Find the session folder a source already carries, and what it needs."""
+    d = structure.detect(p["root"]).to_dict()
+    master = structure.pick_master(d)
+    d["suggested_master"] = master
+    d["rename"] = structure.planned_rename(
+        d, master.get("duration") if master else None)
+    d["unfiled"] = structure.unfiled_clips(d, master.get("path") if master else None)
+    return d
 
 
 def m_scan(p, req_id):

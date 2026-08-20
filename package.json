@@ -1,0 +1,26 @@
+{
+  "name": "video-ingest",
+  "version": "1.0.0",
+  "description": "Organise camera-original footage into the house folder structure",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "bundle:python": "python3 scripts/build_python.py",
+    "dist": "npm run bundle:python && electron-builder",
+    "dist:mac": "npm run bundle:python && electron-builder --mac",
+    "dist:win": "npm run bundle:python && electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.house.videoingest",
+    "productName": "Video Ingest",
+    "files": ["electron/**/*", "renderer/**/*", "package.json"],
+    "extraResources": [{ "from": "dist-python", "to": "python" }],
+    "mac": { "category": "public.app-category.video", "target": ["dmg", "zip"] },
+    "win": { "target": ["nsis"] },
+    "linux": { "target": ["AppImage"] }
+  }
+}

@@ -1,0 +1,3 @@
+# The engine runs on the standard library alone. These are optional:
+xxhash>=3.4        # ~5x faster checksums than the stdlib fallback
+pyinstaller>=6.0   # only needed to build a distributable bundle

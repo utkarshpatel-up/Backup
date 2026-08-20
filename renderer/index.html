@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>Video Ingest</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="brand">
+      <h1>Video Ingest</h1>
+      <p>Camera originals &rarr; house structure</p>
+    </div>
+    <ul class="steps" id="steps"></ul>
+    <div class="engine" id="engine">
+      <span class="dot" id="engineDot"></span>
+      <span id="engineText">Starting engine&hellip;</span>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h2 id="stepTitle">Sources</h2>
+        <p id="stepHint"></p>
+      </div>
+      <div class="actions" id="topActions"></div>
+    </header>
+    <div class="content" id="content"></div>
+    <div class="footer-actions" id="footer"></div>
+  </main>
+
+  <div class="toast-wrap" id="toasts"></div>
+  <script src="app.js"></script>
+</body>
+</html>

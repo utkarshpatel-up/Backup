@@ -56,6 +56,11 @@ def m_list_volumes(_p, _id):
     return {"volumes": sources.list_volumes()}
 
 
+def m_find_camera_cards(p, _id):
+    """Locate mounted camera cards (Canon XF and friends) and their clips."""
+    return sources.find_camera_cards(p.get("layouts"))
+
+
 def m_inspect_zip(p, _id):
     return sources.inspect_zip(p["path"])
 

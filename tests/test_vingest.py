@@ -914,3 +914,60 @@ class TestSingleDayPlans:
             "master": str(drive / "Program.mov"),
             "cams": {"1": [str(drive / "a.mov"), str(drive / "b.mov")]}}]})
         assert not any("more than one day" in w for w in plan["warnings"])
+
+
+class TestCameraCards:
+    """Canon XF cards mount as CanonA_0006 with clips at XFVC/REEL_0006."""
+
+    def _mount(self, tmp_path, name, reel, count=2, inner=("XFVC", "REEL_")):
+        reel_dir = tmp_path / name / inner[0] / f"{inner[1]}{reel}"
+        reel_dir.mkdir(parents=True)
+        for i in range(count):
+            (reel_dir / f"A_{reel}C{i}H260820_CANON.MP4").write_bytes(b"x" * 10)
+        return tmp_path / name
+
+    def _find(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sources, "list_volumes", lambda: [
+            {"path": str(p), "label": p.name}
+            for p in sorted(tmp_path.iterdir()) if p.is_dir()])
+        return sources.find_camera_cards()
+
+    def test_cards_are_found_whatever_their_number(self, tmp_path, monkeypatch):
+        self._mount(tmp_path, "CanonA_0006", "0006")
+        self._mount(tmp_path, "CanonB_0021", "0021", count=3)
+        r = self._find(tmp_path, monkeypatch)
+        assert r["card_count"] == 2
+        assert r["file_count"] == 5
+        assert [c["label"] for c in r["cards"]] == ["CanonA_0006", "CanonB_0021"]
+
+    def test_the_card_letter_becomes_the_cam_number(self, tmp_path, monkeypatch):
+        for letter, n in (("A", "0006"), ("B", "0021"), ("C", "0005")):
+            self._mount(tmp_path, f"Canon{letter}_{n}", n)
+        cams = {c["label"]: c["suggested_cam"] for c in self._find(tmp_path, monkeypatch)["cards"]}
+        assert cams == {"CanonA_0006": 1, "CanonB_0021": 2, "CanonC_0005": 3}
+
+    def test_the_path_is_matched_case_insensitively(self, tmp_path, monkeypatch):
+        self._mount(tmp_path, "CanonA_0006", "0006", inner=("xfvc", "reel_"))
+        assert self._find(tmp_path, monkeypatch)["card_count"] == 1
+
+    def test_a_volume_without_the_structure_is_ignored(self, tmp_path, monkeypatch):
+        (tmp_path / "CanonD_9999" / "XFVC").mkdir(parents=True)      # no REEL_ inside
+        (tmp_path / "NotACard" / "DCIM" / "100CANON").mkdir(parents=True)
+        (tmp_path / "NotACard" / "DCIM" / "100CANON" / "x.MP4").write_bytes(b"x")
+        assert self._find(tmp_path, monkeypatch)["card_count"] == 0
+
+    def test_junk_files_are_not_imported(self, tmp_path, monkeypatch):
+        card = self._mount(tmp_path, "CanonA_0006", "0006")
+        reel = card / "XFVC" / "REEL_0006"
+        (reel / ".DS_Store").write_bytes(b"x")
+        (reel / "notes.txt").write_bytes(b"x")
+        r = self._find(tmp_path, monkeypatch)
+        names = [Path(f).name for f in r["cards"][0]["files"]]
+        assert all(n.endswith(".MP4") for n in names) and len(names) == 2
+
+    def test_clips_from_several_reels_on_one_card_are_all_taken(self, tmp_path, monkeypatch):
+        card = self._mount(tmp_path, "CanonA_0006", "0006")
+        second = card / "XFVC" / "REEL_0007"
+        second.mkdir()
+        (second / "extra.MP4").write_bytes(b"x")
+        assert self._find(tmp_path, monkeypatch)["cards"][0]["file_count"] == 3

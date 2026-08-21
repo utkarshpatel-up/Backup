@@ -13,7 +13,7 @@ const state = {
   template: null,       // structure + name imported from a zip/folder of empty folders
   extraFiles: {},       // sourcePath -> files the operator picked by hand
   byDate: null,         // last-modified breakdown of the loaded footage
-  dateFilter: null,     // when set, only footage from this day is in play
+  activeDay: null,      // the day last bulk-selected, for highlighting only
   masters: {},          // sourcePath -> chosen master file path
   masterSource: null,   // the drive the master was picked from
   pairing: null,
@@ -32,7 +32,7 @@ const STEPS = [
   { key: 'sources', label: 'Sources', title: 'Sources',
     hint: 'Import the structure zip, then add the drives holding the footage and set where each one writes.' },
   { key: 'session', label: 'Folder', title: 'Session folder',
-    hint: 'The folder name comes from the structure. Pick the footage — files from the session date are suggested.' },
+    hint: 'The folder name comes from the structure. Load the footage — clips from the session date are pre-selected.' },
   { key: 'cameras', label: 'Cameras', title: 'Camera assignment',
     hint: 'Choose which clip belongs to which cam. The same choice is mirrored onto the other SSD.' },
   { key: 'copy', label: 'Copy', title: 'Review and copy',
@@ -177,23 +177,40 @@ function allFiles(src) {
 
 /** The files actually in play — narrowed to the suggested day when one is active. */
 /**
- * The clips in play for a source.
+ * Every clip loaded for a source.
  *
- * The day filter is absolute: a session is one day's footage, so nothing from
- * another day is ever in play, however it was loaded. Files picked by hand are
- * kept in `extraFiles` rather than discarded, so switching the day reveals them
- * — but they are not silently smuggled into the plan.
+ * Nothing is hidden. What gets copied is decided on the Cameras page — a clip
+ * with a cam number is filed, a clip marked Skip is not — so the shoot date only
+ * chooses the DEFAULT for each clip, never whether you can see it. Hiding files
+ * meant an "Add files…" of footage from another day looked like it did nothing.
  */
 function filePool(src) {
-  const all = allFiles(src);
-  if (!state.dateFilter) return all;
-  return all.filter((f) => f.shoot_date === state.dateFilter);
+  return allFiles(src);
 }
 
-/** Files loaded for a source but excluded by the current day filter. */
-function heldBack(src) {
-  if (!state.dateFilter) return [];
-  return allFiles(src).filter((f) => f.shoot_date !== state.dateFilter);
+/** Clips loaded but not selected for this session. */
+function skipped(src) {
+  return filePool(src).filter((f) => state.assign[f.path] === 'skip');
+}
+
+/** Clips that will actually be filed. */
+function selected(src) {
+  return filePool(src).filter((f) => typeof state.assign[f.path] === 'number');
+}
+
+/**
+ * The default cam for a freshly loaded clip.
+ *
+ * Clips from the session date the folder states are selected; anything else
+ * starts on Skip, visible and one click from being included. A clip picked by
+ * hand is an explicit request, so it is selected whatever day it carries — the
+ * drives do not always preserve shoot timestamps through a copy.
+ */
+function defaultAssignmentFor(file) {
+  if (file.manual) return 1;
+  const day = sessionDate();
+  if (!day || !file.shoot_date) return 1;
+  return file.shoot_date === day ? 1 : 'skip';
 }
 
 /** Every path currently in play, across every footage drive. */
@@ -614,8 +631,23 @@ function ensureDefaultAssignments() {
   const master = chosenMaster();
   for (const f of filePool(src)) {
     if (master && f.path === master.path) continue;
-    if (state.assign[f.path] === undefined) state.assign[f.path] = 1;
+    if (state.assign[f.path] === undefined) {
+      state.assign[f.path] = defaultAssignmentFor(f);
+    }
   }
+}
+
+/** Select every clip from one day and skip the rest — the day buttons' action. */
+function selectDay(day) {
+  const src = primarySource();
+  if (!src) return;
+  const master = chosenMaster();
+  for (const f of filePool(src)) {
+    if (master && f.path === master.path) continue;
+    state.assign[f.path] = (!day || f.shoot_date === day) ? 1 : 'skip';
+  }
+  state.activeDay = day || null;
+  state.plan = null;
 }
 
 /**
@@ -686,16 +718,16 @@ function renderTemplateFolder(src) {
       drive are matched to it later by Mirror.</p>
     ${footageSources().map((f) => {
       const loaded = allFiles(f).length;
-      const inPlay = filePool(f).length;
-      const held = heldBack(f).length;
+      const inPlay = selected(f).length;
+      const held = skipped(f).length;
       return `<div class="source-card" style="padding:10px 12px">
         <div class="icon">${f.kind === 'zip' ? '🗜️' : f.kind === 'folder' ? '📁' : '💾'}</div>
         <div class="body">
           <div class="name">${esc(f.label)}
             <span class="badge ${f.role}">${esc(f.role)}</span>
-            ${loaded ? `<span class="badge ${inPlay ? 'ok' : 'warn'}">${inPlay} clip(s) in this
-              session</span>` : '<span class="badge warn">nothing loaded</span>'}
-            ${held ? `<span class="badge warn">${held} from other days, not used</span>` : ''}</div>
+            ${loaded ? `<span class="badge ${inPlay ? 'ok' : 'warn'}">${inPlay} selected</span>`
+              : '<span class="badge warn">nothing loaded</span>'}
+            ${held ? `<span class="badge">${held} on Skip</span>` : ''}</div>
           <div class="path">${esc(f.path)}</div>
         </div>
         <div class="row">
@@ -850,6 +882,57 @@ function wireSession() {
   }
 }
 
+/**
+ * Pull clips straight off mounted camera cards.
+ *
+ * Canon XF cards mount as CanonA_0006 / CanonB_0021 and keep their clips at
+ * XFVC/REEL_<n>, where the number differs per card. The letter identifies the
+ * body, so CanonA lands in Cam-01, CanonB in Cam-02, and so on — already
+ * assigned, and still changeable per clip.
+ */
+async function importCameraCards() {
+  const src = primarySource();
+  if (!src) return;
+  try {
+    const r = await call('find_camera_cards', {}, { label: 'Looking for camera cards' });
+    if (!r.card_count) {
+      return toast(`No camera cards mounted. Looked for ${r.searched.join(' and ')}.`, 'err');
+    }
+
+    const camByPath = new Map();
+    const paths = [];
+    for (const c of r.cards) {
+      for (const f of c.files) { paths.push(f); camByPath.set(f, c.suggested_cam); }
+    }
+    if (!paths.length) {
+      return toast(`Found ${r.card_count} card(s) but no clips inside them.`, 'err');
+    }
+
+    const probed = await call('add_files', { paths, session_date: sessionDate() },
+      { label: 'Reading card clips' });
+
+    const existing = state.extraFiles[src.path] || [];
+    const seen = new Set(existing.map((f) => f.path));
+    state.extraFiles[src.path] = existing.concat(
+      probed.files.filter((f) => !seen.has(f.path)).map((f) => ({ ...f, manual: true })));
+
+    await applyDateSuggestion(src);
+    // Set the cams after the suggestion runs, so the card's letter wins.
+    for (const f of probed.files) {
+      const cam = camByPath.get(f.path);
+      if (cam) state.assign[f.path] = cam;
+    }
+    state.camCount = Math.max(state.camCount,
+      ...r.cards.map((c) => c.suggested_cam || 0));
+    state.plan = null;
+
+    toast(`${probed.count} clip(s) from ${r.card_count} card(s) — `
+      + r.cards.map((c) => `${c.label} → Cam-${String(c.suggested_cam || 1).padStart(2, '0')}`)
+          .join(', '), 'ok');
+    render();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 /** Add footage the operator picked by hand, for when the structure carries none. */
 async function addFootage(kind, target = null) {
   const src = target || primarySource();
@@ -872,18 +955,10 @@ async function addFootage(kind, target = null) {
     pruneAssignments();
     ensureDefaultAssignments();
 
-    // Report against the day filter, so "added" never means "added and hidden".
-    const inPlay = added.filter((f) => !state.dateFilter
-      || f.shoot_date === state.dateFilter).length;
-    const held = added.length - inPlay;
-    if (!inPlay && held) {
-      toast(`None of those ${held} clip(s) are from ${fmtDay(state.dateFilter)} — `
-        + `nothing added to this session. Pick another day below to use them.`, 'err');
-    } else {
-      toast(held
-        ? `Added ${inPlay} clip(s) from ${src.label}. ${held} other-day clip(s) ignored.`
-        : `Added ${inPlay} clip(s) from ${src.label}.`, 'ok');
-    }
+    toast(added.length
+      ? `Added ${added.length} clip(s) from ${src.label} — selected and ready to assign.`
+      : `Those ${r.count} clip(s) were already loaded from ${src.label}.`,
+      added.length ? 'ok' : 'warn');
     render();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -903,8 +978,8 @@ async function applyDateSuggestion(_src) {
   try {
     state.byDate = await call('group_dates',
       { files: all, session_date: sessionDate() });
-    if (state.byDate.matched_session_date && state.dateFilter === null) {
-      state.dateFilter = state.byDate.suggested_date;
+    if (state.byDate.matched_session_date && state.activeDay === null) {
+      state.activeDay = state.byDate.suggested_date;
     }
     if (!state.masterSource) {
       const best = masterCandidates().reduce(
@@ -922,35 +997,35 @@ async function applyDateSuggestion(_src) {
 function dateSuggestion() {
   const g = state.byDate;
   if (!g || !g.dates.length) return '';
-  const active = state.dateFilter;
+  const active = state.activeDay;
   const suggested = g.dates.find((d) => d.date === g.suggested_date);
+
+  const buttons = `
+    <div class="row" style="margin-top:8px">
+      ${g.dates.map((d) => `<button class="sm ${active === d.date ? 'primary' : ''}"
+        data-day="${esc(d.date)}">${esc(fmtDay(d.date))} · ${d.count}${
+          d.is_session_date ? ' ★' : ''}</button>`).join('')}
+      <button class="sm ${active ? '' : 'primary'}" data-day="">Select all · ${
+        g.dates.reduce((n, d) => n + d.count, 0)}</button>
+    </div>`;
 
   if (g.date_mismatch) {
     return `
-      <div class="note err">
-        <b>None of this footage was shot on ${esc(fmtDay(g.session_date))}</b>, the date the
-        folder name states. Check you have the right drive, or pick a day yourself.
-        <div class="row" style="margin-top:8px">
-          ${g.dates.map((d) => `<button class="sm ${active === d.date ? 'primary' : ''}"
-            data-day="${esc(d.date)}">${esc(fmtDay(d.date))} · ${d.count}</button>`).join('')}
-          <button class="sm ${active ? '' : 'primary'}" data-day="">All days</button>
-        </div>
+      <div class="note warn">
+        <b>Nothing here carries a timestamp from ${esc(fmtDay(g.session_date))}</b>, the date
+        the folder states — drives often lose the original times when footage is copied.
+        Everything is loaded and selected; choose a day below to narrow it, or just use the
+        Cameras page.${buttons}
       </div>`;
   }
   if (!suggested || g.dates.length < 2) return '';
 
   return `
     <div class="note ${g.matched_session_date ? 'ok' : 'warn'}">
-      <b>${suggested.count} file(s) were modified on ${esc(fmtDay(g.suggested_date))}</b>
-      — ${esc(g.suggestion_basis)}. The drive also holds
-      ${g.other_count} file(s) from other days.
-      <div class="row" style="margin-top:8px">
-        ${g.dates.map((d) => `<button class="sm ${active === d.date ? 'primary' : ''}"
-          data-day="${esc(d.date)}">${esc(fmtDay(d.date))} · ${d.count}${
-            d.is_session_date ? ' ★' : ''}</button>`).join('')}
-        <button class="sm ${active ? '' : 'primary'}" data-day="">All days · ${
-          g.dates.reduce((n, d) => n + d.count, 0)}</button>
-      </div>
+      <b>${suggested.count} clip(s) carry ${esc(fmtDay(g.suggested_date))}</b>
+      — ${esc(g.suggestion_basis)} — and are selected. The other
+      ${g.other_count} are loaded but set to Skip.
+      Clicking a day selects that day and skips the rest; nothing is ever hidden.${buttons}
     </div>`;
 }
 
@@ -963,10 +1038,7 @@ function fmtDay(iso) {
 
 function wireDayButtons() {
   document.querySelectorAll('[data-day]').forEach((b) => b.addEventListener('click', () => {
-    state.dateFilter = b.dataset.day || null;
-    state.plan = null;
-    pruneAssignments();
-    ensureDefaultAssignments();
+    selectDay(b.dataset.day || null);
     render();
   }));
 }
@@ -1082,6 +1154,7 @@ function renderCameras() {
       (${esc(fmtDur(master.duration))}) — stays at the top of the session folder and sets
       the Dur- token. Change it on the Folder step.</div>` : ''}
     <div class="row" style="margin-bottom:12px">
+      <button class="sm primary" id="btnCards">Import camera cards</button>
       <button class="sm" id="btnAddFiles">Add files…</button>
       <button class="sm" id="btnAddFolder2">Add a folder…</button>
       <button class="sm" id="btnAutoGroup">Auto-suggest by camera</button>
@@ -1110,6 +1183,7 @@ function wireCameras() {
   $('btnRescanFiles')?.addEventListener('click', () => scanSource(primarySource(), true));
   $('btnAddFiles')?.addEventListener('click', () => addFootage('files'));
   $('btnAddFolder2')?.addEventListener('click', () => addFootage('folder'));
+  $('btnCards')?.addEventListener('click', importCameraCards);
   wireDayButtons();
 
   document.querySelectorAll('[data-assign]').forEach((b) => b.addEventListener('click', () => {
@@ -1187,8 +1261,7 @@ async function mirrorToSecondary() {
     if (!primary.length) return toast(`No footage loaded for ${a.label}.`, 'err');
     if (!secondary.length) {
       return toast(
-        `No footage on ${b.label}${state.dateFilter
-          ? ` from ${fmtDay(state.dateFilter)} — try another day or All days.` : '.'}`,
+        `No footage loaded for ${b.label}. Scan it or add files on the Folder step first.`,
         'err');
     }
     state.pairing = await call('pair', { primary, secondary },
@@ -1302,9 +1375,8 @@ function renderCopy() {
         <div><b>${p.item_count} file(s) to file</b> · ${fmtBytes(p.total_bytes)} ·
           mode <b>${esc(p.mode)}</b> · verify <b>${esc(p.verify)}</b>
           ${(p.renames || []).length ? `· <b>${p.renames.length} folder rename(s)</b>` : ''}
-          ${state.dateFilter
-            ? `<br><span class="hint">Only clips shot on
-               ${esc(fmtDay(state.dateFilter))} are included.</span>` : ''}</div>
+          <br><span class="hint">Only the clips you assigned on the Cameras page are
+            included — anything left on Skip is untouched.</span></div>
         <div class="spacer"></div>
         <button class="sm" id="btnReplan">Rebuild plan</button>
         <button class="primary" id="btnRun" ${state.busy ? 'disabled' : ''}>

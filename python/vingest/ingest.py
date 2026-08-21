@@ -299,6 +299,15 @@ def build_plan(spec: dict, progress=None) -> dict:
             plan.warnings.append(
                 "Move crosses volumes — files will be copied then deleted, which is slow.")
 
+        if spec.get("mode") == "move":
+            outside = {Path(i.src).parts[:3] for i in plan.items
+                       if not _same_volume(Path(i.src).parent, Path(t["source_root"]))}
+            if outside:
+                plan.warnings.append(
+                    f"{len(outside)} clip(s) come from another volume — a camera card, most "
+                    f"likely. In move mode they are DELETED from it once copied. Switch to "
+                    f"copy if you want the cards left intact.")
+
         if in_place and plan.rename_to:
             clash = session_path
             if clash.exists() and os.path.normcase(str(clash)) != os.path.normcase(str(staging_path)):

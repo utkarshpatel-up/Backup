@@ -71,40 +71,41 @@ folder, the app finds it — by the "Clips for Insert" it holds, failing that a
 If neither applies, it offers to build a folder from a name you type. That is
 the only path where typing is involved.
 
-### Which files belong to this session
+### What gets copied
 
-A working drive holds more than one shoot. The session folder's name already
-states the shoot date (`Dt-16-Aug-26`), so once footage is loaded the app buckets
-it by last-modified day and suggests the bucket matching that date:
+**The Cameras page is the decision.** A clip with a cam number is filed; a clip
+on **Skip** is not. Nothing else — no hidden filter, no rule operating behind
+the page. Everything loaded stays visible and one click from being included.
+
+The shoot date only chooses each clip's **default**. The session folder states
+its date (`Dt-20-Aug-26`), so clips carrying that timestamp arrive selected and
+clips from other days arrive on Skip:
 
 ```
-2026-08-16   4 files   ★ session date     ← suggested
-2026-08-18   2 files                        different shoot
+2026-08-20   8 clips   ★ session date     selected
+2026-06-17  24 clips                      loaded, on Skip
 ```
 
-The suggestion is applied automatically when it matches, and every other day
-stays one click away — nothing is hidden, and the day buttons show the full
-breakdown on the Folder page. Clips filtered out are also unassigned from any
-cam, so what you see is exactly what gets copied.
+Clicking a day selects that day and skips the rest; **Select all** takes
+everything. A clip you add by hand is always selected, whatever date it carries
+— drives frequently lose the original timestamps when footage is copied between
+them, so a hand-picked file is trusted over its own metadata.
 
-**The day filter is absolute.** A session is one day's footage, so nothing shot
-on another day is ever in play — however it was loaded, hand-picked included.
-Files you picked are kept rather than discarded, so switching the day reveals
-them, and adding clips from the wrong day says exactly that instead of reporting
-success and showing nothing.
+As a backstop the engine warns if a plan's clips span more than one day.
 
-The plan is built from the clips currently in play, never from the record of
-what you clicked. A clip assigned to a cam and then excluded by the day filter is
-dropped from the assignment, so it cannot resurface in the copy. As a backstop
-the engine also warns if a plan's clips span more than one day.
+### Importing camera cards
 
-Two cases it deliberately does **not** guess:
+**Import camera cards** on the Cameras page finds mounted cards and pulls their
+clips in one step. Canon XF cards mount as `CanonA_0006`, `CanonB_0021` and hold
+their footage at `XFVC/REEL_<n>`; the trailing number differs per card and is not
+matched on — the folder structure identifies the card. Matching is
+case-insensitive and several reels on one card are all collected.
 
-* If the folder name states no date, it falls back to the busiest day and says
-  that is what it did.
-* If the folder states a date and **nothing** on the source matches it, it makes
-  no suggestion at all and says so — that mismatch usually means the wrong drive
-  is plugged in, and quietly proposing another day's shoot would bury it.
+The **letter identifies the body**, so `CanonA` lands in Cam-01, `CanonB` in
+Cam-02, `CanonC` in Cam-03 — already assigned, and still changeable per clip.
+
+Other layouts can be added to `CARD_LAYOUTS` in `sources.py`: each is a volume
+prefix plus the folder path inside it.
 
 ### Sources and destinations
 
@@ -145,11 +146,11 @@ remembers the choice.
    against. Only clips long enough to plausibly be the program recording are
    listed here, since a shoot's short camera clips would bury it; the full list
    is one click away. Then choose move vs copy.
-3. **Cameras** — every clip in play listed with length, codec, resolution and
-   last-modified time. Clips default to **Cam-01**, so a single-camera shoot
-   needs no clicks at all; **Auto-suggest by camera** splits them by resolution,
-   frame rate and codec when more than one body was rolling. Then **Mirror** to
-   apply the same assignment to the other drive.
+3. **Cameras** — every loaded clip with length, codec, resolution and
+   last-modified time, and the cam it goes to. **Import camera cards** pulls
+   clips straight off mounted cards, pre-assigned by card letter;
+   **Auto-suggest by camera** splits loose clips by resolution, frame rate and
+   codec. Then **Mirror** to apply the same assignment to the other drive.
    *Auto-suggest* groups by resolution + fps + codec as a starting point.
 
 4. **Copy** — the full plan is shown first: the folder rename, and every clip
@@ -234,12 +235,13 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-106 tests covering duration formatting, the "filenames are never changed"
+112 tests covering duration formatting, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
 rename-only-on-success guarantee, structure-template import (both zip layouts,
 plus path-escape refusal), per-source destinations, the same-day footage
-suggestion and its two refusal cases, mirror scoping, every `Dur-` token shape
-and its carry-over, exFAT case-insensitive de-duplication,
+suggestion and its two refusal cases, camera-card discovery, mirror scoping,
+every `Dur-` token shape and its carry-over, exFAT case-insensitive
+de-duplication,
 cross-drive pairing, `.mov`/`.mp4` tolerance, comparison severity rules, and the
 cancel-leaves-no-partial-file guarantee. Tests needing real media are skipped
 automatically when ffmpeg is absent.

@@ -275,3 +275,112 @@ def eject(path: str) -> dict:
         detail = getattr(e, "stderr", b"")
         msg = detail.decode(errors="replace").strip() if detail else str(e)
         return {"ejected": False, "path": path, "error": msg or "Eject failed"}
+
+
+# ------------------------------------------------------- camera card layouts
+
+# Canon XF cards mount as CanonA_0006 / CanonB_0012 and hold their clips at
+# XFVC/REEL_<n>. The trailing number differs per card and is not matched on —
+# the structure is what identifies the card, and the letter says which camera
+# body it came from.
+CARD_LAYOUTS = [
+    {
+        "name": "Canon XF",
+        "volume_prefix": "Canon",
+        "inner": ["XFVC", "REEL_*"],
+        "letter_re": r"^canon(?P<letter>[a-z])",
+    },
+]
+
+
+def _children_matching(parent: Path, pattern: str) -> list[Path]:
+    """Sub-folders of `parent` matching `pattern`, case-insensitively.
+
+    A trailing '*' matches any suffix, so 'REEL_*' finds REEL_0006 whatever the
+    card's number happens to be.
+    """
+    pat = pattern.lower()
+    out: list[Path] = []
+    try:
+        for child in parent.iterdir():
+            if not child.is_dir():
+                continue
+            name = child.name.lower()
+            if pat.endswith("*"):
+                if name.startswith(pat[:-1]):
+                    out.append(child)
+            elif name == pat:
+                out.append(child)
+    except OSError:
+        return []
+    return sorted(out)
+
+
+def _walk_layout(root: Path, segments: list[str]) -> list[Path]:
+    current = [root]
+    for seg in segments:
+        nxt: list[Path] = []
+        for parent in current:
+            nxt.extend(_children_matching(parent, seg))
+        current = nxt
+        if not current:
+            return []
+    return current
+
+
+def find_camera_cards(layouts: list[dict] | None = None) -> dict:
+    """Find mounted camera cards and the clips inside them.
+
+    Looks for volumes whose name starts with the layout's prefix, then walks the
+    layout's folder structure. The letter in a card's name (CanonA / CanonB) is
+    reported as a cam number, since that is how the bodies are labelled.
+    """
+    import re as _re
+
+    layouts = layouts or CARD_LAYOUTS
+    cards: list[dict] = []
+
+    for vol in list_volumes():
+        vol_path = Path(vol["path"])
+        name = vol_path.name
+        for layout in layouts:
+            if not name.lower().startswith(layout["volume_prefix"].lower()):
+                continue
+            reels = _walk_layout(vol_path, layout["inner"])
+            if not reels:
+                continue
+
+            files: list[Path] = []
+            for reel in reels:
+                try:
+                    files.extend(p for p in sorted(reel.iterdir())
+                                 if p.is_file() and is_junk(p) is False
+                                 and p.suffix.lower() in VIDEO_EXTS)
+                except OSError:
+                    continue
+
+            cam = None
+            m = _re.match(layout.get("letter_re", ""), name.lower()) \
+                if layout.get("letter_re") else None
+            if m and m.group("letter"):
+                cam = ord(m.group("letter")) - ord("a") + 1
+
+            cards.append({
+                "volume": str(vol_path),
+                "label": name,
+                "layout": layout["name"],
+                "reels": [str(r) for r in reels],
+                "suggested_cam": cam,
+                "file_count": len(files),
+                "bytes": sum(f.stat().st_size for f in files if f.exists()),
+                "files": [str(f) for f in files],
+            })
+            break
+
+    cards.sort(key=lambda c: c["label"].lower())
+    return {
+        "cards": cards,
+        "card_count": len(cards),
+        "file_count": sum(c["file_count"] for c in cards),
+        "searched": [l["volume_prefix"] + "* / " + "/".join(l["inner"]) for l in layouts],
+    }

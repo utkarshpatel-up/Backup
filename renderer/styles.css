@@ -236,7 +236,10 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   gap: 10px; flex-wrap: wrap;
 }
 .drive-col-head .name { font-weight: 650; }
-.drive-col table { table-layout: fixed; }
+.drive-col table { table-layout: fixed; width: 100%; }
+.drive-col th, .drive-col td { padding: 6px 8px; }
+.drive-col td.chk, .drive-col th.chk { width: 32px; text-align: center; padding: 6px 2px; }
+.drive-col td.chk input { width: 16px; height: 16px; cursor: pointer; margin: 0; }
 .drive-col td.mono {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

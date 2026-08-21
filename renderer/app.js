@@ -302,8 +302,23 @@ function suggestedMastersFor(src) {
   const day = sessionDate();
   return filePool(src)
     .filter((f) => parentDir(f.path) === root)          // sits at the drive root
-    .filter((f) => !day || f.shoot_date === day)        // matches the folder's date
+    .filter((f) => !day || f.shoot_date === day)        // modified on the folder's date
+    .filter((f) => !nameStatesOtherDate(f, day))        // and its own name agrees
     .sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
+}
+
+/** A file whose own name carries a Dt- token for a different day than `day`. */
+function nameStatesOtherDate(file, day) {
+  if (!day) return false;
+  const m = /\bDt-(\d{1,2})-([A-Za-z]{3})-(\d{2,4})\b/.exec(file.name || '');
+  if (!m) return false;
+  const M = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8,
+              sep: 9, oct: 10, nov: 11, dec: 12 };
+  const mon = M[m[2].toLowerCase()];
+  if (!mon) return false;
+  let yr = parseInt(m[3], 10); if (yr < 100) yr += 2000;
+  const iso = `${yr}-${String(mon).padStart(2, '0')}-${String(parseInt(m[1], 10)).padStart(2, '0')}`;
+  return iso !== day;
 }
 
 /** Pre-select each drive's root/date masters, leaving manual picks alone. */
@@ -317,6 +332,14 @@ function suggestMasters() {
       state.masterSource = state.masterSource || f.path;
     }
   }
+}
+
+/** True if a master looks like it belongs to another day (by mtime or by name). */
+function offSessionDate(file) {
+  const day = sessionDate();
+  if (!day) return false;
+  if (file.shoot_date && file.shoot_date !== day) return true;
+  return nameStatesOtherDate(file, day);
 }
 
 function masterTotalFor(src) {
@@ -405,8 +428,8 @@ function renderSources() {
           ${fmtBytes(v.total_bytes - v.free_bytes)} used of ${fmtBytes(v.total_bytes)} ·
           ${fmtBytes(v.free_bytes)} free</div>
       </div>
-      <button class="sm ${added ? '' : 'primary'}" data-add="${esc(v.path)}"
-        data-label="${esc(v.label)}">${added ? 'Added' : 'Use as source'}</button>
+      <button class="sm ${added ? 'danger' : 'primary'}" data-add="${esc(v.path)}"
+        data-label="${esc(v.label)}">${added ? 'Remove' : 'Use as source'}</button>
     </div>`);
   }
   c.push(`</div>`);
@@ -472,8 +495,18 @@ function wireSources() {
   $('btnAddZip')?.addEventListener('click', addZipSource);
   $('btnClassify')?.addEventListener('click', classifySources);
 
-  document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () =>
-    addSource(b.dataset.add, b.dataset.label, 'volume')));
+  document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
+    // The button toggles: "Use as source" adds it, "Added" takes it back off.
+    const existing = state.sources.find((s) => s.path === b.dataset.add);
+    if (existing) {
+      if (existing.role === 'template') state.template = null;
+      state.sources = state.sources.filter((s) => s.path !== b.dataset.add);
+      state.plan = null;
+      render();
+    } else {
+      addSource(b.dataset.add, b.dataset.label, 'volume');
+    }
+  }));
   document.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', () => {
     const gone = state.sources.find((s) => s.path === b.dataset.remove);
     if (gone && gone.role === 'template') state.template = null;
@@ -822,12 +855,16 @@ function renderDriveColumn(f) {
         esc(fmtDurAuto(total))}${masters.length > 1 ? ` · ${masters.length} clips` : ''}</span>` : ''}
     </div>
     ${loaded ? `
-      <div class="scroll" style="max-height:300px"><table><thead><tr>
-        <th style="width:1%"></th><th>Master clip</th>
+      <div class="scroll" style="max-height:300px"><table>
+        <colgroup><col style="width:32px" /><col />
+          <col style="width:70px" /><col style="width:88px" /></colgroup>
+        <thead><tr>
+        <th class="chk"></th><th>Master clip</th>
         <th class="num">Length</th><th class="num">Size</th></tr></thead>
       <tbody>${shown.map((c) => `
-        <tr><td><input type="checkbox" data-master="${esc(c.path)}" data-msrc="${esc(f.path)}"
-              ${masters.some((m) => m.path === c.path) ? 'checked' : ''} style="width:auto" /></td>
+        <tr><td class="chk"><input type="checkbox" data-master="${esc(c.path)}"
+              data-msrc="${esc(f.path)}"
+              ${masters.some((m) => m.path === c.path) ? 'checked' : ''} /></td>
           <td class="mono" title="${esc(c.name)}">${esc(c.name)}</td>
           <td class="num">${esc(fmtClock(c.duration))}</td>
           <td class="num">${fmtBytes(c.size)}</td></tr>`).join('')}
@@ -837,11 +874,11 @@ function renderDriveColumn(f) {
           — short camera clips hidden.
           <a href="#" data-allmasters="1">${state.showAllMasters
             ? 'likely masters only' : 'show all'}</a></p>` : ''}
-      ${masters.filter((m) => sessionDate() && m.shoot_date && m.shoot_date !== sessionDate()).length ? `
+      ${masters.filter((m) => offSessionDate(m)).length ? `
         <div class="note warn" style="margin:8px 0 0">
-          ${masters.filter((m) => sessionDate() && m.shoot_date !== sessionDate())
-            .map((m) => esc(m.name)).join(', ')} — not from ${esc(fmtDay(sessionDate()))}.
-          Master clips should be this session's recording.</div>` : ''}
+          ${masters.filter((m) => offSessionDate(m)).map((m) => esc(m.name)).join(', ')}
+          — not from ${esc(fmtDay(sessionDate()))}. Master clips should be this session's
+          recording.</div>` : ''}
       ${masters.length ? `
         <p class="hint" style="margin:10px 0 4px">Renamed after the folder:</p>
         <div class="preview-name" style="font-size:11px">${masters.map((m, i) => `🎬 ${

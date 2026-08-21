@@ -39,6 +39,9 @@ class Detected:
     cams: dict = field(default_factory=dict)      # "1" -> [paths already filed]
     master_candidates: list = field(default_factory=list)
     loose_clips: list = field(default_factory=list)
+    tree: list = field(default_factory=list)      # every folder, relative to session
+    video_count: int = 0
+    is_template: bool = False        # a structure with no footage in it at all
     confidence: str = "none"         # strong | weak | none
     reason: str = ""
 
@@ -162,7 +165,36 @@ def detect(root: str | Path, probe_masters: bool = True) -> Detected:
     master_paths = {str(p) for p in masters}
     out.loose_clips = [str(p) for p in scan_videos(root)
                        if str(p) not in filed and str(p) not in master_paths]
+
+    out.tree = folder_tree(session)
+    out.video_count = len(scan_videos(session))
+    # An empty structure is not a failure — it is a template: the folder name and
+    # cam layout are exactly what is wanted, and the footage comes from elsewhere.
+    out.is_template = out.video_count == 0
+    if out.is_template:
+        out.reason += (" It holds no video, so it will be used as a structure "
+                       "template — pick the footage from another source.")
     return out
+
+
+def folder_tree(session: str | Path, max_depth: int = 4) -> list[str]:
+    """Every folder under `session`, relative and sorted.
+
+    A template's empty Cam folders are part of what it defines, so they are
+    recreated at the destination even when no clip is assigned to them.
+    """
+    session = Path(session)
+    out: list[str] = []
+    base = len(session.parts)
+    for dirpath, dirnames, _ in os.walk(session):
+        d = Path(dirpath)
+        if len(d.parts) - base >= max_depth:
+            dirnames[:] = []
+            continue
+        dirnames[:] = sorted(x for x in dirnames if not is_junk(d / x))
+        for name in dirnames:
+            out.append("/".join((d / name).relative_to(session).parts))
+    return sorted(out)
 
 
 def unfiled_clips(detected: Detected | dict, master_path: str | None = None) -> list[str]:

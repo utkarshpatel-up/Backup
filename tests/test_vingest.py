@@ -14,7 +14,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-from vingest import compare, ingest, naming, probe, structure  # noqa: E402
+from vingest import compare, ingest, naming, probe, sources, structure  # noqa: E402
+import zipfile  # noqa: E402
 
 HAVE_FFMPEG = shutil.which("ffmpeg") is not None and probe.configure().get("ffprobe")
 needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not installed")
@@ -487,3 +488,156 @@ class TestInPlacePlan:
             "master": structure.pick_master(det)["path"],
             "cams": {"1": [str(filed)]}}]})
         assert plan["targets"][0]["items"] == [], "no-op moves must not be planned"
+
+
+class TestStructureTemplate:
+    """A zip of empty folders is a template: it names the folder and lays out the cams."""
+
+    REF = ("Adalaj Soneri Satsang Experience session of USA and Canada Satsang Trip, "
+           "General Satsang E. Dt-16-Aug-26 Dur-54m1s")
+
+    def _skeleton_zip(self, tmp_path, explicit_dirs=True):
+        """The reference tree, zipped with no media in it at all."""
+        zpath = tmp_path / "structure.zip"
+        folders = [
+            "3017 Dt-16 Aug 2026",
+            f"3017 Dt-16 Aug 2026/{self.REF}",
+            f"3017 Dt-16 Aug 2026/{self.REF}/Clips for Insert",
+            f"3017 Dt-16 Aug 2026/{self.REF}/Clips for Insert/Cam-01",
+            f"3017 Dt-16 Aug 2026/{self.REF}/Clips for Insert/Cam-02",
+            f"3017 Dt-16 Aug 2026/{self.REF}/Clips for Insert/Cam-03",
+        ]
+        with zipfile.ZipFile(zpath, "w") as zf:
+            if explicit_dirs:
+                for f in folders:
+                    zf.writestr(f + "/", b"")
+            else:
+                # Some tools store only file paths and leave folders implied.
+                zf.writestr(folders[-1] + "/.keep", b"")
+        return zpath
+
+    def test_a_folder_only_zip_is_recognised_as_a_template(self, tmp_path):
+        info = sources.inspect_zip(self._skeleton_zip(tmp_path))
+        assert info["is_template"] is True
+        assert info["video_count"] == 0
+        assert info["folder_count"] == 6
+
+    def test_folders_implied_by_paths_are_still_found(self, tmp_path):
+        """A zip storing no directory entries must not look empty.
+
+        Only the folders on the stored path are implied — Cam-01 and Cam-02 are
+        genuinely absent from such an archive, so four is the right answer, and
+        the session folder is still found and named correctly.
+        """
+        info = sources.inspect_zip(self._skeleton_zip(tmp_path, explicit_dirs=False))
+        assert info["is_template"] is True
+        assert info["folder_count"] == 4
+        assert f"3017 Dt-16 Aug 2026/{self.REF}" in info["folders"]
+
+        out = sources.extract_zip(
+            self._skeleton_zip(tmp_path, explicit_dirs=False), tmp_path / "out2")
+        d = structure.detect(out)
+        assert d.session_name == self.REF and d.is_template
+
+    def test_extracting_a_template_creates_its_empty_folders(self, tmp_path):
+        out = sources.extract_zip(self._skeleton_zip(tmp_path), tmp_path / "out")
+        cam = Path(out) / "3017 Dt-16 Aug 2026" / self.REF / "Clips for Insert" / "Cam-03"
+        assert cam.is_dir(), "an all-folders zip must still extract to something"
+
+    def test_the_template_reports_its_name_and_cams(self, tmp_path):
+        out = sources.extract_zip(self._skeleton_zip(tmp_path), tmp_path / "out")
+        d = structure.detect(out)
+        assert d.is_template is True and d.video_count == 0
+        assert d.job_name == "3017 Dt-16 Aug 2026"
+        assert d.session_name == self.REF
+        assert d.tree == ["Clips for Insert", "Clips for Insert/Cam-01",
+                          "Clips for Insert/Cam-02", "Clips for Insert/Cam-03"]
+
+    def test_a_zip_escape_attempt_is_refused(self, tmp_path):
+        zpath = tmp_path / "evil.zip"
+        with zipfile.ZipFile(zpath, "w") as zf:
+            zf.writestr("../escaped.txt", b"nope")
+            zf.writestr("fine/ok.txt", b"yes")
+        out = Path(sources.extract_zip(zpath, tmp_path / "out"))
+        assert not (tmp_path / "escaped.txt").exists()
+        assert (out / "fine" / "ok.txt").exists()
+
+
+class TestPlanFromTemplate:
+    REF = TestStructureTemplate.REF
+
+    @needs_ffmpeg
+    def _run(self, tmp_path, mode="copy"):
+        drive = tmp_path / "SSD"
+        drive.mkdir()
+        make_clip(drive / "Program.mov", 65)
+        make_clip(drive / "Wide.mov", 3)
+        dest = tmp_path / "DEST"
+        plan = ingest.build_plan({
+            "mode": mode, "verify": "size", "targets": [{
+                "role": "prores", "source_root": str(drive), "dest_root": str(dest),
+                "session_name": self.REF, "job_name": "3017 Dt-16 Aug 2026",
+                "template_dirs": ["Clips for Insert", "Clips for Insert/Cam-01",
+                                  "Clips for Insert/Cam-02", "Clips for Insert/Cam-03"],
+                "master": str(drive / "Program.mov"),
+                "cams": {"1": [str(drive / "Wide.mov")]}}]})
+        return drive, dest, plan
+
+    @needs_ffmpeg
+    def test_the_templates_name_is_used_with_a_real_duration(self, tmp_path):
+        _, _, plan = self._run(tmp_path)
+        t = plan["targets"][0]
+        assert t["from_template"] is True
+        # The template's placeholder Dur-54m1s is replaced, not appended to.
+        assert t["session_folder"].endswith("Dt-16-Aug-26 Dur-1m5s")
+        assert t["session_folder"].count("Dur-") == 1
+        assert t["job_folder"] == "3017 Dt-16 Aug 2026"
+
+    @needs_ffmpeg
+    def test_output_goes_to_the_chosen_destination_not_the_source(self, tmp_path):
+        drive, dest, plan = self._run(tmp_path)
+        t = plan["targets"][0]
+        assert t["session_path"].startswith(str(dest))
+        assert not t["session_path"].startswith(str(drive))
+        for item in t["items"]:
+            assert item["dst"].startswith(str(dest))
+            assert item["src"].startswith(str(drive))
+
+    @needs_ffmpeg
+    def test_empty_cam_folders_from_the_template_are_created(self, tmp_path):
+        _, dest, plan = self._run(tmp_path)
+        res = ingest.execute_plan(plan)
+        assert res["failed"] == 0
+        session = Path(plan["targets"][0]["session_path"])
+        clips = session / "Clips for Insert"
+        assert (clips / "Cam-01" / "Wide.mov").exists()
+        # Cam-02 and Cam-03 got no clips but are part of what the template defines.
+        assert (clips / "Cam-02").is_dir() and (clips / "Cam-03").is_dir()
+        assert (session / "Program.mov").exists()
+
+    @needs_ffmpeg
+    def test_copy_leaves_the_source_drive_untouched(self, tmp_path):
+        drive, _, plan = self._run(tmp_path, mode="copy")
+        ingest.execute_plan(plan)
+        assert (drive / "Program.mov").exists() and (drive / "Wide.mov").exists()
+
+    @needs_ffmpeg
+    def test_two_drives_can_target_different_destinations(self, tmp_path):
+        targets, drives, dests = [], [], []
+        for role in ("prores", "h265"):
+            drive = tmp_path / f"SSD_{role}"
+            drive.mkdir()
+            make_clip(drive / "Program.mov", 65)
+            dest = tmp_path / f"DEST_{role}"
+            drives.append(drive); dests.append(dest)
+            targets.append({
+                "role": role, "source_root": str(drive), "dest_root": str(dest),
+                "session_name": self.REF, "job_name": "3017 Dt-16 Aug 2026",
+                "template_dirs": ["Clips for Insert/Cam-01"],
+                "master": str(drive / "Program.mov"), "cams": {}})
+        plan = ingest.build_plan({"mode": "copy", "verify": "size", "targets": targets})
+        assert not plan["warnings"], "separate destinations must not collide"
+        res = ingest.execute_plan(plan)
+        assert res["failed"] == 0
+        for dest in dests:
+            assert list(dest.rglob("Program.mov")), f"nothing landed in {dest}"

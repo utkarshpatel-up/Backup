@@ -10,6 +10,8 @@ const state = {
   assignment: null,
   scans: {},            // sourcePath -> {files, suggestion}
   detected: {},         // sourcePath -> the session folder found on it
+  template: null,       // structure + name imported from a zip/folder of empty folders
+  extraFiles: {},       // sourcePath -> files the operator picked by hand
   masters: {},          // sourcePath -> chosen master file path
   pairing: null,
   session: { title: '', jobNumber: '', date: '', destMode: 'inPlace', destRoots: {} },
@@ -106,7 +108,7 @@ async function call(method, params = {}, opts = {}) {
 function stepReady(i) {
   switch (i) {
     case 0: return true;
-    case 1: return state.sources.length > 0;
+    case 1: return footageSources().length > 0;
     case 2: return !!detection() && !!chosenMaster();
     case 3: return !!chosenMaster();
     case 4: return true;
@@ -114,16 +116,40 @@ function stepReady(i) {
   }
 }
 
+/** Sources that carry footage — the template is a structure donor, not footage. */
+function footageSources() {
+  return state.sources.filter((s) => s.role !== 'template');
+}
+
 function primarySource() {
-  return state.sources.find((s) => s.role === 'prores')
-      || state.sources.find((s) => s.role === 'h265')
-      || state.sources[0];
+  const f = footageSources();
+  return f.find((s) => s.role === 'prores') || f.find((s) => s.role === 'h265') || f[0];
+}
+
+/** Where a source's output goes; defaults to the source drive itself. */
+function destOf(src) {
+  return (src && (src.dest || src.path)) || '';
+}
+
+/** Every file available to assign for a source: what was scanned, plus manual picks. */
+function filePool(src) {
+  if (!src) return [];
+  const scanned = (state.scans[src.path] || {}).files || [];
+  const extra = state.extraFiles[src.path] || [];
+  const seen = new Set(scanned.map((f) => f.path));
+  return scanned.concat(extra.filter((f) => !seen.has(f.path)));
 }
 
 /** The detection result for the primary source. */
 function detection() {
   const src = primarySource();
-  return src ? state.detected[src.path] : null;
+  if (!src) return null;
+  if (state.template) {
+    // The template supplies the name; the master is chosen from the footage.
+    return { ...state.template, from_template: true,
+             master_candidates: filePool(src) };
+  }
+  return state.detected[src.path] || null;
 }
 
 /** The master file chosen for the primary source, as a probed file record. */
@@ -132,14 +158,13 @@ function chosenMaster() {
   const d = detection();
   if (!src || !d) return null;
   const pick = state.masters[src.path];
-  const pool = (d.master_candidates || []).concat(
-    (state.scans[src.path] || {}).files || []);
+  const pool = (d.master_candidates || []).concat(filePool(src));
   return pool.find((f) => f.path === pick) || d.suggested_master || null;
 }
 
 function secondarySource() {
   const p = primarySource();
-  return state.sources.find((s) => s !== p && (s.role === 'prores' || s.role === 'h265'));
+  return footageSources().find((s) => s !== p && (s.role === 'prores' || s.role === 'h265'));
 }
 
 /* ------------------------------------------------------------ step: sources */
@@ -212,14 +237,24 @@ function renderSources() {
         </div>
         <div class="role-pick">
           <div class="seg">
-            ${['prores', 'h265', 'sd', 'other'].map((role) => `
+            ${['prores', 'h265', 'sd', 'template', 'other'].map((role) => `
               <button data-role="${role}" data-path="${esc(s.path)}"
                 class="${s.role === role ? 'on' : ''}">${
-                  { prores: 'ProRes', h265: 'H.265', sd: 'SD card', other: 'Other' }[role]}</button>`).join('')}
+                  { prores: 'ProRes', h265: 'H.265', sd: 'SD card',
+                    template: 'Structure', other: 'Other' }[role]}</button>`).join('')}
           </div>
           <button class="sm ghost" data-remove="${esc(s.path)}">Remove</button>
         </div>
-      </div>`);
+      </div>
+      ${s.role === 'template' ? '' : `
+      <div class="row" style="margin:-4px 0 10px 48px">
+        <span class="hint" style="margin:0">Destination</span>
+        <span class="mono" style="flex:1;overflow:hidden;text-overflow:ellipsis;
+          white-space:nowrap;color:${s.dest ? 'var(--text)' : 'var(--muted)'}">
+          ${esc(s.dest || s.path)}${s.dest ? '' : '  (the source drive itself)'}</span>
+        <button class="sm" data-dest="${esc(s.path)}">Choose…</button>
+        ${s.dest ? `<button class="sm ghost" data-dest-clear="${esc(s.path)}">Reset</button>` : ''}
+      </div>`}`);
     }
     if (state.assignment) {
       const a = state.assignment;
@@ -244,8 +279,22 @@ function wireSources() {
   document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () =>
     addSource(b.dataset.add, b.dataset.label, 'volume')));
   document.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', () => {
+    const gone = state.sources.find((s) => s.path === b.dataset.remove);
+    if (gone && gone.role === 'template') state.template = null;
     state.sources = state.sources.filter((s) => s.path !== b.dataset.remove);
+    state.plan = null;
     render();
+  }));
+
+  document.querySelectorAll('[data-dest]').forEach((b) => b.addEventListener('click', async () => {
+    const chosen = await window.api.pickFolder('Choose where this drive\u2019s session folder goes');
+    if (!chosen) return;
+    const src = state.sources.find((x) => x.path === b.dataset.dest);
+    if (src) { src.dest = chosen; state.plan = null; render(); }
+  }));
+  document.querySelectorAll('[data-dest-clear]').forEach((b) => b.addEventListener('click', () => {
+    const src = state.sources.find((x) => x.path === b.dataset.destClear);
+    if (src) { delete src.dest; state.plan = null; render(); }
   }));
   document.querySelectorAll('[data-role]').forEach((b) => b.addEventListener('click', () => {
     const s = state.sources.find((x) => x.path === b.dataset.path);
@@ -254,8 +303,12 @@ function wireSources() {
     if (b.dataset.role !== 'other') {
       state.sources.forEach((x) => { if (x !== s && x.role === b.dataset.role) x.role = 'other'; });
     }
+    const was = s.role;
     s.role = b.dataset.role;
-    render();
+    state.plan = null;
+    if (s.role === 'template') loadTemplate(s);
+    else if (was === 'template') { state.template = null; render(); }
+    else render();
   }));
 }
 
@@ -280,21 +333,58 @@ async function addZipSource() {
   try {
     const info = await call('inspect_zip', { path: zip }, { label: 'Reading zip' });
     const ok = await window.api.confirm({
-      message: `Extract “${info.label}”?`,
-      detail: `${info.video_count} video files, ${fmtBytes(info.uncompressed_bytes)} once extracted.\n` +
-              `It will be unpacked to a temporary folder and used as a source.`,
-      confirmLabel: 'Extract',
+      message: info.is_template
+        ? `Use “${info.label}” as the folder structure?`
+        : `Extract “${info.label}”?`,
+      detail: info.is_template
+        ? `This archive holds ${info.folder_count} folders and no video, so it is a `
+          + `structure template: it supplies the session folder name and the cam `
+          + `layout.\n\nYou will pick the footage yourself from the source drive.`
+        : `${info.video_count} video files, ${fmtBytes(info.uncompressed_bytes)} once `
+          + `extracted.\nIt will be unpacked to a temporary folder and used as a source.`,
+      confirmLabel: info.is_template ? 'Use as structure' : 'Extract',
     });
     if (!ok) return;
-    const r = await call('extract_zip', { path: zip }, { label: `Extracting ${info.label}` });
+    const r = await call('extract_zip', { path: zip },
+      { label: `Extracting ${info.label}` });
     addSource(r.path, info.label, 'zip');
-    toast(`Extracted ${info.video_count} clips from ${info.label}`, 'ok');
+    const added = state.sources.find((x) => x.path === r.path);
+    if (info.is_template && added) {
+      added.role = 'template';
+      await loadTemplate(added);
+      toast(`Structure imported from ${info.label}`, 'ok');
+    } else {
+      toast(`Extracted ${info.video_count} clips from ${info.label}`, 'ok');
+    }
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/** Read the session folder name and cam layout out of a structure source. */
+async function loadTemplate(src) {
+  try {
+    const d = await call('detect_structure', { root: src.path },
+      { label: `Reading ${src.label}` });
+    if (!d.session_path) {
+      toast(`No session folder found in ${src.label}: ${d.reason}`, 'err');
+      src.role = 'other';
+      state.template = null;
+    } else {
+      state.template = d;
+      state.camCount = Math.max(3,
+        ...(d.tree || []).map((t) => {
+          const m = /Cam-(\d+)$/.exec(t);
+          return m ? Number(m[1]) : 0;
+        }));
+      toast(`Structure: ${d.session_name.slice(0, 40)}…`, 'ok');
+    }
+    state.plan = null;
+    render();
   } catch (e) { toast(e.message, 'err'); }
 }
 
 async function classifySources() {
   try {
-    const r = await call('classify', { roots: state.sources.map((s) => s.path) },
+    const r = await call('classify', { roots: footageSources().map((s) => s.path) },
       { label: 'Probing codecs' });
     r.reports.forEach((rep) => {
       const s = state.sources.find((x) => x.path === rep.root);
@@ -314,6 +404,8 @@ async function classifySources() {
 function renderSession() {
   const src = primarySource();
   if (!src) return `<div class="empty"><div class="big">📁</div>Add a source first.</div>`;
+
+  if (state.template) return renderTemplateFolder(src);
 
   const d = state.detected[src.path];
   if (!d) {
@@ -413,6 +505,78 @@ function renderSession() {
   </div>`;
 }
 
+/** The Folder step when the name came from an imported structure template. */
+function renderTemplateFolder(src) {
+  const t = state.template;
+  const master = chosenMaster();
+  const dur = master ? master.duration : null;
+  const base = t.base_name || t.session_name;
+  const durLabel = dur != null ? fmtDur(dur) : '…';
+  const pool = filePool(src);
+  const cams = (t.tree || []).filter((x) => /Cam-\d+$/.test(x));
+
+  return `
+  <div class="card">
+    <h3>Folder name from the imported structure</h3>
+    <p class="hint">Read from the structure you imported — not typed, and not altered.</p>
+    <div class="preview-name">
+      ${t.job_name ? `📁 ${esc(t.job_name)}<br>` : ''}
+      <span class="${t.job_name ? 'indent1' : ''}" style="display:inline-block">📁
+        ${esc(base)} <b>Dur-${esc(durLabel)}</b></span>
+      ${cams.map((c) => `<div class="indent2" style="color:var(--muted)">📁 ${esc(c)}</div>`).join('')}
+    </div>
+    <p class="hint" style="margin:8px 0 0">The bold <b>Dur-${esc(durLabel)}</b> is the only
+      part the app adds${t.has_dur ? `, replacing the placeholder
+      <b>Dur-${esc(fmtDur(t.current_dur))}</b> the structure came with` : ''}. The empty cam
+      folders are recreated exactly as the structure defines them.</p>
+    <div class="row" style="margin-top:12px">
+      ${footageSources().map((f) => `<span class="badge ${f.role}">${esc(f.label)}
+        → ${esc(destOf(f).split(/[\\/]/).pop() || destOf(f))}</span>`).join('')}
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Master file</h3>
+    <p class="hint">The structure carries no footage, so pick the program recording from
+      the source drive. Its length becomes the Dur- token.</p>
+    ${pool.length ? `
+      <div class="scroll"><table><thead><tr><th style="width:1%"></th><th>File</th>
+        <th class="num">Length</th><th>Codec</th><th class="num">Size</th></tr></thead>
+      <tbody>${pool.map((c) => `
+        <tr><td><input type="radio" name="master" data-master="${esc(c.path)}"
+              ${master && c.path === master.path ? 'checked' : ''} style="width:auto" /></td>
+          <td class="mono">${esc(c.name)}</td>
+          <td class="num">${esc(fmtClock(c.duration))}</td>
+          <td><span class="badge ${esc(c.family || '')}">${esc(c.video_codec || '?')}</span></td>
+          <td class="num">${fmtBytes(c.size)}</td></tr>`).join('')}
+      </tbody></table></div>`
+      : `<div class="note warn">No footage loaded yet. Scan the source drive, or add
+         files by hand.</div>`}
+    <div class="row" style="margin-top:12px">
+      <button class="sm" id="btnScanFootage">Scan ${esc(src.label)}</button>
+      <button class="sm" id="btnAddFiles">Add files…</button>
+      <button class="sm" id="btnAddFolder2">Add a folder…</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Filing the clips</h3>
+    <div class="grid2">
+      <label class="field"><span>Transfer mode</span>
+        <select id="fMode">
+          <option value="copy">Copy from the source drive</option>
+          <option value="move">Move (remove the originals after verifying)</option>
+        </select></label>
+      <label class="field"><span>Verification</span>
+        <select id="fVerify">
+          <option value="size">Size check (fast)</option>
+          <option value="hash">Checksum every file (bit-exact, slower)</option>
+          <option value="none">None</option>
+        </select></label>
+    </div>
+  </div>`;
+}
+
 function createFolderForm() {
   return `
     <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
@@ -468,6 +632,10 @@ function wireSession() {
     if (chosen) await detectStructure(primarySource(), true, chosen);
   });
 
+  $('btnScanFootage')?.addEventListener('click', () => scanSource(primarySource(), true));
+  $('btnAddFiles')?.addEventListener('click', () => addFootage('files'));
+  $('btnAddFolder2')?.addEventListener('click', () => addFootage('folder'));
+
   document.querySelectorAll('[data-master]').forEach((r) => r.addEventListener('change', () => {
     state.masters[primarySource().path] = r.dataset.master;
     state.plan = null;
@@ -490,6 +658,30 @@ function wireSession() {
       state.session.verify = e.target.value; state.plan = null;
     });
   }
+}
+
+/** Add footage the operator picked by hand, for when the structure carries none. */
+async function addFootage(kind) {
+  const src = primarySource();
+  if (!src) return;
+  const paths = kind === 'folder'
+    ? [await window.api.pickFolder('Choose a folder of footage')].filter(Boolean)
+    : await window.api.pickVideoFiles();
+  if (!paths || !paths.length) return;
+  try {
+    const r = await call('add_files', { paths }, { label: 'Reading footage' });
+    const existing = state.extraFiles[src.path] || [];
+    const seen = new Set(existing.map((f) => f.path));
+    state.extraFiles[src.path] = existing.concat(r.files.filter((f) => !seen.has(f.path)));
+    if (!state.masters[src.path]) {
+      const longest = r.files.reduce((a, b) => ((b.duration || 0) > (a?.duration || 0) ? b : a), null);
+      if (longest) state.masters[src.path] = longest.path;
+    }
+    state.plan = null;
+    toast(r.count ? `Added ${r.count} clip(s).` : 'No video files found there.',
+      r.count ? 'ok' : 'err');
+    render();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 /** Read the session folder off a source and seed the cam assignment from it. */
@@ -524,7 +716,8 @@ function renderCameras() {
   const src = primarySource();
   if (!src) return `<div class="empty"><div class="big">📁</div>Add a source first.</div>`;
 
-  const scan = state.scans[src.path];
+  const pool = filePool(src);
+  const scan = state.scans[src.path] || (pool.length ? { files: pool, suggestion: null } : null);
   if (!scan) {
     return `<div class="card">
       <h3>Read the footage</h3>
@@ -537,7 +730,7 @@ function renderCameras() {
   const cams = Array.from({ length: state.camCount }, (_, i) => i + 1);
   const master = chosenMaster();
   // The master was settled on the Folder step; it is not a cam clip.
-  const files = scan.files.filter((f) => !master || f.path !== master.path);
+  const files = pool.filter((f) => !master || f.path !== master.path);
   const counts = {};
   cams.forEach((n) => { counts[n] = 0; });
   let skipped = 0;
@@ -585,7 +778,9 @@ function renderCameras() {
       (${esc(fmtDur(master.duration))}) — stays at the top of the session folder and sets
       the Dur- token. Change it on the Folder step.</div>` : ''}
     <div class="row" style="margin-bottom:12px">
-      <button class="sm" id="btnAutoGroup">Auto-suggest by camera</button>
+      <button class="sm" id="btnAddFiles">Add files…</button>
+      <button class="sm" id="btnAddFolder2">Add a folder…</button>
+      <button class="sm" id="btnAutoGroup" ${scan.suggestion ? '' : 'disabled'}>Auto-suggest by camera</button>
       <button class="sm" id="btnAddCam">Add cam (${state.camCount})</button>
       <button class="sm" id="btnRemoveCam" ${state.camCount <= 1 ? 'disabled' : ''}>Remove cam</button>
       <button class="sm" id="btnClearAssign">Clear all</button>
@@ -609,6 +804,8 @@ function renderCameras() {
 function wireCameras() {
   $('btnScan')?.addEventListener('click', () => scanSource(primarySource()));
   $('btnRescanFiles')?.addEventListener('click', () => scanSource(primarySource(), true));
+  $('btnAddFiles')?.addEventListener('click', () => addFootage('files'));
+  $('btnAddFolder2')?.addEventListener('click', () => addFootage('folder'));
 
   document.querySelectorAll('[data-assign]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.assign;
@@ -631,6 +828,7 @@ function wireCameras() {
 
   $('btnAutoGroup')?.addEventListener('click', () => {
     const scan = state.scans[primarySource().path];
+    if (!scan || !scan.suggestion) return;
     const master = chosenMaster();
     let cam = 0;
     for (const g of scan.suggestion.groups) {
@@ -689,25 +887,26 @@ function buildSpec() {
     return cams;
   };
 
-  const destFor = (s) => (state.session.destMode === 'custom'
-    ? (state.session.destRoots[s.path] || s.path) : s.path);
+  const t = state.template;
 
-  const sessionOf = (src) => (state.detected[src.path] || {}).session_path || null;
+  /** A template names the folder and is written to the chosen destination;
+   *  otherwise the folder already on the drive is completed in place. */
+  const targetFor = (src, cams, masterPath) => {
+    const base = { role: src.role, source_root: src.path, dest_root: destOf(src),
+                   master: masterPath, cams };
+    if (t) {
+      return { ...base, session_name: t.session_name, job_name: t.job_name,
+               template_dirs: t.tree };
+    }
+    return { ...base, session_source: (state.detected[src.path] || {}).session_path || null };
+  };
 
-  targets.push({
-    role: a.role, source_root: a.path, dest_root: destFor(a),
-    session_source: sessionOf(a),
-    master: master ? master.path : null, cams: camsFor((p) => p),
-  });
+  targets.push(targetFor(a, camsFor((p) => p), master ? master.path : null));
 
   if (b && state.pairing) {
     const m = state.pairing.matches;
-    targets.push({
-      role: b.role, source_root: b.path, dest_root: destFor(b),
-      session_source: sessionOf(b),
-      master: master ? (m[master.path] || null) : null,
-      cams: camsFor((p) => m[p] || null),
-    });
+    targets.push(targetFor(b, camsFor((p) => m[p] || null),
+      master ? (m[master.path] || null) : null));
   }
 
   return {

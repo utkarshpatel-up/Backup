@@ -51,6 +51,8 @@ class TargetPlan:
     rename_from: str = ""     # existing folder name, when one was found
     rename_to: str = ""       # same name plus the Dur- token
     in_place: bool = False    # True when completing a folder that already exists
+    from_template: bool = False
+    ensure_dirs: list = field(default_factory=list)   # folders to create even if empty
     items: list[PlanItem] = field(default_factory=list)
     total_bytes: int = 0
     free_bytes: int = 0
@@ -167,8 +169,23 @@ def build_plan(spec: dict, progress=None) -> dict:
 
         duration = master.duration if master else None
         existing = t.get("session_source")
+        template_name = t.get("session_name")
+        from_template = False
 
-        if existing:
+        if not existing and template_name:
+            # The name comes from an imported template (usually a zip of empty
+            # folders). It is authoritative — only the Dur- token is ours.
+            base = naming.DUR_TOKEN_RE.sub("", template_name).strip()
+            session_folder = naming.sanitize(
+                base + (f" Dur-{naming.fmt_duration(duration)}" if duration is not None else ""))
+            job_folder = naming.sanitize(t.get("job_name") or "") if t.get("job_name") else ""
+            dest_root = Path(t["dest_root"])
+            session_path = dest_root / job_folder / session_folder if job_folder \
+                else dest_root / session_folder
+            staging_path = session_path
+            in_place = False
+            from_template = True
+        elif existing:
             # The folder is already named; only the Dur- token is ours to add.
             existing_path = Path(existing)
             base = naming.DUR_TOKEN_RE.sub("", existing_path.name).strip()
@@ -189,6 +206,12 @@ def build_plan(spec: dict, progress=None) -> dict:
             staging_path = session_path
             in_place = False
 
+        ensure = [d for d in (t.get("template_dirs") or []) if d]
+        if not ensure:
+            # No template: still create a cam folder for every cam in play.
+            ensure = [f"{naming.CLIPS_DIRNAME}/{naming.cam_folder(int(c))}"
+                      for c in sorted((t.get("cams") or {}), key=int)]
+
         plan = TargetPlan(
             role=t.get("role", "other"),
             source_root=t["source_root"],
@@ -200,6 +223,8 @@ def build_plan(spec: dict, progress=None) -> dict:
             rename_from=Path(existing).name if existing else "",
             rename_to=session_folder if existing else "",
             in_place=in_place,
+            from_template=from_template,
+            ensure_dirs=ensure,
         )
         if in_place and plan.rename_from == plan.rename_to:
             plan.rename_to = ""          # already complete; nothing to rename
@@ -273,6 +298,11 @@ def build_plan(spec: dict, progress=None) -> dict:
                     f"rename would collide. Move or remove it first.")
 
         # Two different sources must never write into one session folder.
+        if from_template and session_path.exists():
+            plan.warnings.append(
+                f"“{session_folder}” already exists at {dest_root}. Files will be added "
+                f"to it and matching ones skipped, rather than a second folder being made.")
+
         for other in targets_out:
             if os.path.normcase(other.session_path) == os.path.normcase(plan.session_path):
                 plan.warnings.append(
@@ -374,8 +404,15 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
             })
 
     for target in plan.get("targets", []):
-        Path(target.get("staging_path") or target["session_path"]).mkdir(
-            parents=True, exist_ok=True)
+        staging_root = Path(target.get("staging_path") or target["session_path"])
+        staging_root.mkdir(parents=True, exist_ok=True)
+        # A template's empty Cam folders are part of what it defines, so they are
+        # created whether or not a clip was assigned to them.
+        for rel in target.get("ensure_dirs", []):
+            try:
+                (staging_root / rel).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                errors.append(f"Could not create {rel}: {e}")
         for item in target["items"]:
             # Checked per item, not just inside the copy loop: a same-volume move
             # never enters that loop, so Cancel would otherwise do nothing at all.

@@ -143,7 +143,9 @@ def inspect_zip(zip_path: str | Path) -> dict:
     """Read a zip's contents without extracting, so the GUI can preview it."""
     zip_path = Path(zip_path)
     with zipfile.ZipFile(zip_path) as zf:
-        entries = [i for i in zf.infolist() if not i.is_dir()]
+        infos = zf.infolist()
+        entries = [i for i in infos if not i.is_dir()]
+        folders = _folders_in(infos)
         videos = [i for i in entries
                   if Path(i.filename).suffix.lower() in VIDEO_EXTS
                   and not is_junk(Path(i.filename))]
@@ -151,7 +153,12 @@ def inspect_zip(zip_path: str | Path) -> dict:
             "path": str(zip_path),
             "label": zip_path.stem,
             "entry_count": len(entries),
+            "folder_count": len(folders),
             "video_count": len(videos),
+            # A zip of nothing but folders is a structure template: it carries the
+            # session folder's name and its cam layout, and no footage.
+            "is_template": len(videos) == 0 and len(folders) > 0,
+            "folders": sorted(folders)[:200],
             "compressed_bytes": sum(i.compress_size for i in entries),
             "uncompressed_bytes": sum(i.file_size for i in entries),
             "videos": [{"name": Path(i.filename).name,
@@ -159,6 +166,25 @@ def inspect_zip(zip_path: str | Path) -> dict:
                         "size": i.file_size,
                         "mtime": _zip_mtime(i)} for i in videos[:500]],
         }
+
+
+def _folders_in(infos) -> set[str]:
+    """Every folder the archive implies, whether or not it is stored explicitly.
+
+    Some tools write a directory entry per folder; others store only file paths
+    and leave the folders implied. Both have to be recognised, or a structure
+    template made by the wrong tool looks empty.
+    """
+    out: set[str] = set()
+    for i in infos:
+        parts = Path(i.filename).parts
+        if not i.is_dir():
+            parts = parts[:-1]
+        for n in range(1, len(parts) + 1):
+            joined = "/".join(parts[:n])
+            if joined and not is_junk(Path(joined)):
+                out.add(joined)
+    return out
 
 
 def _zip_mtime(info: zipfile.ZipInfo) -> float:
@@ -191,7 +217,15 @@ def extract_zip(zip_path: str | Path, dest: str | Path | None = None,
     out.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(zip_path) as zf:
-        members = [i for i in zf.infolist()
+        infos = zf.infolist()
+
+        # Folders first, and every folder the archive implies — a structure
+        # template is nothing but empty folders, so skipping them extracts nothing.
+        for folder in sorted(_folders_in(infos)):
+            if _safe_member(folder):
+                (out / folder).mkdir(parents=True, exist_ok=True)
+
+        members = [i for i in infos
                    if not i.is_dir() and _safe_member(i.filename)]
         total = len(members)
         for n, info in enumerate(members, 1):
@@ -205,6 +239,10 @@ def extract_zip(zip_path: str | Path, dest: str | Path | None = None,
             if progress and (n % 5 == 0 or n == total):
                 progress({"stage": "extract", "done": n, "total": total,
                           "name": Path(info.filename).name})
+
+        if progress and not total:
+            progress({"stage": "extract", "done": 1, "total": 1,
+                      "name": "folder structure"})
 
     _ZIP_EXTRACTS[str(zip_path)] = str(out)
     return str(out)

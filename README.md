@@ -40,14 +40,38 @@ The one case where a filename changes: if two different source files would land
 in the same cam folder under the same name, the second becomes `name (2).ext`
 rather than silently overwriting the first. The plan flags it when it happens.
 
-### How the folder is found
+### Where the folder name comes from
 
-In order of confidence: the folder containing **“Clips for Insert”**; failing
-that, a folder whose name carries a `Dt-` token; failing that, the single folder
-a zip unpacked to. Whatever it settles on is shown to you with its reasoning,
-and you can point it somewhere else. If nothing is recognisable it says so and
-offers to build a folder from a name you type — the only path where typing is
-involved, and it exists for loose footage that was never structured.
+Two ways, neither of which involves typing:
+
+**A structure template.** Import a zip (or folder) that holds the folder tree
+and no footage — the empty `3017 Dt-16 Aug 2026/… Dt-16-Aug-26/Clips for Insert/
+Cam-01…03` skeleton. It supplies the session folder's name, the job folder, and
+the cam layout. Any `Dur-` placeholder it carries is replaced with the real one.
+Its empty cam folders are recreated at the destination even when no clip is
+assigned to them, because they are part of what the template defines. Since a
+template has no footage in it, you pick the clips yourself off the source drive.
+
+**A folder already on the drive.** If the source already contains the session
+folder, the app finds it — by the "Clips for Insert" it holds, failing that a
+`Dt-` token in its name, failing that a zip's single root folder — and completes
+that folder in place. Whatever it settles on is shown with its reasoning, and
+you can point it elsewhere.
+
+If neither applies, it says so and offers to build a folder from a name you
+type. That is the only path where typing is involved, and it exists for loose
+footage that was never structured.
+
+### Sources and destinations
+
+Each source gets its own destination, chosen on the Sources step and defaulting
+to the source drive itself. So the ProRes drive can write to one place and the
+H.265 drive to another, or both can organise themselves in place. The app warns
+if two sources would write into the same folder.
+
+Footage can come from a drive scan, a zip, or files you pick by hand — **Add
+files…** and **Add a folder…** are on both the Folder and Cameras steps, and
+matter most when the structure came from a template that carries no media.
 
 ## Running it
 
@@ -65,13 +89,14 @@ remembers the choice.
 1. **Sources** — lists removable drives (never your system disk). Press
    *Probe codecs* and it ffprobes the largest files on each drive and assigns
    ProRes / H.265 roles, showing its confidence and reasoning. Roles are always
-   yours to override. Folders and `.zip` archives can be added as sources too;
-   a zip is extracted to a temp folder with its original timestamps restored,
-   because the naming depends on them.
-2. **Folder** — the session folder found on the drive, shown with the reason it
-   was chosen and a preview of the completed name with the added `Dur-` in bold.
-   Pick the master file (it defaults to the longest recording at the folder's
-   top level, which is what sets the token), then choose move vs copy.
+   yours to override, and one source can be marked **Structure** to act as the
+   template. Each footage source gets its own destination picker. Folders and
+   `.zip` archives can be added too; a zip is extracted to a temp folder with
+   its original timestamps restored, because the naming depends on them.
+2. **Folder** — the folder name, either from the imported template or found on
+   the drive, previewed with the added `Dur-` in bold. Pick the master file
+   (defaulting to the longest recording available), adding footage by hand if
+   the structure carries none, then choose move vs copy.
 3. **Cameras** — every unfiled clip listed with length, codec, resolution and
    last-modified time; clips already sitting in a cam folder come pre-selected
    and are not re-copied. Assign the rest to cams.
@@ -108,6 +133,12 @@ is also the signal to run it again.
 to `.vingest-part` and renamed only once complete and verified. In move mode,
 the original is deleted only after the copy verifies.
 
+**An empty zip is not an empty import.** A structure template is nothing but
+folders, and zip archives store folders in two different ways — some write a
+directory entry per folder, others store only file paths and leave the folders
+implied. Both are recognised, and folders are created before any file is
+extracted, so a template made by either kind of tool imports correctly.
+
 **Manifests are excluded from comparison.** Each session folder gets a
 `_manifest/` JSON + CSV recording what was copied, with durations, codecs and
 statuses. They differ per drive by design, so the comparison skips them.
@@ -134,9 +165,11 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-58 tests covering duration formatting, the "filenames are never changed"
+68 tests covering duration formatting, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
-rename-only-on-success guarantee, exFAT case-insensitive de-duplication,
+rename-only-on-success guarantee, structure-template import (both zip layouts,
+plus path-escape refusal), per-source destinations, exFAT case-insensitive
+de-duplication,
 cross-drive pairing, `.mov`/`.mp4` tolerance, comparison severity rules, and the
 cancel-leaves-no-partial-file guarantee. Tests needing real media are skipped
 automatically when ffmpeg is absent.
@@ -167,3 +200,5 @@ responsive.
 - Checksum verification between the ProRes and H.265 drives is meaningless
   (different encodings); use it to verify a copy against its own source.
 - Zip sources extract to a temp folder, so a large zip needs the free space.
+- One structure template applies to the whole job; per-drive templates are not
+  supported (and have never been needed, since both drives hold the same shoot).

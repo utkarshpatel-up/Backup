@@ -107,6 +107,41 @@ def m_scan(p, req_id):
             "suggestion": ingest.suggest_cam_groups(out)}
 
 
+def m_add_files(p, req_id):
+    """Probe an explicit list of files or folders the operator picked by hand.
+
+    Used when the structure came from a zip that carries no footage: the clips
+    are chosen off the source drive instead.
+    """
+    emit = _progress(req_id)
+    from pathlib import Path as _P
+
+    paths: list = []
+    for raw in p.get("paths", []):
+        item = _P(raw)
+        if item.is_dir():
+            paths.extend(probe.scan_videos(item))
+        elif probe.is_video(item):
+            paths.append(item)
+
+    seen, unique = set(), []
+    for item in paths:
+        key = str(item)
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+
+    out = []
+    for n, item in enumerate(unique, 1):
+        if req_id in _CANCELLED:
+            return {"cancelled": True, "files": out}
+        emit({"stage": "scan", "done": n, "total": len(unique), "name": item.name})
+        out.append(probe.probe(item).to_dict())
+    out.sort(key=lambda f: (f.get("mtime") or 0))
+    return {"files": out, "count": len(out),
+            "skipped": len(p.get("paths", [])) - len(unique) if not unique else 0}
+
+
 def m_probe(p, _id):
     return probe.probe(p["path"]).to_dict()
 

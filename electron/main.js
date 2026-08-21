@@ -108,6 +108,16 @@ ipcMain.handle('dialog:pickFolder', async (_e, title) => {
   return r.canceled ? null : r.filePaths[0];
 });
 
+ipcMain.handle('dialog:pickVideoFiles', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: 'Choose footage',
+    filters: [{ name: 'Video', extensions: ['mov', 'mp4', 'mxf', 'm4v', 'avi', 'mts',
+                                            'm2ts', 'mkv', 'braw', 'r3d'] }],
+    properties: ['openFile', 'multiSelections'],
+  });
+  return r.canceled ? [] : r.filePaths;
+});
+
 ipcMain.handle('dialog:pickZip', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose a zip archive',

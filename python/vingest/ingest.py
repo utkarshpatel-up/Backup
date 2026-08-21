@@ -300,24 +300,13 @@ def build_plan(spec: dict, progress=None) -> dict:
         except OSError:
             plan.free_bytes = 0
 
-        same_volume = _same_volume(t["source_root"], dest_root)
-        if spec.get("mode") == "copy" and plan.free_bytes and \
-                plan.total_bytes > plan.free_bytes * 0.98:
+        # A copy needs room for the files that are not just relocated on the drive.
+        copy_bytes = sum(i.size for i in plan.items
+                         if not _same_volume(Path(i.src).parent, session_path))
+        if plan.free_bytes and copy_bytes > plan.free_bytes * 0.98:
             plan.warnings.append(
                 f"Not enough free space on {dest_root}: needs "
-                f"{human(plan.total_bytes)}, has {human(plan.free_bytes)} free.")
-        if spec.get("mode") == "move" and not same_volume:
-            plan.warnings.append(
-                "Move crosses volumes — files will be copied then deleted, which is slow.")
-
-        if spec.get("mode") == "move":
-            outside = {Path(i.src).parts[:3] for i in plan.items
-                       if not _same_volume(Path(i.src).parent, Path(t["source_root"]))}
-            if outside:
-                plan.warnings.append(
-                    f"{len(outside)} clip(s) come from another volume — a camera card, most "
-                    f"likely. In move mode they are DELETED from it once copied. Switch to "
-                    f"copy if you want the cards left intact.")
+                f"{human(copy_bytes)} to copy, has {human(plan.free_bytes)} free.")
 
         if in_place and plan.rename_to:
             clash = session_path
@@ -435,13 +424,15 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
     # A camera-card clip is filed to both SSDs, so one source has several
     # destinations. Count them, so move mode copies to every drive before the
     # source is deleted rather than losing it after the first.
+    # How many destinations each source has, in total. A file with exactly one
+    # destination on its own drive is relocated; a file bound for both SSDs is
+    # copied to each. This count never changes as the run proceeds.
     import os as _os
-    writes_left: dict[str, int] = {}
+    dest_count: dict[str, int] = {}
     for _t in plan.get("targets", []):
         for _i in _t.get("items", []):
             key = _os.path.normcase(_i["src"])
-            writes_left[key] = writes_left.get(key, 0) + 1
-    src_failed: set[str] = set()
+            dest_count[key] = dest_count.get(key, 0) + 1
 
     for target in plan.get("targets", []):
         staging_root = Path(target.get("staging_path") or target["session_path"])
@@ -467,8 +458,6 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
             src, dst = Path(item["src"]), Path(item["dst"])
             emit(current=src.name, target=target["role"])
             try:
-                if not src.exists():
-                    raise FileNotFoundError("Source file is gone")
                 dst.parent.mkdir(parents=True, exist_ok=True)
 
                 if dst.exists() and dst.stat().st_size == item["size"]:
@@ -478,6 +467,10 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                     results.append(item)
                     emit(current=src.name, target=target["role"])
                     continue
+
+                if not src.exists():
+                    # Already relocated on a previous run, or genuinely missing.
+                    raise FileNotFoundError("Source file is gone")
 
                 chunk_acc = {"n": 0}
 
@@ -490,37 +483,27 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                         emit(current=src.name, target=target["role"])
 
                 src_key = os.path.normcase(item["src"])
-                # An atomic rename is only safe when this is the source's single
-                # destination; a clip bound for both SSDs must be copied.
-                renamed = (mode == "move" and writes_left.get(src_key, 1) == 1
-                           and _same_volume(src.parent, dst.parent))
-                if renamed:
+                # RELOCATE (rename into the folder) only when this file has a
+                # single destination AND is already on that drive — the master.
+                # A clip bound for both SSDs is always COPIED, and no source is
+                # ever deleted: the camera cards are cleared by hand.
+                relocate = (dest_count.get(src_key, 1) == 1
+                            and _same_volume(src.parent, dst.parent))
+                if relocate:
                     src.replace(dst)          # atomic within a volume
                     done_bytes += item["size"]
-                else:
-                    _copy_with_progress(src, dst, on_chunk, should_cancel)
-
-                if renamed:
-                    # A rename within one filesystem cannot corrupt data, and it
-                    # leaves no source to compare against — just confirm it landed.
                     problem = _verify_moved(dst, item["size"])
                 else:
+                    _copy_with_progress(src, dst, on_chunk, should_cancel)
                     problem = _verify(src, dst, verify)
 
-                writes_left[src_key] = writes_left.get(src_key, 1) - 1
                 if problem:
                     item["status"] = "failed"
                     item["message"] = problem
                     errors.append(f"{src.name}: {problem}")
-                    src_failed.add(src_key)
                 else:
-                    # In move mode delete the source only once every drive that
-                    # needed it has its copy, and none of those copies failed.
-                    if (mode == "move" and not renamed and writes_left[src_key] <= 0
-                            and src_key not in src_failed and src.exists()):
-                        src.unlink()
                     item["status"] = "done"
-                    item["message"] = ""
+                    item["message"] = "moved" if relocate else "copied"
 
             except Cancelled:
                 cancelled = True

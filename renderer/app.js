@@ -746,19 +746,15 @@ function renderSession() {
 
   <div class="card">
     <h3>Filing the clips</h3>
-    <div class="grid2">
-      <label class="field"><span>Transfer mode</span>
-        <select id="fMode">
-          <option value="move">Move into the cam folders (same drive)</option>
-          <option value="copy">Copy, leaving the originals where they are</option>
-        </select></label>
-      <label class="field"><span>Verification</span>
-        <select id="fVerify">
-          <option value="size">Size check (fast)</option>
-          <option value="hash">Checksum every file (bit-exact, slower)</option>
-          <option value="none">None</option>
-        </select></label>
-    </div>
+    <p class="hint">The master is <b>moved</b> into the folder — it is already on this drive,
+      so it just relocates. Camera clips are <b>copied</b> to both SSDs. Nothing is ever
+      deleted; clear the camera cards yourself when you are ready.</p>
+    <label class="field" style="max-width:340px"><span>Verification</span>
+      <select id="fVerify">
+        <option value="size">Size check (fast)</option>
+        <option value="hash">Checksum every file (bit-exact, slower)</option>
+        <option value="none">None</option>
+      </select></label>
     <p class="hint" style="margin:0">Moving is the usual choice when the clips are already
       on the right drive and only need filing — copying leaves a second copy behind at the
       folder's top level.</p>
@@ -970,19 +966,15 @@ function renderTemplateFolder(src) {
 
   <div class="card">
     <h3>Filing the clips</h3>
-    <div class="grid2">
-      <label class="field"><span>Transfer mode</span>
-        <select id="fMode">
-          <option value="copy">Copy from the source drive</option>
-          <option value="move">Move (remove the originals after verifying)</option>
-        </select></label>
-      <label class="field"><span>Verification</span>
-        <select id="fVerify">
-          <option value="size">Size check (fast)</option>
-          <option value="hash">Checksum every file (bit-exact, slower)</option>
-          <option value="none">None</option>
-        </select></label>
-    </div>
+    <p class="hint">The master is <b>moved</b> into the folder — it is already on this drive,
+      so it just relocates. Camera clips are <b>copied</b> to both SSDs. Nothing is ever
+      deleted; clear the camera cards yourself when you are ready.</p>
+    <label class="field" style="max-width:340px"><span>Verification</span>
+      <select id="fVerify">
+        <option value="size">Size check (fast)</option>
+        <option value="hash">Checksum every file (bit-exact, slower)</option>
+        <option value="none">None</option>
+      </select></label>
   </div>`;
 }
 
@@ -1098,11 +1090,7 @@ function wireSession() {
     if (box) box.innerHTML = sessionPreview();
   }));
 
-  if ($('fMode')) {
-    $('fMode').value = state.session.mode || 'move';
-    $('fMode').addEventListener('change', (e) => {
-      state.session.mode = e.target.value; state.plan = null;
-    });
+  if ($('fVerify')) {
     $('fVerify').value = state.session.verify || 'size';
     $('fVerify').addEventListener('change', (e) => {
       state.session.verify = e.target.value; state.plan = null;
@@ -1536,7 +1524,7 @@ function buildSpec() {
     job_number: state.session.jobNumber,
     date: state.session.date || undefined,
     add_date: state.session.addDate !== false,
-    mode: state.session.mode || 'move',
+    mode: 'copy',   // retained for the manifest; the engine relocates or copies automatically
     verify: state.session.verify || 'size',
     targets,
   };
@@ -1588,10 +1576,10 @@ function renderCopy() {
     <div class="card">
       <div class="row">
         <div><b>${p.item_count} file(s) to file</b> · ${fmtBytes(p.total_bytes)} ·
-          mode <b>${esc(p.mode)}</b> · verify <b>${esc(p.verify)}</b>
+          master moved · clips copied · verify <b>${esc(p.verify)}</b>
           ${(p.renames || []).length ? `· <b>${p.renames.length} folder rename(s)</b>` : ''}
           <br><span class="hint">Only the clips you assigned on the Cameras page are
-            included — anything left on Skip is untouched.</span></div>
+            included — anything on Skip is untouched, and no source files are deleted.</span></div>
         <div class="spacer"></div>
         <button class="sm" id="btnReplan">Rebuild plan</button>
         <button class="primary" id="btnRun" ${state.busy ? 'disabled' : ''}>
@@ -1686,13 +1674,12 @@ async function doRun() {
       ? `File ${p.item_count} clip(s) and rename the session folder?`
       : 'Rename the session folder?',
     detail:
-      (p.mode === 'move'
-        ? 'Clips are moved into their cam folders. On the same drive this is instant.\n'
-        : 'Clips are copied, leaving the originals where they are.\n') +
+      'The master moves into the folder on its own drive. Camera clips are copied to '
+      + 'both SSDs. Nothing is deleted — clear the cards yourself afterwards.\n' +
       (renames ? `\nFolder rename:${renames}\n` : '') +
       '\nThe folder is renamed only after every file lands successfully.',
     confirmLabel: 'Go ahead',
-    danger: p.mode === 'move',
+    danger: false,
   });
   if (!ok) return;
   try {

@@ -322,10 +322,13 @@ class TestPlan:
                 "targets": [{"role": "prores", "source_root": str(src),
                              "dest_root": str(tmp_path / "out"),
                              "master": str(src / "M.mov"), "cams": {}}]}
-        first = ingest.execute_plan(ingest.build_plan(spec))
+        plan = ingest.build_plan(spec)
+        first = ingest.execute_plan(plan)
         assert first["copied"] == 1 and first["failed"] == 0
-        second = ingest.execute_plan(ingest.build_plan(spec))
-        assert second["copied"] == 0 and second["skipped"] == 1
+        # Re-running the SAME plan must skip: the destination is already present,
+        # even though the relocated source is now gone from the root.
+        second = ingest.execute_plan(plan)
+        assert second["failed"] == 0 and second["skipped"] == 1 and second["copied"] == 0
 
     def test_no_partial_file_is_left_named_as_final(self, tmp_path):
         src = tmp_path / "SSD"; src.mkdir()
@@ -621,10 +624,21 @@ class TestPlanFromTemplate:
         assert list(session.glob("*Dur-1m5s.mov"))
 
     @needs_ffmpeg
-    def test_copy_leaves_the_source_drive_untouched(self, tmp_path):
-        drive, _, plan = self._run(tmp_path, mode="copy")
-        ingest.execute_plan(plan)
-        assert (drive / "Program.mov").exists() and (drive / "Wide.mov").exists()
+    def test_single_drive_files_relocate_into_the_structure(self, tmp_path):
+        """One drive, one destination: files move into the folder, not duplicated.
+
+        The master lands under its folder-derived name; the cam clip keeps its
+        own name inside Cam-01. Both leave the drive root.
+        """
+        drive, dest, plan = self._run(tmp_path)
+        res = ingest.execute_plan(plan)
+        assert res["failed"] == 0
+        assert not (drive / "Program.mov").exists() and not (drive / "Wide.mov").exists()
+        session = Path(plan["targets"][0]["session_path"])
+        assert (session / "Clips for Insert" / "Cam-01" / "Wide.mov").exists()
+        masters = [f for f in session.iterdir() if f.is_file() and f.suffix == ".mov"]
+        assert len(masters) == 1, "the master relocated into the session folder"
+        assert all(i["message"] == "moved" for i in res["items"])
 
     @needs_ffmpeg
     def test_two_drives_can_target_different_destinations(self, tmp_path):
@@ -1019,3 +1033,43 @@ class TestMasterClipNaming:
         clip_name = Path(t["items"][0]["dst"]).name
         assert folder_dur in clip_name, "a lone master must carry the folder's duration"
         assert "Clip-" not in clip_name and "Clips-" not in t["session_folder"]
+
+
+class TestNoDeletion:
+    """Camera-card clips are copied to both SSDs and never deleted."""
+
+    @needs_ffmpeg
+    def test_a_two_destination_clip_is_copied_to_both_and_source_kept(self, tmp_path):
+        card = tmp_path / "CARD"; card.mkdir()
+        clip = card / "A_0006C204_CANON.MP4"
+        make_clip(clip, 6)
+        targets = []
+        for role in ("prores", "h265"):
+            drive = tmp_path / f"SSD_{role}"; drive.mkdir()
+            make_clip(drive / "Master.mov", 65)
+            targets.append({
+                "role": role, "source_root": str(drive), "dest_root": str(drive),
+                "session_name": "S Dt-20-Aug-26",
+                "template_dirs": ["Clips for Insert/Cam-01"],
+                "masters": [str(drive / "Master.mov")],
+                "cams": {"1": [str(clip)]}})
+        res = ingest.execute_plan(ingest.build_plan(
+            {"mode": "move", "verify": "size", "targets": targets}))
+        assert res["failed"] == 0
+        assert clip.exists(), "the card clip must never be deleted"
+        for role in ("prores", "h265"):
+            landed = list((tmp_path / f"SSD_{role}").rglob("A_0006C204_CANON.MP4"))
+            assert landed, f"clip missing on {role} drive"
+
+    @needs_ffmpeg
+    def test_master_relocates_but_its_own_drive_is_the_only_one(self, tmp_path):
+        drive = tmp_path / "SSD"; drive.mkdir()
+        make_clip(drive / "Master.mov", 65)
+        plan = ingest.build_plan({"mode": "move", "verify": "size", "targets": [{
+            "role": "prores", "source_root": str(drive), "dest_root": str(drive),
+            "session_name": "S Dt-20-Aug-26", "masters": [str(drive / "Master.mov")],
+            "cams": {}}]})
+        res = ingest.execute_plan(plan)
+        assert res["failed"] == 0
+        assert not (drive / "Master.mov").exists(), "master moved into the folder"
+        assert any(i["message"] == "moved" for i in res["items"])

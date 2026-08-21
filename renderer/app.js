@@ -267,7 +267,10 @@ function chosenMasters() {
   const src = primarySource();
   const d = detection();
   if (!src || !d) return [];
-  const picks = state.masters[state.masterSource || src.path] || [];
+  // Tolerate a single path as well as a list: several places record the pick,
+  // and one of them writing a bare string should not take the page down.
+  const raw = state.masters[state.masterSource || src.path];
+  const picks = Array.isArray(raw) ? raw : (raw ? [raw] : []);
   const pool = (d.master_candidates || []).concat(
     footageSources().flatMap((f) => filePool(f)));
   const found = picks
@@ -925,7 +928,8 @@ function wireSession() {
       state.assign = {};
       state.pairing = null;
     }
-    const picks = new Set(state.masters[from] || []);
+    const current = state.masters[from];
+    const picks = new Set(Array.isArray(current) ? current : (current ? [current] : []));
     if (box.checked) picks.add(path); else picks.delete(path);
     state.masters[from] = [...picks];
     delete state.assign[path];     // promoted to master, no longer a cam clip
@@ -1121,7 +1125,8 @@ async function detectStructure(src, force = false, overrideRoot = null) {
       { label: `Reading ${src.label}` });
     state.detected[src.path] = d;
     if (d.suggested_master && !state.masters[src.path]) {
-      state.masters[src.path] = d.suggested_master.path;
+      state.masters[src.path] = [d.suggested_master.path];
+      state.masterSource = state.masterSource || src.path;
     }
     // Clips already filed into a cam folder keep that cam; the rest start unassigned.
     state.assign = {};

@@ -755,3 +755,35 @@ class TestMirrorScope:
         t = plan["targets"][0]
         assert "Dur-" not in t["session_folder"]
         assert any("no master" in w.lower() for w in plan["warnings"])
+
+
+class TestDurTokenShapes:
+    """Real folders carry hand-written tokens like 'Dur-1h0m', not just 'Dur-54m1s'."""
+
+    @pytest.mark.parametrize("token,seconds", [
+        ("54m1s", 3241), ("1h0m", 3600), ("1h", 3600), ("48s", 48),
+        ("1h30m", 5400), ("2h3m4s", 7384), ("0s", 0),
+    ])
+    def test_every_shape_is_recognised_and_parsed(self, token, seconds):
+        assert naming.DUR_TOKEN_RE.search(f"Session {token.join(['Dur-', ''])}")
+        assert naming.parse_duration(token) == seconds
+
+    def test_junk_is_not_mistaken_for_a_token(self):
+        assert naming.parse_duration("") is None
+        assert naming.parse_duration("abc") is None
+        assert not naming.DUR_TOKEN_RE.search("Session Dur-")
+        assert not naming.DUR_TOKEN_RE.search("Session Duration")
+
+    def test_an_hours_minutes_token_is_replaced_not_duplicated(self):
+        """The regression from the screenshot: 'Dur-1h0m' gained a second token."""
+        existing = "Adalaj Soneri Satsang with SMHT MHTs E. Dt-20-Aug-26 Dur-1h0m"
+        out = naming.build_session_folder(existing, dt.date(2026, 8, 20), 3601)
+        assert out.count("Dur-") == 1
+        assert "Dur-1h0m " not in out
+
+    def test_a_template_carrying_such_a_token_reports_it(self, tmp_path):
+        name = "Adalaj Soneri Satsang with SMHT MHTs E. Dt-20-Aug-26 Dur-1h0m"
+        (tmp_path / "3018 Dt-20 Aug 2026" / name / "Clips for Insert" / "Cam-01").mkdir(parents=True)
+        d = structure.detect(tmp_path, probe_masters=False)
+        assert d.has_dur is True and d.current_dur == 3600
+        assert d.base_name.endswith("Dt-20-Aug-26"), "the Dur- token must be stripped off"

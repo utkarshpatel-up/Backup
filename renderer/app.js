@@ -15,6 +15,7 @@ const state = {
   byDate: null,         // last-modified breakdown of the loaded footage
   dateFilter: null,     // when set, only footage from this day is in play
   masters: {},          // sourcePath -> chosen master file path
+  masterSource: null,   // the drive the master was picked from
   pairing: null,
   session: { title: '', jobNumber: '', date: '', destMode: 'inPlace', destRoots: {} },
   assign: {},           // primary file path -> 'master' | cam number | 'skip'
@@ -125,7 +126,10 @@ function footageSources() {
 
 function primarySource() {
   const f = footageSources();
-  return f.find((s) => s.role === 'prores') || f.find((s) => s.role === 'h265') || f[0];
+  // Whichever drive the master was chosen from leads: the cam assignment is made
+  // against it, and the other drive is matched to it by Mirror.
+  return f.find((s) => s.path === state.masterSource)
+      || f.find((s) => s.role === 'prores') || f.find((s) => s.role === 'h265') || f[0];
 }
 
 /** Where a source's output goes; defaults to the source drive itself. */
@@ -173,8 +177,9 @@ function chosenMaster() {
   const src = primarySource();
   const d = detection();
   if (!src || !d) return null;
-  const pick = state.masters[src.path];
-  const pool = (d.master_candidates || []).concat(filePool(src));
+  const pick = state.masters[state.masterSource || src.path];
+  const pool = (d.master_candidates || []).concat(
+    footageSources().flatMap((f) => filePool(f)));
   return pool.find((f) => f.path === pick) || d.suggested_master || null;
 }
 
@@ -518,6 +523,15 @@ function renderSession() {
   </div>`;
 }
 
+/** Every clip in play on every footage drive, tagged with the drive it is on. */
+function masterCandidates() {
+  const out = [];
+  for (const f of footageSources()) {
+    for (const file of filePool(f)) out.push({ file, source: f });
+  }
+  return out;
+}
+
 /** The Folder step when the name came from an imported structure template. */
 function renderTemplateFolder(src) {
   const t = state.template;
@@ -549,28 +563,51 @@ function renderTemplateFolder(src) {
   </div>
 
   <div class="card">
-    <h3>Master file</h3>
-    <p class="hint">The structure carries no footage, so pick the program recording from
-      the source drive. Its length becomes the Dur- token.</p>
+    <h3>Footage</h3>
+    <p class="hint">The structure carries no footage, so load it from the drives. Each drive
+      is loaded separately — the master sets the Dur- token, and the clips on the other
+      drive are matched to it later by Mirror.</p>
+    ${footageSources().map((f) => {
+      const loaded = allFiles(f).length;
+      const inPlay = filePool(f).length;
+      return `<div class="source-card" style="padding:10px 12px">
+        <div class="icon">${f.kind === 'zip' ? '🗜️' : f.kind === 'folder' ? '📁' : '💾'}</div>
+        <div class="body">
+          <div class="name">${esc(f.label)}
+            <span class="badge ${f.role}">${esc(f.role)}</span>
+            ${loaded ? `<span class="badge ${inPlay ? 'ok' : 'warn'}">${inPlay} of ${loaded}
+              clip(s) in play</span>` : '<span class="badge warn">nothing loaded</span>'}</div>
+          <div class="path">${esc(f.path)}</div>
+        </div>
+        <div class="row">
+          <button class="sm ${loaded ? '' : 'primary'}" data-scan="${esc(f.path)}">Scan</button>
+          <button class="sm" data-addfiles="${esc(f.path)}">Add files…</button>
+          <button class="sm" data-addfolder="${esc(f.path)}">Add a folder…</button>
+        </div>
+      </div>`;
+    }).join('')}
     ${dateSuggestion()}
-    ${pool.length ? `
+  </div>
+
+  <div class="card">
+    <h3>Master file</h3>
+    <p class="hint">The program recording. Its length becomes the Dur- token, and the drive
+      it sits on is the one you assign cams against.</p>
+    ${masterCandidates().length ? `
       <div class="scroll"><table><thead><tr><th style="width:1%"></th><th>File</th>
-        <th class="num">Length</th><th>Codec</th><th class="num">Size</th></tr></thead>
-      <tbody>${pool.map((c) => `
+        <th>Drive</th><th class="num">Length</th><th>Codec</th><th class="num">Size</th></tr></thead>
+      <tbody>${masterCandidates().map(({ file: c, source: from }) => `
         <tr><td><input type="radio" name="master" data-master="${esc(c.path)}"
+              data-msrc="${esc(from.path)}"
               ${master && c.path === master.path ? 'checked' : ''} style="width:auto" /></td>
           <td class="mono">${esc(c.name)}</td>
+          <td><span class="badge ${from.role}">${esc(from.label)}</span></td>
           <td class="num">${esc(fmtClock(c.duration))}</td>
           <td><span class="badge ${esc(c.family || '')}">${esc(c.video_codec || '?')}</span></td>
           <td class="num">${fmtBytes(c.size)}</td></tr>`).join('')}
       </tbody></table></div>`
-      : `<div class="note warn">No footage loaded yet. Scan the source drive, or add
-         files by hand.</div>`}
-    <div class="row" style="margin-top:12px">
-      <button class="sm" id="btnScanFootage">Scan ${esc(src.label)}</button>
-      <button class="sm" id="btnAddFiles">Add files…</button>
-      <button class="sm" id="btnAddFolder2">Add a folder…</button>
-    </div>
+      : `<div class="note warn">No footage loaded yet — scan a drive above, or add files
+         by hand.</div>`}
   </div>
 
   <div class="card">
@@ -646,13 +683,25 @@ function wireSession() {
     if (chosen) await detectStructure(primarySource(), true, chosen);
   });
 
-  $('btnScanFootage')?.addEventListener('click', () => scanSource(primarySource(), true));
+  const bySrc = (attr) => (b) => state.sources.find((x) => x.path === b.dataset[attr]);
+  document.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', () =>
+    scanSource(bySrc('scan')(b), true)));
+  document.querySelectorAll('[data-addfiles]').forEach((b) => b.addEventListener('click', () =>
+    addFootage('files', bySrc('addfiles')(b))));
+  document.querySelectorAll('[data-addfolder]').forEach((b) => b.addEventListener('click', () =>
+    addFootage('folder', bySrc('addfolder')(b))));
   wireDayButtons();
   $('btnAddFiles')?.addEventListener('click', () => addFootage('files'));
   $('btnAddFolder2')?.addEventListener('click', () => addFootage('folder'));
 
   document.querySelectorAll('[data-master]').forEach((r) => r.addEventListener('change', () => {
-    state.masters[primarySource().path] = r.dataset.master;
+    const from = r.dataset.msrc || primarySource().path;
+    state.masterSource = from;
+    state.masters[from] = r.dataset.master;
+    // The cam assignment belongs to the master's drive, so a different drive
+    // means the old assignment and pairing no longer refer to anything.
+    state.assign = {};
+    state.pairing = null;
     state.plan = null;
     render();
   }));
@@ -676,8 +725,8 @@ function wireSession() {
 }
 
 /** Add footage the operator picked by hand, for when the structure carries none. */
-async function addFootage(kind) {
-  const src = primarySource();
+async function addFootage(kind, target = null) {
+  const src = target || primarySource();
   if (!src) return;
   const paths = kind === 'folder'
     ? [await window.api.pickFolder('Choose a folder of footage')].filter(Boolean)
@@ -690,8 +739,8 @@ async function addFootage(kind) {
     const seen = new Set(existing.map((f) => f.path));
     state.extraFiles[src.path] = existing.concat(r.files.filter((f) => !seen.has(f.path)));
     if (!r.count) { toast('No video files found there.', 'err'); return render(); }
-    toast(`Added ${r.count} clip(s).`, 'ok');
-    applyDateSuggestion(src);
+    toast(`Added ${r.count} clip(s) from ${src.label}.`, 'ok');
+    await applyDateSuggestion(src);
     render();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -703,8 +752,10 @@ async function addFootage(kind) {
  * A drive routinely holds more than one shoot, so this is what separates this
  * session's files from the rest without the operator sifting through them.
  */
-async function applyDateSuggestion(src) {
-  const all = allFiles(src);
+async function applyDateSuggestion(_src) {
+  // The breakdown spans every footage drive, so loading one drive does not
+  // discard what another already contributed.
+  const all = footageSources().flatMap((f) => allFiles(f));
   if (!all.length) { state.byDate = null; return; }
   try {
     state.byDate = await call('group_dates',
@@ -712,10 +763,13 @@ async function applyDateSuggestion(src) {
     if (state.byDate.matched_session_date && state.dateFilter === null) {
       state.dateFilter = state.byDate.suggested_date;
     }
-    if (!state.masters[src.path]) {
-      const pool = filePool(src);
-      const longest = pool.reduce((a, b) => ((b.duration || 0) > (a?.duration || 0) ? b : a), null);
-      if (longest) state.masters[src.path] = longest.path;
+    if (!state.masterSource) {
+      const best = masterCandidates().reduce(
+        (a, b) => ((b.file.duration || 0) > (a?.file.duration || 0) ? b : a), null);
+      if (best) {
+        state.masterSource = best.source.path;
+        state.masters[best.source.path] = best.file.path;
+      }
     }
     state.plan = null;
   } catch (e) { toast(e.message, 'err'); }

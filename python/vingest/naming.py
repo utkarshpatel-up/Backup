@@ -25,8 +25,13 @@ MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 
 # " Dt-16-Aug-26" / "Dt-16-Aug-2026"
 DATE_TOKEN_RE = re.compile(r"\s*\bDt-(\d{1,2})-([A-Za-z]{3})-(\d{2,4})\b")
-# " Dur-54m1s" / "Dur-1h2m3s" / "Dur-48s"
-DUR_TOKEN_RE = re.compile(r"\s*\bDur-(?:\d+h)?(?:\d+m)?\d+s\b", re.IGNORECASE)
+# " Dur-54m1s" / "Dur-1h2m3s" / "Dur-48s" / "Dur-1h0m" / "Dur-1h"
+# Every component is optional, but at least one must be present — hence the
+# lookahead for a digit. Requiring a trailing seconds component (as this once
+# did) leaves an existing "Dur-1h0m" unrecognised, and appends a second token
+# beside it instead of replacing it.
+DUR_TOKEN_RE = re.compile(
+    r"\s*\bDur-(?=\d)(?:\d+h)?(?:\d+m)?(?:\d+s)?\b", re.IGNORECASE)
 
 # Characters no filesystem we target will accept.
 ILLEGAL_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -61,9 +66,14 @@ def fmt_duration(seconds: float | None) -> str:
 
 
 def parse_duration(text: str) -> int | None:
-    """Inverse of fmt_duration, for reading a Dur- token back off a name."""
-    m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(\d+)s", text.strip(), re.IGNORECASE)
-    if not m:
+    """Inverse of fmt_duration, for reading a Dur- token back off a name.
+
+    Accepts any combination of the three components, so hand-written tokens like
+    "1h0m" or "1h" read back as well as the "54m1s" the app generates.
+    """
+    text = text.strip()
+    m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", text, re.IGNORECASE)
+    if not m or not any(m.groups()):
         return None
     h, mi, s = (int(g or 0) for g in m.groups())
     return h * 3600 + mi * 60 + s

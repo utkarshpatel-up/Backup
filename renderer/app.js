@@ -599,20 +599,26 @@ function renderSession() {
   </div>
 
   <div class="card">
-    <h3>Master file</h3>
-    <p class="hint">The Dur- token is read from this file. The app picked the longest
-      recording sitting at the top of the session folder.</p>
+    <h3>Master clip${masters.length > 1 ? 's' : ''}</h3>
+    <p class="hint">The Dur- token is read from ${masters.length > 1 ? 'these files' : 'this file'}.
+      Tick more than one if the session was recorded in several — the folder's Dur- becomes
+      their total and each is renamed with its own Dur- and a Clip-NN.</p>
     ${(d.master_candidates || []).length ? `
       <table><thead><tr><th style="width:1%"></th><th>File</th>
         <th class="num">Length</th><th>Codec</th><th class="num">Size</th></tr></thead>
       <tbody>${d.master_candidates.map((c) => `
-        <tr><td><input type="radio" name="master" data-master="${esc(c.path)}"
-              ${master && c.path === master.path ? 'checked' : ''} style="width:auto" /></td>
+        <tr><td><input type="checkbox" data-master="${esc(c.path)}"
+              data-msrc="${esc(src.path)}"
+              ${masters.some((m) => m.path === c.path) ? 'checked' : ''} style="width:auto" /></td>
           <td class="mono">${esc(c.name)}</td>
           <td class="num">${esc(fmtClock(c.duration))}</td>
           <td><span class="badge ${esc(c.family || '')}">${esc(c.video_codec || '?')}</span></td>
           <td class="num">${fmtBytes(c.size)}</td></tr>`).join('')}
-      </tbody></table>`
+      </tbody></table>
+      ${masters.length > 1 ? `<p class="hint" style="margin:10px 0 0">
+        ${masters.map((m) => esc(fmtDurAuto(m.duration))).join(' + ')} =
+        <b>${esc(durLabel)}</b> on the folder, with <b>Clips-${
+          String(masters.length).padStart(2, '0')}</b>.</p>` : ''}`
       : `<div class="note err">No video file sits directly in the session folder, so
          there is nothing to read a duration from. Put the program recording there,
          or choose a different folder.</div>`}

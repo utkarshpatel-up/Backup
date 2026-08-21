@@ -216,6 +216,44 @@ def m_compare(p, req_id):
     return result
 
 
+def m_verify_pairs(p, req_id):
+    """Verify explicit (a, b) file pairs are identical — the clips copied to both
+    SSDs. Nothing else is looked at: not the card, not the per-drive masters."""
+    from pathlib import Path as _P
+    from .hashing import file_digest, algorithm
+    emit = _progress(req_id)
+    mode = p.get("mode", "size")
+    pairs = p.get("pairs", [])
+    results = []
+    for n, pair in enumerate(pairs, 1):
+        a, b = pair[0], pair[1]
+        if req_id in _CANCELLED:
+            return {"cancelled": True, "results": results}
+        emit({"stage": "verify", "done": n, "total": len(pairs), "name": _P(a).name})
+        rec = {"name": _P(a).name, "a": a, "b": b, "match": False, "detail": ""}
+        try:
+            sa, sb = _P(a).stat().st_size, _P(b).stat().st_size
+            if sa != sb:
+                rec["detail"] = f"size differs: {sa} vs {sb}"
+            elif mode == "hash":
+                ha, hb = file_digest(a), file_digest(b)
+                rec["match"] = ha == hb
+                rec["detail"] = "checksums match" if rec["match"] else "checksums differ"
+            else:
+                rec["match"] = True
+                rec["detail"] = f"same size ({sa} bytes)"
+        except OSError as e:
+            rec["detail"] = str(e)
+        results.append(rec)
+    return {
+        "algorithm": (algorithm() if mode == "hash" else "size"),
+        "checked": len(results),
+        "results": results,
+        "mismatched": [r for r in results if not r["match"]],
+        "ok": all(r["match"] for r in results),
+    }
+
+
 def m_deep_verify(p, req_id):
     pairs = p.get("pairs")
     if not pairs and p.get("roots") and len(p["roots"]) >= 2:

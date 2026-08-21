@@ -25,6 +25,7 @@ const state = {
   compare: null,
   deep: null,
   compareRoots: [],
+  pairVerify: null,     // focused result: copied clips identical on both SSDs
   busy: null,           // {label, id, percent, detail}
 };
 
@@ -1742,6 +1743,7 @@ function wireCopy() {
   $('btnRun')?.addEventListener('click', doRun);
   $('btnGoVerify')?.addEventListener('click', () => {
     state.compareRoots = state.plan.targets.map((t) => t.session_path);
+    state.pairVerify = null;
     goStep(4);
   });
   $('btnOpenAll')?.addEventListener('click', async () => {
@@ -1818,7 +1820,32 @@ async function doRun() {
 
 /* ------------------------------------------------------------- step: verify */
 
+/**
+ * The clips that were copied to both SSDs, as (drive-A path, drive-B path) pairs.
+ *
+ * Only files with the same source on both targets qualify — the mirrored cam
+ * clips. The per-drive masters have different sources (ProRes vs H.265) and are
+ * not compared, and the camera card is never involved.
+ */
+function mirroredPairs() {
+  if (!state.plan || state.plan.targets.length < 2) return [];
+  const [a, b] = state.plan.targets;
+  const norm = (x) => String(x).toLowerCase();
+  const bBySrc = new Map(b.items.map((i) => [norm(i.src), i]));
+  const pairs = [];
+  for (const ia of a.items) {
+    const ib = bBySrc.get(norm(ia.src));
+    if (!ib) continue;
+    pairs.push({ name: ia.original_name,
+      a: ia.final_dst || ia.dst, b: ib.final_dst || ib.dst,
+      aRole: a.role, bRole: b.role });
+  }
+  return pairs;
+}
+
 function renderVerify() {
+  const pairs = mirroredPairs();
+  const canVerify = pairs.length > 0;
   const roots = state.compareRoots;
   const rows = roots.map((r, i) => `
     <div class="row" style="margin-bottom:8px">
@@ -1827,23 +1854,59 @@ function renderVerify() {
       <button class="sm ghost" data-drop-root="${i}">Remove</button>
     </div>`).join('');
 
+  const b = state.plan && state.plan.targets[1];
+  const a = state.plan && state.plan.targets[0];
+
   return `
   <div class="card">
-    <h3>Folders to compare</h3>
-    <p class="hint">The first folder is the reference. Add the ProRes session folder, the H.265
-      session folder, and the SD card if you still have it.</p>
-    ${rows || '<div class="hint">Nothing added yet.</div>'}
-    <div class="row" style="margin-top:10px">
-      <button class="sm" id="btnAddCompare">Add folder…</button>
-      <div class="spacer"></div>
-      <button class="primary" id="btnCompare" ${roots.length < 2 ? 'disabled' : ''}>
-        Compare (fast)</button>
-      <button class="sm" id="btnDeep" ${roots.length < 2 ? 'disabled' : ''}>
-        Checksum verify…</button>
-    </div>
+    <h3>Verify the copied clips match on both SSDs</h3>
+    <p class="hint">Checks only the clips that were copied to both drives — the cam inserts.
+      Each drive keeps its own master, and the camera cards are not part of this; those are
+      meant to differ, so they are left out.</p>
+    ${canVerify ? `<div class="note info">
+        <b>${pairs.length} clip(s)</b> were copied to both
+        <b>${esc(a.role)}</b> and <b>${esc(b.role)}</b>. Verify they are identical:</div>
+      <div class="row">
+        <button class="primary" id="btnVerifyPairs">Verify (size, fast)</button>
+        <button class="sm" id="btnVerifyPairsHash">Checksum verify (bit-exact)</button>
+      </div>`
+      : `<div class="note warn">No copy has run yet, or only one drive was filed — there is
+         nothing to cross-check. Run the copy first.</div>`}
   </div>
-  ${state.compare ? renderCompareResult() : ''}
-  ${state.deep ? renderDeepResult() : ''}`;
+  ${state.pairVerify ? renderPairVerify() : ''}
+
+  <details style="margin-top:6px">
+    <summary class="hint" style="cursor:pointer">Compare arbitrary folders instead</summary>
+    <div class="card" style="margin-top:8px">
+      <p class="hint">Compare any folders by hand — folder tree, names, durations. Sizes and
+        codecs legitimately differ between drives, so those are reported as information.</p>
+      ${rows || '<div class="hint">Nothing added yet.</div>'}
+      <div class="row" style="margin-top:10px">
+        <button class="sm" id="btnAddCompare">Add folder…</button>
+        <div class="spacer"></div>
+        <button class="sm" id="btnCompare" ${roots.length < 2 ? 'disabled' : ''}>Compare (fast)</button>
+        <button class="sm" id="btnDeep" ${roots.length < 2 ? 'disabled' : ''}>Checksum verify…</button>
+      </div>
+    </div>
+    ${state.compare ? renderCompareResult() : ''}
+    ${state.deep ? renderDeepResult() : ''}
+  </details>`;
+}
+
+/** Result card for the focused copied-clip verification. */
+function renderPairVerify() {
+  const v = state.pairVerify;
+  return `<div class="card">
+    <div class="note ${v.ok ? 'ok' : 'err'}">
+      <b>${v.ok ? 'All copied clips are identical on both SSDs.'
+                : `${v.mismatched.length} clip(s) differ between the drives.`}</b>
+      ${v.checked} clip(s) checked by ${esc(v.algorithm)}.
+    </div>
+    ${v.mismatched.map((m) => `<div class="note err mono">
+      ${esc(m.name)} — ${esc(m.detail)}</div>`).join('')}
+    ${v.ok ? `<p class="hint" style="margin:6px 0 0">The two SSDs are verified backups of
+      each other for every clip that was copied.</p>` : ''}
+  </div>`;
 }
 
 function renderCompareResult() {
@@ -1892,6 +1955,29 @@ function renderDeepResult() {
 }
 
 function wireVerify() {
+  const runPairVerify = async (mode) => {
+    const pairs = mirroredPairs();
+    if (!pairs.length) return;
+    try {
+      state.pairVerify = await call('verify_pairs',
+        { pairs: pairs.map((p) => [p.a, p.b]), mode },
+        { label: mode === 'hash' ? 'Checksumming copied clips' : 'Verifying copied clips' });
+      toast(state.pairVerify.ok ? 'Both SSDs hold identical copied clips.'
+        : `${state.pairVerify.mismatched.length} clip(s) differ.`,
+        state.pairVerify.ok ? 'ok' : 'err');
+      render();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  $('btnVerifyPairs')?.addEventListener('click', () => runPairVerify('size'));
+  $('btnVerifyPairsHash')?.addEventListener('click', async () => {
+    const ok = await window.api.confirm({
+      message: `Checksum ${mirroredPairs().length} copied clip(s) on both SSDs?`,
+      detail: 'Each clip is read end to end on both drives. Bit-exact, but slower over USB.',
+      confirmLabel: 'Checksum',
+    });
+    if (ok) runPairVerify('hash');
+  });
+
   $('btnAddCompare')?.addEventListener('click', async () => {
     const p = await window.api.pickFolder('Choose a session folder to compare');
     if (p && !state.compareRoots.includes(p)) { state.compareRoots.push(p); render(); }

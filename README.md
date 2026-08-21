@@ -119,16 +119,36 @@ remembers the choice.
    added `Dur-` in bold. Add the footage by hand; files from the session date are
    suggested. Pick the master (defaulting to the longest clip in play), then
    choose move vs copy.
-3. **Cameras** — every unfiled clip listed with length, codec, resolution and
+3. **Cameras** — every clip in play listed with length, codec, resolution and
    last-modified time; clips already sitting in a cam folder come pre-selected
-   and are not re-copied. Assign the rest to cams.
+   and are not re-copied. Assign the rest to cams, then **Mirror** to apply the
+   same assignment to the other drive.
    *Auto-suggest* groups by resolution + fps + codec as a starting point.
-   **Mirror** matches your choices onto the second SSD: by filename stem first,
-   then by duration + wall-clock time when the stems disagree.
+
 4. **Copy** — the full plan is shown first: the folder rename, and every clip
    with the cam folder it lands in. Nothing is written until you press Start.
    Progress shows throughput and ETA and can be cancelled mid-file.
 5. **Verify** — compares the session folders (and the SD card, if you add it).
+
+### How Mirror pairs the two drives
+
+You assign clips to cams once, on the primary drive. **Mirror** finds each clip's
+twin on the other drive so the same assignment can be applied to both:
+
+1. **Filename stem**, case-insensitively, with any `Dt-`/`Dur-` tokens stripped.
+   Both bodies record the same reel id, so this settles almost everything.
+2. **Duration within 1.5s and last-modified within 15 minutes** for whatever is
+   left, closest in time winning.
+
+Each file on the second drive can only be claimed once, so two clips cannot pair
+to the same twin. Anything unmatched is reported by name and filed on the primary
+drive only — and if the *master* is what went unmatched, that is called out
+separately, because without it the second drive's folder gets no `Dur-` token.
+
+Both sides are matched from the footage actually in play — the clips you loaded,
+narrowed by the day filter — not from a raw scan of each drive. Pairing raw
+drives would happily match a clip from an unrelated shoot that happened to share
+a reel id.
 
 ## Design decisions worth knowing
 
@@ -187,11 +207,12 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-76 tests covering duration formatting, the "filenames are never changed"
+79 tests covering duration formatting, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
 rename-only-on-success guarantee, structure-template import (both zip layouts,
 plus path-escape refusal), per-source destinations, the same-day footage
-suggestion and its two refusal cases, exFAT case-insensitive de-duplication,
+suggestion and its two refusal cases, mirror scoping, exFAT case-insensitive
+de-duplication,
 cross-drive pairing, `.mov`/`.mp4` tolerance, comparison severity rules, and the
 cancel-leaves-no-partial-file guarantee. Tests needing real media are skipped
 automatically when ffmpeg is absent.

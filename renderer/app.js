@@ -853,16 +853,26 @@ function renderCameras() {
   }).join('');
 
   const sec = secondarySource();
+  const prim = src;
+  const secName = sec ? sec.label : 'the other drive';
+  const masterTwin = state.pairing && master
+    ? state.pairing.matches[master.path] : null;
   const pairInfo = state.pairing
-    ? (state.pairing.unmatched_primary.length
-        ? `<div class="note warn"><b>${state.pairing.unmatched_primary.length} file(s)
-             have no twin</b> on ${esc(sec ? sec.label : 'the other drive')} and will be copied
-             to that drive's structure only if a match is found.
-             ${esc(state.pairing.unmatched_primary.map((p) => p.split(/[\\/]/).pop()).join(', '))}</div>`
-        : `<div class="note ok">All ${Object.keys(state.pairing.matches).length} files matched
-             to their twin on ${esc(sec ? sec.label : 'the other drive')}.</div>`)
-    : (sec ? `<div class="note info">Press <b>Mirror to ${esc(sec.label)}</b> to match these files
-              against the other drive.</div>` : '');
+    ? `${state.pairing.unmatched_primary.length
+        ? `<div class="note warn"><b>${state.pairing.unmatched_primary.length} clip(s) have no
+             twin on ${esc(secName)}</b>, so they will be filed on ${esc(prim.label)} only:
+             ${esc(state.pairing.unmatched_primary.map((p) => p.split(/[\\/]/).pop()).join(', '))}
+             </div>`
+        : `<div class="note ok">All ${Object.keys(state.pairing.matches).length} clip(s) matched
+             to a twin on ${esc(secName)}. Whatever you assign here is applied to both drives.
+             </div>`}
+       ${master && !masterTwin
+        ? `<div class="note err"><b>The master has no twin on ${esc(secName)}.</b>
+             Without it that drive's folder gets no Dur- token. Load its footage, or check
+             the day filter.</div>` : ''}`
+    : (sec ? `<div class="note info">Assignments here apply to ${esc(prim.label)} only.
+              Press <b>Mirror to ${esc(secName)}</b> to match each clip to its twin and file
+              both drives the same way.</div>` : '');
 
   return `
   <div class="card">
@@ -955,15 +965,33 @@ async function scanSource(src, force = false) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+/**
+ * Match the clips chosen on the primary drive to their twins on the other one.
+ *
+ * Both sides go through filePool, so the pairing sees exactly the files in play
+ * — hand-picked as well as scanned, and narrowed by the same day filter. Pairing
+ * against a raw drive scan would drag in footage from other shoots.
+ */
 async function mirrorToSecondary() {
   const a = primarySource(), b = secondarySource();
   if (!a || !b) return;
   try {
-    if (!state.scans[b.path]) await scanSource(b);
-    state.pairing = await call('pair', {
-      primary: state.scans[a.path].files,
-      secondary: state.scans[b.path].files,
-    }, { label: `Matching against ${b.label}` });
+    if (!allFiles(b).length) {
+      await scanSource(b);
+      await applyDateSuggestion(a);
+    }
+    const primary = filePool(a);
+    const secondary = filePool(b);
+    if (!primary.length) return toast(`No footage loaded for ${a.label}.`, 'err');
+    if (!secondary.length) {
+      return toast(
+        `No footage on ${b.label}${state.dateFilter
+          ? ` from ${fmtDay(state.dateFilter)} — try another day or All days.` : '.'}`,
+        'err');
+    }
+    state.pairing = await call('pair', { primary, secondary },
+      { label: `Matching against ${b.label}` });
+    state.plan = null;
     render();
   } catch (e) { toast(e.message, 'err'); }
 }

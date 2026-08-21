@@ -250,6 +250,11 @@ def build_plan(spec: dict, progress=None) -> dict:
                     f"Check the file plays, or choose a different master.")
             elif master.error:
                 plan.warnings.append(f"Master probed with a warning: {master.error}")
+        else:
+            # No master at all — usually a mirrored target whose twin was not found.
+            plan.warnings.append(
+                f"No master file for the {plan.role} target, so its folder gets no "
+                f"Dur- token. Check that drive's footage is loaded and mirrored.")
 
         clips_root = staging_path / naming.CLIPS_DIRNAME
         final_clips_root = session_path / naming.CLIPS_DIRNAME

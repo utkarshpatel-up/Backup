@@ -708,3 +708,50 @@ class TestDateSuggestion:
         when = _dt.datetime(2026, 8, 16, 14, 30).timestamp()
         os.utime(f, (when, when))
         assert probe.probe(f).to_dict()["shoot_date"] == "2026-08-16"
+
+
+class TestMirrorScope:
+    """What gets mirrored is the footage in play, not everything on the drive."""
+
+    def _f(self, root, name, day, dur=9.0, mtime=1000):
+        return {"path": f"/{root}/{name}", "name": name, "shoot_date": day,
+                "duration": dur, "mtime": mtime, "size": 100}
+
+    def test_pairing_the_filtered_pools_excludes_other_shoots(self):
+        a = [self._f("A", "MASTER01.mov", "2026-08-16", 64.0, 1000),
+             self._f("A", "C0031.mov", "2026-08-16", 9.0, 2000),
+             self._f("A", "OTHERDAY.mov", "2026-08-18", 7.0, 9000)]
+        b = [self._f("B", n["name"], n["shoot_date"], n["duration"], n["mtime"])
+             for n in a]
+
+        # Pairing the raw drives drags the unrelated shoot along.
+        assert len(ingest.pair_sources(a, b)["matches"]) == 3
+
+        # Pairing what is actually in play does not.
+        day = "2026-08-16"
+        fa = [f for f in a if f["shoot_date"] == day]
+        fb = [f for f in b if f["shoot_date"] == day]
+        matched = ingest.pair_sources(fa, fb)["matches"]
+        assert len(matched) == 2
+        assert not any("OTHERDAY" in v for v in matched.values())
+
+    def test_a_master_without_a_twin_is_reported(self):
+        a = [self._f("A", "MASTER01.mov", "2026-08-16", 64.0, 1000)]
+        b = [self._f("B", "SOMETHINGELSE.mov", "2026-08-16", 3.0, 90000)]
+        r = ingest.pair_sources(a, b)
+        assert r["unmatched_primary"] == ["/A/MASTER01.mov"]
+
+    def test_a_target_with_no_master_warns_about_the_missing_token(self, tmp_path):
+        """A mirrored drive whose master had no twin must not fail silently."""
+        src = tmp_path / "SSD"
+        src.mkdir()
+        (src / "clip.mov").write_bytes(b"x" * 10)
+        plan = ingest.build_plan({
+            "mode": "copy", "targets": [{
+                "role": "h265", "source_root": str(src),
+                "dest_root": str(tmp_path / "out"),
+                "session_name": "Session Dt-16-Aug-26",
+                "master": None, "cams": {"1": [str(src / "clip.mov")]}}]})
+        t = plan["targets"][0]
+        assert "Dur-" not in t["session_folder"]
+        assert any("no master" in w.lower() for w in plan["warnings"])

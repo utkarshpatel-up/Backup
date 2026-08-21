@@ -315,10 +315,28 @@ function suggestedMastersFor(src) {
     .sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
 }
 
-/** True if a file sits directly at its drive's root, not down in a subfolder. */
+/** Path depth = how many folder segments a path has. */
+function pathDepth(path) {
+  return String(path).split(/[\\/]+/).filter(Boolean).length;
+}
+
+/**
+ * The shallowest level at which this drive's footage sits.
+ *
+ * "Root" is not the literal volume mount — a drive often keeps the session in a
+ * folder — but the topmost level where loaded clips actually live. Masters sit
+ * there; camera-card clips are nested deeper, so they fall away.
+ */
+function driveRootDepth(src) {
+  const files = filePool(src);
+  if (!files.length) return Infinity;
+  return Math.min(...files.map((f) => pathDepth(f.path)));
+}
+
+/** True if a file sits at its drive's shallowest (root) footage level. */
 function atDriveRoot(file, src) {
   if (!src) return false;
-  return parentDir(file.path) === String(src.path).replace(/[\\/]+$/, '');
+  return pathDepth(file.path) === driveRootDepth(src);
 }
 
 /** A file whose own name carries a Dt- token for a different day than `day`. */
@@ -812,10 +830,9 @@ function selectDay(day) {
  * files that could actually be the master. "Show all" lifts the root filter.
  */
 function drivePlausibleMasters(src) {
-  const picked = new Set(mastersFor(src).map((m) => m.path));
   if (state.showAllMasters) return filePool(src);
-  const root = filePool(src).filter((c) => atDriveRoot(c, src) || picked.has(c.path));
-  return root.length ? root : filePool(src);
+  const picked = new Set(mastersFor(src).map((m) => m.path));
+  return filePool(src).filter((c) => atDriveRoot(c, src) || picked.has(c.path));
 }
 
 function plausibleMasters() {

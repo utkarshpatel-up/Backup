@@ -163,11 +163,14 @@ def build_plan(spec: dict, progress=None) -> dict:
         return probe_cache[path]
 
     for t in spec.get("targets", []):
-        master_path = t.get("master")
-        master = get(master_path) if master_path else None
-        when = _session_date(master, date_override)
-
-        duration = master.duration if master else None
+        # One session can hold several master clips; Clip-01 is the earliest.
+        master_paths = t.get("masters") or ([t["master"]] if t.get("master") else [])
+        masters = sorted((get(mp) for mp in master_paths),
+                         key=lambda m: (m.mtime, m.name))
+        timed = [m.duration for m in masters if m.duration is not None]
+        # The folder's Dur- is the sum of every master clip inside it.
+        duration = sum(timed) if timed else None
+        when = _session_date(masters[0] if masters else None, date_override)
         existing = t.get("session_source")
         template_name = t.get("session_name")
         from_template = False
@@ -175,7 +178,8 @@ def build_plan(spec: dict, progress=None) -> dict:
         if not existing and template_name:
             # The name comes from an imported template (usually a zip of empty
             # folders). It is authoritative — only the Dur- token is ours.
-            session_folder = naming.complete_with_dur(template_name, duration)
+            session_folder = naming.session_folder_name(
+                template_name, duration, len(masters))
             job_folder = naming.sanitize(t.get("job_name") or "") if t.get("job_name") else ""
             dest_root = Path(t["dest_root"])
             session_path = dest_root / job_folder / session_folder if job_folder \
@@ -186,15 +190,18 @@ def build_plan(spec: dict, progress=None) -> dict:
         elif existing:
             # The folder is already named; only the Dur- token is ours to add.
             existing_path = Path(existing)
-            session_folder = naming.complete_with_dur(existing_path.name, duration)
+            session_folder = naming.session_folder_name(
+                existing_path.name, duration, len(masters))
             session_path = existing_path.parent / session_folder
             staging_path = existing_path
             job_folder = existing_path.parent.name if existing_path.parent != existing_path.parent.parent else ""
             dest_root = existing_path.parent
             in_place = True
         else:
-            session_folder = naming.build_session_folder(
-                title, when, duration, add_date=spec.get("add_date", True))
+            session_folder = naming.session_folder_name(
+                naming.build_session_folder(title, when, None,
+                                            add_date=spec.get("add_date", True)),
+                duration, len(masters))
             job_folder = naming.build_job_folder(job_number, when) if job_number else ""
             dest_root = Path(t.get("dest_root") or t["source_root"])
             session_path = dest_root / job_folder / session_folder if job_folder \
@@ -226,27 +233,31 @@ def build_plan(spec: dict, progress=None) -> dict:
             plan.rename_to = ""          # already complete; nothing to rename
 
         taken: set[str] = set()
-        if master is not None:
-            # The file's own name is kept exactly as it arrives; dedupe only
-            # guards against two sources colliding in one destination folder.
-            name = naming.dedupe(Path(master.path).name, taken)
+        for index, master in enumerate(masters, 1):
+            # Unlike the cam clips, a master is renamed after the folder it sits
+            # in, carrying its own duration and its position in the session.
+            name = naming.dedupe(
+                naming.master_clip_name(session_folder, master.duration, index,
+                                        len(masters), Path(master.path).suffix),
+                taken)
             taken.add(name)
             plan.items.append(PlanItem(
                 src=master.path, dst=str(staging_path / name),
                 final_dst=str(session_path / name), size=master.size,
-                kind="master", duration=master.duration, codec=master.family,
-                original_name=Path(master.path).name))
+                kind="master", cam=None, duration=master.duration,
+                codec=master.family, original_name=Path(master.path).name))
             if master.duration is None:
                 # The folder's whole reason to consult the media is this token,
                 # so say plainly what will be missing rather than just "probe failed".
                 detail = f" ({master.error})" if master.error else ""
                 plan.warnings.append(
                     f"Could not read the duration of {Path(master.path).name}{detail}, "
-                    f"so the folder cannot be given its Dur- token. "
-                    f"Check the file plays, or choose a different master.")
+                    f"so the folder's Dur- total will be wrong. Check the file plays, "
+                    f"or drop it from the masters.")
             elif master.error:
                 plan.warnings.append(f"Master probed with a warning: {master.error}")
-        else:
+
+        if not masters:
             # No master at all — usually a mirrored target whose twin was not found.
             plan.warnings.append(
                 f"No master file for the {plan.role} target, so its folder gets no "

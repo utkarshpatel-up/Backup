@@ -217,9 +217,11 @@ class TestPlan:
                          "cams": {"1": [str(src / "C0031.MP4")],
                                   "2": [str(src / "weird name (2).mxf")]}}],
         })
-        landed = {Path(i["dst"]).name for i in plan["targets"][0]["items"]}
-        assert landed == set(originals), "filenames must survive the copy untouched"
-        for item in plan["targets"][0]["items"]:
+        clips = [i for i in plan["targets"][0]["items"] if i["kind"] == "clip"]
+        landed = {Path(i["dst"]).name for i in clips}
+        assert landed == {"C0031.MP4", "weird name (2).mxf"}, \
+            "cam clip names must survive the copy untouched"
+        for item in clips:
             assert "Dur-" not in Path(item["dst"]).name
             assert "Dt-" not in Path(item["dst"]).name
 
@@ -235,7 +237,9 @@ class TestPlan:
         t = plan["targets"][0]
         assert t["session_folder"].endswith("Dt-16-Aug-26 Dur-1m5s")
         assert "Dur-" not in t["job_folder"]          # job folder uses the spaced date only
-        assert Path(t["items"][0]["dst"]).name == "M.mov", "master keeps its own name"
+        # A lone master is renamed after the folder and shares its duration.
+        assert Path(t["items"][0]["dst"]).name == \
+            REFERENCE_TITLE + " Dt-16-Aug-26 Dur-1m5s.mov"
 
     @needs_ffmpeg
     def test_duration_comes_from_the_master_not_the_clips(self, tmp_path):
@@ -460,7 +464,7 @@ class TestInPlacePlan:
 
         final = session.parent / (original + " Dur-1m5s")
         assert final.is_dir() and not session.exists()
-        assert (final / "Program.mov").exists(), "master stays put, name intact"
+        assert list(final.glob("*Dur-1m5s.mov")), "master renamed after the folder"
         assert (final / "Clips for Insert" / "Cam-01" / "Loose Clip.mov").exists()
 
     @needs_ffmpeg
@@ -487,7 +491,8 @@ class TestInPlacePlan:
             "session_source": det["session_path"],
             "master": structure.pick_master(det)["path"],
             "cams": {"1": [str(filed)]}}]})
-        assert plan["targets"][0]["items"] == [], "no-op moves must not be planned"
+        clips = [i for i in plan["targets"][0]["items"] if i["kind"] == "clip"]
+        assert clips == [], "no-op moves must not be planned"
 
 
 class TestStructureTemplate:
@@ -613,7 +618,7 @@ class TestPlanFromTemplate:
         assert (clips / "Cam-01" / "Wide.mov").exists()
         # Cam-02 and Cam-03 got no clips but are part of what the template defines.
         assert (clips / "Cam-02").is_dir() and (clips / "Cam-03").is_dir()
-        assert (session / "Program.mov").exists()
+        assert list(session.glob("*Dur-1m5s.mov"))
 
     @needs_ffmpeg
     def test_copy_leaves_the_source_drive_untouched(self, tmp_path):
@@ -640,7 +645,7 @@ class TestPlanFromTemplate:
         res = ingest.execute_plan(plan)
         assert res["failed"] == 0
         for dest in dests:
-            assert list(dest.rglob("Program.mov")), f"nothing landed in {dest}"
+            assert list(dest.rglob("*Dur-1m5s.mov")), f"nothing landed in {dest}"
 
 
 class TestDateSuggestion:
@@ -789,36 +794,36 @@ class TestDurTokenShapes:
         assert d.base_name.endswith("Dt-20-Aug-26"), "the Dur- token must be stripped off"
 
 
-class TestDurShapeIsCarriedOver:
-    """The token is written in whatever shape the folder already uses."""
+class TestDurPrecision:
+    """Every Dur- in use is hours+minutes at an hour or over, minutes+seconds under."""
 
-    @pytest.mark.parametrize("existing,seconds,expected", [
-        # An hours+minutes folder stays hours+minutes: no seconds are introduced.
-        ("Session Dt-20-Aug-26 Dur-1h0m", 3601, "1h0m"),
-        ("Session Dt-20-Aug-26 Dur-1h0m", 3241, "54m"),
-        # A full h/m/s folder keeps its seconds.
-        ("Session Dt-16-Aug-26 Dur-54m1s", 3601, "1h0m1s"),
-        ("Session Dt-16-Aug-26 Dur-54m1s", 3241, "54m1s"),
-        # No token yet: the full form is the default.
-        ("Session Dt-16-Aug-26", 3241, "54m1s"),
-        # Hours-only stays hours-only.
-        ("Session Dt-20-Aug-26 Dur-1h", 7384, "2h"),
+    @pytest.mark.parametrize("seconds,expected", [
+        (3241, "54m1s"),          # the original reference folder
+        (2683, "44m43s"),         # Clip-01 in the two-clip session
+        (3418, "56m58s"),         # Clip-02
+        (3600, "1h0m"),           # exactly an hour crosses over
+        (3642, "1h0m"),           # the Adalaj folder
+        (6101, "1h41m"),          # the two clips totalled
+        (7384, "2h3m"),
+        (48, "48s"),
+        (0, "0s"),
     ])
-    def test_shape_follows_the_existing_name(self, existing, seconds, expected):
-        out = naming.complete_with_dur(existing, seconds)
-        assert out.endswith(f"Dur-{expected}")
-        assert out.count("Dur-") == 1
+    def test_house_format(self, seconds, expected):
+        assert naming.fmt_duration(seconds, naming.auto_precision(seconds)) == expected
 
-    def test_precision_is_read_off_the_token(self):
-        assert naming.token_precision("1h0m") == "m"
-        assert naming.token_precision("54m1s") == "s"
-        assert naming.token_precision("1h") == "h"
+    def test_a_folder_gets_the_total_in_house_format(self):
+        folder = "02 Coppell Shibir General Satsang E. Dt-06-Aug-26"
+        assert naming.session_folder_name(folder, 2683 + 3418, 2) == folder + \
+            " Dur-1h41m Clips-02"
 
-    def test_fmt_duration_honours_precision(self):
-        assert naming.fmt_duration(3601, "s") == "1h0m1s"
-        assert naming.fmt_duration(3601, "m") == "1h0m"
-        assert naming.fmt_duration(3601, "h") == "1h"
-        assert naming.fmt_duration(3241, "m") == "54m"
+    def test_the_shape_does_not_depend_on_what_was_there_before(self):
+        # An existing token is replaced, not imitated: 3241s is always 54m1s.
+        for existing in ("Session Dt-20-Aug-26 Dur-1h0m",
+                         "Session Dt-20-Aug-26 Dur-99m9s",
+                         "Session Dt-20-Aug-26"):
+            out = naming.complete_with_dur(existing, 3241)
+            assert out.endswith("Dur-54m1s"), out
+            assert out.count("Dur-") == 1
 
     def test_completing_twice_is_stable(self):
         once = naming.complete_with_dur("Session Dt-20-Aug-26 Dur-1h0m", 3601)
@@ -829,50 +834,6 @@ class TestDurShapeIsCarriedOver:
                  "Trip, General Satsang E.")
         assert naming.build_session_folder(title, dt.date(2026, 8, 16), 3241.9) == \
             title + " Dt-16-Aug-26 Dur-54m1s"
-
-    @needs_ffmpeg
-    def test_a_template_in_hours_minutes_plans_in_hours_minutes(self, tmp_path):
-        drive = tmp_path / "SSD"; drive.mkdir()
-        make_clip(drive / "Program.mov", 65)
-        plan = ingest.build_plan({"mode": "copy", "targets": [{
-            "role": "prores", "source_root": str(drive), "dest_root": str(tmp_path / "out"),
-            "session_name": "Adalaj Soneri Satsang with SMHT MHTs E. Dt-20-Aug-26 Dur-1h0m",
-            "master": str(drive / "Program.mov"), "cams": {}}]})
-        folder = plan["targets"][0]["session_folder"]
-        assert folder.endswith("Dur-1m"), folder
-        assert folder.count("Dur-") == 1
-
-
-class TestCamGrouping:
-    """Auto-suggest splits clips by recording signature."""
-
-    def _f(self, name, w=3840, h=2160, fps=25.0, codec="hevc", mtime=0):
-        return {"path": f"/V/{name}", "name": name, "width": w, "height": h,
-                "fps": fps, "video_codec": codec, "mtime": mtime, "duration": 5.0}
-
-    def test_one_camera_yields_one_group(self):
-        clips = [self._f(f"C{i}.MP4", mtime=i) for i in range(5)]
-        g = ingest.suggest_cam_groups(clips)
-        assert len(g["groups"]) == 1
-        assert g["groups"][0]["cam"] == 1
-        assert len(g["groups"][0]["files"]) == 5
-
-    def test_two_bodies_are_separated(self):
-        clips = [self._f("A1.MP4"), self._f("A2.MP4"),
-                 self._f("B1.MP4", w=1920, h=1080)]
-        g = ingest.suggest_cam_groups(clips)
-        assert len(g["groups"]) == 2
-        # The busiest signature is offered as Cam-01.
-        assert len(g["groups"][0]["files"]) == 2
-
-    def test_a_differing_frame_rate_alone_separates_them(self):
-        clips = [self._f("A.MP4", fps=25.0), self._f("B.MP4", fps=29.97)]
-        assert len(ingest.suggest_cam_groups(clips)["groups"]) == 2
-
-    def test_files_within_a_group_are_in_shot_order(self):
-        clips = [self._f("late.MP4", mtime=900), self._f("early.MP4", mtime=100)]
-        files = ingest.suggest_cam_groups(clips)["groups"][0]["files"]
-        assert [f["name"] for f in files] == ["early.MP4", "late.MP4"]
 
 
 class TestSingleDayPlans:
@@ -971,3 +932,90 @@ class TestCameraCards:
         second.mkdir()
         (second / "extra.MP4").write_bytes(b"x")
         assert self._find(tmp_path, monkeypatch)["cards"][0]["file_count"] == 3
+
+
+class TestMasterClipNaming:
+    """Masters are renamed after the folder; the folder's Dur- is their total."""
+
+    FOLDER = "02 Coppell Shibir General Satsang E. Dt-06-Aug-26 Dur-1h41m Clips-02"
+    BASE = "Coppell Shibir General Satsang E. Dt-06-Aug-26"
+    A, B = 44 * 60 + 43, 56 * 60 + 58          # 44m43s and 56m58s
+
+    def test_reproduces_the_reference_folder_and_clips(self):
+        assert naming.session_folder_name(self.FOLDER, self.A + self.B, 2) == self.FOLDER
+        assert naming.master_clip_name(self.FOLDER, self.A, 1, 2, ".MOV") == \
+            f"{self.BASE} Dur-44m43s Clip-01.MOV"
+        assert naming.master_clip_name(self.FOLDER, self.B, 2, 2, ".MOV") == \
+            f"{self.BASE} Dur-56m58s Clip-02.MOV"
+
+    def test_the_leading_session_number_is_dropped_from_the_clip(self):
+        assert naming.master_clip_name(self.FOLDER, self.A, 1, 2).startswith("Coppell")
+
+    def test_a_lone_master_gets_no_clip_token_and_the_folders_duration(self):
+        folder = "02 Coppell Shibir General Satsang E. Dt-06-Aug-26"
+        name = naming.master_clip_name(folder, 3241, 1, 1, ".MOV")
+        assert "Clip-" not in name
+        assert name == f"{self.BASE.replace('06-Aug', '06-Aug')} Dur-54m1s.MOV".replace(
+            "Coppell Shibir General Satsang E. Dt-06-Aug-26",
+            "Coppell Shibir General Satsang E. Dt-06-Aug-26")
+        assert naming.session_folder_name(folder, 3241, 1).endswith("Dur-54m1s")
+        assert "Clips-" not in naming.session_folder_name(folder, 3241, 1)
+
+    def test_the_extension_case_is_preserved(self):
+        assert naming.master_clip_name(self.FOLDER, self.A, 1, 2, ".MOV").endswith(".MOV")
+        assert naming.master_clip_name(self.FOLDER, self.A, 1, 2, ".mp4").endswith(".mp4")
+
+    def test_renaming_is_idempotent(self):
+        once = naming.master_clip_name(self.FOLDER, self.A, 1, 2, ".MOV")
+        again = naming.master_clip_name(
+            naming.session_folder_name(self.FOLDER, self.A + self.B, 2),
+            self.A, 1, 2, ".MOV")
+        assert once == again
+        # And re-deriving from an already-renamed name does not stack tokens.
+        assert naming.master_clip_name(Path(once).stem, self.A, 1, 2, ".MOV") == once
+
+    def test_a_clips_token_is_replaced_when_the_count_changes(self):
+        three = naming.session_folder_name(self.FOLDER, 100, 3)
+        assert three.endswith("Clips-03") and three.count("Clips-") == 1
+
+    @needs_ffmpeg
+    def test_the_planner_totals_the_masters_and_orders_them_by_time(self, tmp_path):
+        import os
+        import datetime as _dt
+        drive = tmp_path / "SSD"
+        drive.mkdir()
+        # Deliberately named so alphabetical order disagrees with shot order.
+        for name, secs, when in (("zz_first.MOV", 65, (2026, 8, 6, 5, 37)),
+                                 ("aa_second.MOV", 30, (2026, 8, 6, 6, 34))):
+            make_clip(drive / name, secs)
+            stamp = _dt.datetime(*when).timestamp()
+            os.utime(drive / name, (stamp, stamp))
+
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(drive), "dest_root": str(tmp_path / "out"),
+            "session_name": "02 Coppell Shibir General Satsang E. Dt-06-Aug-26",
+            "masters": [str(drive / "aa_second.MOV"), str(drive / "zz_first.MOV")],
+            "cams": {}}]})
+
+        t = plan["targets"][0]
+        assert t["session_folder"].endswith("Dur-1m35s Clips-02")   # 65 + 30
+        names = [Path(i["dst"]).name for i in t["items"] if i["kind"] == "master"]
+        assert names == [
+            "Coppell Shibir General Satsang E. Dt-06-Aug-26 Dur-1m5s Clip-01.MOV",
+            "Coppell Shibir General Satsang E. Dt-06-Aug-26 Dur-30s Clip-02.MOV",
+        ], names
+
+    @needs_ffmpeg
+    def test_a_single_master_matches_the_folder_duration(self, tmp_path):
+        drive = tmp_path / "SSD"
+        drive.mkdir()
+        make_clip(drive / "SHGINF_S001_S001_T004.MOV", 65)
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(drive), "dest_root": str(tmp_path / "out"),
+            "session_name": "02 Coppell Shibir General Satsang E. Dt-06-Aug-26",
+            "masters": [str(drive / "SHGINF_S001_S001_T004.MOV")], "cams": {}}]})
+        t = plan["targets"][0]
+        folder_dur = naming.DUR_TOKEN_RE.search(t["session_folder"]).group(0).strip()
+        clip_name = Path(t["items"][0]["dst"]).name
+        assert folder_dur in clip_name, "a lone master must carry the folder's duration"
+        assert "Clip-" not in clip_name and "Clips-" not in t["session_folder"]

@@ -43,6 +43,14 @@ RESERVED = {"CON", "PRN", "AUX", "NUL",
 CAM_FOLDER_RE = re.compile(r"^Cam-(\d{2,})$")
 CLIPS_DIRNAME = "Clips for Insert"
 
+# " Clips-02" on a session folder: how many master clips it holds.
+CLIPS_TOKEN_RE = re.compile(r"\s*\bClips-(\d+)\b", re.IGNORECASE)
+# " Clip-01" on a master file: which one it is.
+CLIP_TOKEN_RE = re.compile(r"\s*\bClip-(\d+)\b", re.IGNORECASE)
+# The "02 " that numbers a session within the day. Kept on the folder, dropped
+# from the file names inside it.
+LEADING_INDEX_RE = re.compile(r"^\d+\s+")
+
 
 def fmt_duration(seconds: float | None, precision: str = "s") -> str:
     """54.9s -> '54s'; 3241.4 -> '54m1s'; 7384 -> '2h3m4s'.
@@ -68,6 +76,16 @@ def fmt_duration(seconds: float | None, precision: str = "s") -> str:
     return (f"{h}h" if h else "") + (f"{m}m" if h or m else "") + f"{s}s"
 
 
+def auto_precision(seconds: float | None) -> str:
+    """How finely a duration of this length is written.
+
+    An hour or over is written hours+minutes and the seconds are dropped
+    (1h41m); under an hour is minutes+seconds (44m43s). This is the convention
+    every folder and clip name in use follows.
+    """
+    return "m" if seconds is not None and seconds >= 3600 else "s"
+
+
 def token_precision(body: str) -> str:
     """The smallest unit a written token uses: '1h0m' -> 'm', '54m1s' -> 's'."""
     body = body.strip().lower()
@@ -77,18 +95,58 @@ def token_precision(body: str) -> str:
     return "s"
 
 
-def complete_with_dur(name: str, seconds: float | None) -> str:
-    """Put the right `Dur-` token on `name`, in the shape the name already uses.
+def session_base(folder_name: str) -> str:
+    """A session folder's name without the tokens the app maintains.
 
-    Replaces an existing token rather than appending beside it, so this is safe
-    to run over a folder that has already been through the app.
+    '02 Coppell … Dt-06-Aug-26 Dur-1h41m Clips-02' -> '02 Coppell … Dt-06-Aug-26'
     """
-    token = DUR_TOKEN_RE.search(name)
-    precision = token_precision(token.group(0).strip()[4:]) if token else "s"
-    base = re.sub(r"\s{2,}", " ", DUR_TOKEN_RE.sub("", name)).strip()
+    out = CLIPS_TOKEN_RE.sub("", folder_name)
+    out = DUR_TOKEN_RE.sub("", out)
+    return re.sub(r"\s{2,}", " ", out).strip()
+
+
+def complete_with_dur(name: str, seconds: float | None) -> str:
+    """Put the right `Dur-` token on `name`, replacing any already there."""
+    base = session_base(name)
     if seconds is None:
         return sanitize(base)
-    return sanitize(f"{base} Dur-{fmt_duration(seconds, precision)}")
+    return sanitize(f"{base} Dur-{fmt_duration(seconds, auto_precision(seconds))}")
+
+
+def session_folder_name(folder_name: str, total_seconds: float | None,
+                        clip_count: int = 1) -> str:
+    """The session folder's completed name.
+
+    Its `Dur-` is the total of every master clip inside it, and a `Clips-NN`
+    token records how many there are when it is more than one.
+    """
+    out = complete_with_dur(folder_name, total_seconds)
+    if clip_count > 1:
+        out = f"{out} Clips-{clip_count:02d}"
+    return sanitize(out)
+
+
+def master_clip_name(folder_name: str, seconds: float | None,
+                     index: int = 1, clip_count: int = 1, ext: str = "") -> str:
+    """A master clip's name, built from the folder it sits in.
+
+    '02 Coppell … Dt-06-Aug-26 Dur-1h41m Clips-02' + 2683s as clip 1 of 2
+        -> 'Coppell … Dt-06-Aug-26 Dur-44m43s Clip-01.MOV'
+
+    The folder's leading session number is dropped and its total `Dur-` is
+    replaced by this clip's own. A lone master carries no `Clip-` token, and its
+    duration is by definition the folder's.
+    """
+    base = CLIP_TOKEN_RE.sub("", session_base(folder_name))
+    base = LEADING_INDEX_RE.sub("", base).strip()
+    out = base
+    if seconds is not None:
+        out += f" Dur-{fmt_duration(seconds, auto_precision(seconds))}"
+    if clip_count > 1:
+        out += f" Clip-{int(index):02d}"
+    if ext and not ext.startswith("."):
+        ext = "." + ext
+    return sanitize(out) + ext        # the source's own extension case is kept
 
 
 def parse_duration(text: str) -> int | None:

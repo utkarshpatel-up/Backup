@@ -17,40 +17,41 @@ itself, and then proves the two drives match.
 
 ## The naming rule
 
-**Nothing is typed.** The session folder already exists on the drive with its
-name already correct — the app finds it, reads that name off the disk, and
-appends the one thing it can work out for itself:
-
 ```
-Adalaj Soneri … General Satsang E. Dt-16-Aug-26
-                    ↓  ffprobe reads the master: 3241.9s
-Adalaj Soneri … General Satsang E. Dt-16-Aug-26 Dur-54m1s
+02 Coppell Shibir General Satsang E. Dt-06-Aug-26 Dur-1h41m Clips-02/
+   Clips for Insert/
+   Coppell Shibir General Satsang E. Dt-06-Aug-26 Dur-44m43s Clip-01.MOV
+   Coppell Shibir General Satsang E. Dt-06-Aug-26 Dur-56m58s Clip-02.MOV
 ```
 
-`Dur-` is *replaced*, not appended, so a folder that already carries a token is
-either left alone (if it is right) or corrected (if it is wrong) — never
-doubled. If the token is already correct the folder is not renamed at all.
+**Master clips are named after the folder they sit in.** The folder's leading
+session number is dropped, its total `Dur-` is replaced by the clip's own, and a
+`Clip-NN` says which one it is. Whatever the camera called the file
+(`SHGINF_S001_S001_T004.MOV`) is discarded.
 
-**The token is written in the shape the folder already uses.** Real folder names
-come in more than one form — `Dur-54m1s` (minutes + seconds) and `Dur-1h0m`
-(hours + minutes, no seconds) — so the app reads the smallest unit the existing
-name uses and matches it, rather than imposing one format:
+**The folder's `Dur-` is the total of its master clips**, and a `Clips-NN` token
+records how many there are. With a single master there is no `Clips-` or `Clip-`
+token and the clip's duration is, by definition, the folder's.
 
-| Existing name | Master | Result |
-|---|---|---|
-| `… Dur-1h0m` | 3601s | `… Dur-1h0m` |
-| `… Dur-1h0m` | 3241s | `… Dur-54m` |
-| `… Dur-54m1s` | 3601s | `… Dur-1h0m1s` |
-| no token yet | 3241s | `… Dur-54m1s` |
+**Cam clips are never renamed.** Everything under `Clips for Insert` keeps the
+name it arrived with — case, spaces, punctuation and extension. Only the two
+things above are generated.
 
-**Media files are never renamed.** They arrive already named — from the zip, the
-card, or the editor — and land in their cam folder byte-identical, name
-included. Case, spaces, punctuation and extension all survive. The master is not
-moved at all; it stays where it sits at the top of the session folder.
+### How a duration is written
 
-The one case where a filename changes: if two different source files would land
-in the same cam folder under the same name, the second becomes `name (2).ext`
-rather than silently overwriting the first. The plan flags it when it happens.
+Every `Dur-` follows one rule: **hours + minutes at an hour or over, minutes +
+seconds under**, seconds truncated rather than rounded.
+
+| Length | Written |
+|---|---|
+| 44m 43s | `Dur-44m43s` |
+| 54m 1.9s | `Dur-54m1s` |
+| 1h 0m 42s | `Dur-1h0m` |
+| 1h 41m 41s | `Dur-1h41m` |
+
+A token already on a name is *replaced*, never appended to, so running the
+ingest twice over the same folder is a no-op rather than
+`… Dur-1h41m Dur-1h41m`.
 
 ### Where the folder name comes from
 
@@ -140,7 +141,8 @@ remembers the choice.
    `.zip` archives can be added too; a zip is extracted to a temp folder with
    its original timestamps restored, because the naming depends on them.
 2. **Folder** — the folder name from the imported structure, previewed with the
-   added `Dur-` in bold. Every footage drive gets its own Scan / Add files /
+   added `Dur-` in bold. Tick one master clip, or several if the session was
+   recorded in more than one file; the names they will be given are shown. Every footage drive gets its own Scan / Add files /
    Add a folder controls, and files from the session date are suggested. Pick the
    master from any drive — the one it sits on becomes the drive you assign cams
    against. Only clips long enough to plausibly be the program recording are
@@ -235,13 +237,13 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-112 tests covering duration formatting, the "filenames are never changed"
+118 tests covering duration formatting, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
 rename-only-on-success guarantee, structure-template import (both zip layouts,
 plus path-escape refusal), per-source destinations, the same-day footage
 suggestion and its two refusal cases, camera-card discovery, mirror scoping,
-every `Dur-` token shape and its carry-over, exFAT case-insensitive
-de-duplication,
+master-clip naming and multi-clip totals, every `Dur-` token shape, exFAT
+case-insensitive de-duplication,
 cross-drive pairing, `.mov`/`.mp4` tolerance, comparison severity rules, and the
 cancel-leaves-no-partial-file guarantee. Tests needing real media are skipped
 automatically when ffmpeg is absent.

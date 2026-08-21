@@ -74,6 +74,14 @@ function durPrecisionOf(name) {
   return body.endsWith('s') ? 's' : body.endsWith('m') ? 'm' : body.endsWith('h') ? 'h' : 's';
 }
 
+/** Hours+minutes at an hour or over, minutes+seconds under — the house rule. */
+function fmtDurAuto(sec) {
+  if (sec == null) return '…';
+  const t = Math.floor(sec);
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  return h >= 1 ? `${h}h${m}m` : (m ? `${m}m${s}s` : `${s}s`);
+}
+
 function fmtDurLike(sec, name) {
   if (sec == null) return '…';
   const p = durPrecisionOf(name);
@@ -134,8 +142,8 @@ function stepReady(i) {
   switch (i) {
     case 0: return true;
     case 1: return footageSources().length > 0;
-    case 2: return !!detection() && !!chosenMaster();
-    case 3: return !!chosenMaster();
+    case 2: return !!detection() && chosenMasters().length > 0;
+    case 3: return chosenMasters().length > 0;
     case 4: return true;
     default: return false;
   }
@@ -249,14 +257,43 @@ function detection() {
 }
 
 /** The master file chosen for the primary source, as a probed file record. */
-function chosenMaster() {
+/**
+ * The master clips, in shot order.
+ *
+ * A session can be recorded as more than one file — the folder's Dur- is their
+ * total, and each carries its own Dur- and a Clip-NN telling them apart.
+ */
+function chosenMasters() {
   const src = primarySource();
   const d = detection();
-  if (!src || !d) return null;
-  const pick = state.masters[state.masterSource || src.path];
+  if (!src || !d) return [];
+  const picks = state.masters[state.masterSource || src.path] || [];
   const pool = (d.master_candidates || []).concat(
     footageSources().flatMap((f) => filePool(f)));
-  return pool.find((f) => f.path === pick) || d.suggested_master || null;
+  const found = picks
+    .map((path) => pool.find((f) => f.path === path))
+    .filter(Boolean);
+  if (found.length) return found.sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
+  return d.suggested_master ? [d.suggested_master] : [];
+}
+
+function chosenMaster() {
+  return chosenMasters()[0] || null;
+}
+
+function isMasterPath(path) {
+  return masterPaths().has(path);
+}
+
+/** Paths of every master, for excluding them from the cam clip list. */
+function masterPaths() {
+  return new Set(chosenMasters().map((f) => f.path));
+}
+
+/** The folder's Dur- token: the total of every master clip. */
+function masterTotalSeconds() {
+  const timed = chosenMasters().map((f) => f.duration).filter((d) => d != null);
+  return timed.length ? timed.reduce((a, b) => a + b, 0) : null;
 }
 
 function secondarySource() {
@@ -526,10 +563,10 @@ function renderSession() {
     </div>`;
   }
 
-  const master = chosenMaster();
-  const dur = master ? master.duration : null;
-  const base = d.base_name || d.session_name;
-  const durLabel = fmtDurLike(dur, d.session_name);
+  const masters = chosenMasters();
+  const dur = masterTotalSeconds();
+  const base = stripClipsToken(d.base_name || d.session_name);
+  const durLabel = fmtDurAuto(dur);
   const already = d.has_dur && d.current_dur != null;
   const unchanged = already && dur != null && Math.abs(d.current_dur - dur) < 1;
 
@@ -628,9 +665,8 @@ function camGroupsFromPool(files) {
 function ensureDefaultAssignments() {
   const src = primarySource();
   if (!src) return;
-  const master = chosenMaster();
   for (const f of filePool(src)) {
-    if (master && f.path === master.path) continue;
+    if (isMasterPath(f.path)) continue;
     if (state.assign[f.path] === undefined) {
       state.assign[f.path] = defaultAssignmentFor(f);
     }
@@ -641,9 +677,8 @@ function ensureDefaultAssignments() {
 function selectDay(day) {
   const src = primarySource();
   if (!src) return;
-  const master = chosenMaster();
   for (const f of filePool(src)) {
-    if (master && f.path === master.path) continue;
+    if (isMasterPath(f.path)) continue;
     state.assign[f.path] = (!day || f.shoot_date === day) ? 1 : 'skip';
   }
   state.activeDay = day || null;
@@ -663,9 +698,9 @@ function plausibleMasters() {
   if (state.showAllMasters || all.length <= 1) return all;
   const longest = Math.max(...all.map((c) => c.file.duration || 0));
   if (!longest) return all;
-  const picked = chosenMaster();
+  const picked = masterPaths();
   const kept = all.filter((c) => (c.file.duration || 0) >= longest * 0.5
-    || (picked && c.file.path === picked.path));
+    || picked.has(c.file.path));
   return kept.length ? kept : all;
 }
 
@@ -681,10 +716,10 @@ function masterCandidates() {
 /** The Folder step when the name came from an imported structure template. */
 function renderTemplateFolder(src) {
   const t = state.template;
-  const master = chosenMaster();
-  const dur = master ? master.duration : null;
-  const base = t.base_name || t.session_name;
-  const durLabel = fmtDurLike(dur, t.session_name);
+  const masters = chosenMasters();
+  const dur = masterTotalSeconds();
+  const base = stripClipsToken(t.base_name || t.session_name);
+  const durLabel = fmtDurAuto(dur);
   const pool = filePool(src);
   const cams = (t.tree || []).filter((x) => /Cam-\d+$/.test(x));
 
@@ -741,22 +776,32 @@ function renderTemplateFolder(src) {
   </div>
 
   <div class="card">
-    <h3>Master file</h3>
-    <p class="hint">The program recording. Its length becomes the Dur- token, and the drive
-      it sits on is the one you assign cams against.</p>
+    <h3>Master clip${masters.length > 1 ? 's' : ''}</h3>
+    <p class="hint">The program recording. Tick more than one if the session was recorded
+      in several files — the folder's Dur- becomes their total, and each clip is renamed
+      after the folder with its own Dur- and a Clip-NN.</p>
     ${masterCandidates().length ? `
       <div class="scroll"><table><thead><tr><th style="width:1%"></th><th>File</th>
         <th>Drive</th><th class="num">Length</th><th>Codec</th><th class="num">Size</th></tr></thead>
       <tbody>${plausibleMasters().map(({ file: c, source: from }) => `
-        <tr><td><input type="radio" name="master" data-master="${esc(c.path)}"
+        <tr><td><input type="checkbox" data-master="${esc(c.path)}"
               data-msrc="${esc(from.path)}"
-              ${master && c.path === master.path ? 'checked' : ''} style="width:auto" /></td>
+              ${masters.some((m) => m.path === c.path) ? 'checked' : ''} style="width:auto" /></td>
           <td class="mono">${esc(c.name)}</td>
           <td><span class="badge ${from.role}">${esc(from.label)}</span></td>
           <td class="num">${esc(fmtClock(c.duration))}</td>
           <td><span class="badge ${esc(c.family || '')}">${esc(c.video_codec || '?')}</span></td>
           <td class="num">${fmtBytes(c.size)}</td></tr>`).join('')}
       </tbody></table></div>
+      ${masters.length ? `
+        <p class="hint" style="margin:12px 0 6px">Renamed after the folder:</p>
+        <div class="preview-name">${masters.map((m, i) => `\ud83c\udfac ${
+          esc(masterClipName(base, m.duration, i + 1, masters.length, m.path))}`).join('<br>')}
+        </div>
+        ${masters.length > 1 ? `<p class="hint" style="margin:8px 0 0">
+          ${masters.map((m) => esc(fmtDurAuto(m.duration))).join(' + ')} =
+          <b>${esc(durLabel)}</b> on the folder, with <b>Clips-${
+            String(masters.length).padStart(2, '0')}</b>.</p>` : ''}` : ''}
       ${masterCandidates().length > plausibleMasters().length || state.showAllMasters ? `
         <p class="hint" style="margin:10px 0 0">
           Showing ${plausibleMasters().length} of ${masterCandidates().length} clip(s) in this
@@ -807,7 +852,7 @@ function sessionPreview() {
   const date = state.session.date || (master ? master.shoot_iso.slice(0, 10) : '');
   const job = state.session.jobNumber.trim();
   const typed = state.session.title.trim() || 'Folder name';
-  const durLabel = master && master.duration != null ? fmtDur(master.duration) : '…';
+  const durLabel = fmtDurAuto(masterTotalSeconds());
   const hasOwnDate = /\bDt-\d{1,2}-[A-Za-z]{3}-\d{2,4}\b/.test(typed);
   const jobLine = job && date ? `📁 ${esc(job)} <b>Dt-${esc(jobDateLabel(date))}</b><br>` : '';
   return jobLine +
@@ -815,6 +860,24 @@ function sessionPreview() {
     `${esc(typed.replace(/\s*\bDur-(?:\d+h)?(?:\d+m)?\d+s\b/i, ''))}` +
     `${date && !hasOwnDate ? ` <b>Dt-${esc(formatDateToken(date))}</b>` : ''}` +
     ` <b>Dur-${esc(durLabel)}</b></span>`;
+}
+
+/** Drop a 'Clips-02' token — the count is recomputed from the chosen masters. */
+function stripClipsToken(name) {
+  return String(name || '').replace(/\s*\bClips-\d+\b/i, '').trim();
+}
+
+/** The name a master clip will be given, derived from the folder. */
+function masterClipName(folderBase, seconds, index, count, path) {
+  const ext = /\.[^./\\]+$/.exec(path || '');
+  const base = stripClipsToken(folderBase)
+    .replace(/\s*\bDur-(?=\d)(?:\d+h)?(?:\d+m)?(?:\d+s)?\b/i, '')
+    .replace(/\s*\bClip-\d+\b/i, '')
+    .replace(/^\d+\s+/, '')
+    .trim();
+  return `${base} Dur-${fmtDurAuto(seconds)}`
+    + (count > 1 ? ` Clip-${String(index).padStart(2, '0')}` : '')
+    + (ext ? ext[0] : '');
 }
 
 function jobDateLabel(iso) {
@@ -851,14 +914,21 @@ function wireSession() {
   $('btnAddFiles')?.addEventListener('click', () => addFootage('files'));
   $('btnAddFolder2')?.addEventListener('click', () => addFootage('folder'));
 
-  document.querySelectorAll('[data-master]').forEach((r) => r.addEventListener('change', () => {
-    const from = r.dataset.msrc || primarySource().path;
-    state.masterSource = from;
-    state.masters[from] = r.dataset.master;
-    // The cam assignment belongs to the master's drive, so a different drive
-    // means the old assignment and pairing no longer refer to anything.
-    state.assign = {};
-    state.pairing = null;
+  document.querySelectorAll('[data-master]').forEach((box) => box.addEventListener('change', () => {
+    const from = box.dataset.msrc || primarySource().path;
+    const path = box.dataset.master;
+    if (state.masterSource !== from) {
+      // Masters share one drive: cams are assigned against it, and the other
+      // drive is matched to it by Mirror.
+      state.masterSource = from;
+      state.masters[from] = [];
+      state.assign = {};
+      state.pairing = null;
+    }
+    const picks = new Set(state.masters[from] || []);
+    if (box.checked) picks.add(path); else picks.delete(path);
+    state.masters[from] = [...picks];
+    delete state.assign[path];     // promoted to master, no longer a cam clip
     state.plan = null;
     ensureDefaultAssignments();
     render();
@@ -986,7 +1056,7 @@ async function applyDateSuggestion(_src) {
         (a, b) => ((b.file.duration || 0) > (a?.file.duration || 0) ? b : a), null);
       if (best) {
         state.masterSource = best.source.path;
-        state.masters[best.source.path] = best.file.path;
+        state.masters[best.source.path] = [best.file.path];
       }
     }
     state.plan = null;
@@ -1087,9 +1157,10 @@ function renderCameras() {
   }
 
   const cams = Array.from({ length: state.camCount }, (_, i) => i + 1);
-  const master = chosenMaster();
-  // The master was settled on the Folder step; it is not a cam clip.
-  const files = pool.filter((f) => !master || f.path !== master.path);
+  const masters = chosenMasters();
+  const isMaster = masterPaths();
+  // Masters were settled on the Folder step; they are not cam clips.
+  const files = pool.filter((f) => !isMaster.has(f.path));
   const counts = {};
   cams.forEach((n) => { counts[n] = 0; });
   let skipped = 0;
@@ -1126,8 +1197,8 @@ function renderCameras() {
   const sec = secondarySource();
   const prim = src;
   const secName = sec ? sec.label : 'the other drive';
-  const masterTwin = state.pairing && master
-    ? state.pairing.matches[master.path] : null;
+  const masterTwin = state.pairing && masters.length
+    ? masters.every((m) => state.pairing.matches[m.path]) : null;
   const pairInfo = state.pairing
     ? `${state.pairing.unmatched_primary.length
         ? `<div class="note warn"><b>${state.pairing.unmatched_primary.length} clip(s) have no
@@ -1137,8 +1208,8 @@ function renderCameras() {
         : `<div class="note ok">All ${Object.keys(state.pairing.matches).length} clip(s) matched
              to a twin on ${esc(secName)}. Whatever you assign here is applied to both drives.
              </div>`}
-       ${master && !masterTwin
-        ? `<div class="note err"><b>The master has no twin on ${esc(secName)}.</b>
+       ${masters.length && !masterTwin
+        ? `<div class="note err"><b>A master clip has no twin on ${esc(secName)}.</b>
              Without it that drive's folder gets no Dur- token. Load its footage, or check
              the day filter.</div>` : ''}`
     : (sec ? `<div class="note info">Assignments here apply to ${esc(prim.label)} only.
@@ -1150,9 +1221,12 @@ function renderCameras() {
     <h3>Assign clips to cameras</h3>
     <p class="hint">Each clip goes to the numbered Cam folder you pick. Skipped clips stay
       where they are. Clips already filed in a cam folder are pre-selected.</p>
-    ${master ? `<div class="note info">Master: <b>${esc(master.name)}</b>
-      (${esc(fmtDur(master.duration))}) — stays at the top of the session folder and sets
-      the Dur- token. Change it on the Folder step.</div>` : ''}
+    ${masters.length ? `<div class="note info">
+      Master${masters.length > 1 ? 's' : ''}:
+      ${masters.map((m) => `<b>${esc(m.name)}</b> (${esc(fmtDurAuto(m.duration))})`).join(', ')}
+      — ${masters.length > 1 ? 'stay' : 'stays'} at the top of the session folder and
+      ${masters.length > 1 ? 'total' : 'sets'} the folder's Dur-
+      <b>${esc(fmtDurAuto(masterTotalSeconds()))}</b>. Change on the Folder step.</div>` : ''}
     <div class="row" style="margin-bottom:12px">
       <button class="sm primary" id="btnCards">Import camera cards</button>
       <button class="sm" id="btnAddFiles">Add files…</button>
@@ -1207,10 +1281,8 @@ function wireCameras() {
 
   $('btnAutoGroup')?.addEventListener('click', () => {
     const src = primarySource();
-    const master = chosenMaster();
-    // Grouped from the clips actually in play, so hand-picked files are included
-    // and clips filtered out by the day suggestion are not.
-    const clips = filePool(src).filter((f) => !master || f.path !== master.path);
+    // Grouped from the clips actually in play, masters excluded.
+    const clips = filePool(src).filter((f) => !isMasterPath(f.path));
     if (!clips.length) return toast('No clips to group.', 'err');
 
     const groups = camGroupsFromPool(clips);
@@ -1296,9 +1368,9 @@ function buildSpec() {
 
   /** A template names the folder and is written to the chosen destination;
    *  otherwise the folder already on the drive is completed in place. */
-  const targetFor = (src, cams, masterPath) => {
+  const targetFor = (src, cams, masterList) => {
     const base = { role: src.role, source_root: src.path, dest_root: destOf(src),
-                   master: masterPath, cams };
+                   masters: masterList, cams };
     if (t) {
       return { ...base, session_name: t.session_name, job_name: t.job_name,
                template_dirs: t.tree };
@@ -1306,12 +1378,13 @@ function buildSpec() {
     return { ...base, session_source: (state.detected[src.path] || {}).session_path || null };
   };
 
-  targets.push(targetFor(a, camsFor((p) => p), master ? master.path : null));
+  const masters = chosenMasters();
+  targets.push(targetFor(a, camsFor((p) => p), masters.map((f) => f.path)));
 
   if (b && state.pairing) {
     const m = state.pairing.matches;
     targets.push(targetFor(b, camsFor((p) => m[p] || null),
-      master ? (m[master.path] || null) : null));
+      masters.map((f) => m[f.path]).filter(Boolean)));
   }
 
   return {
@@ -1357,9 +1430,7 @@ function renderCopy() {
       <div class="tree">
         ${t.job_folder ? `<div class="dir">📁 ${esc(t.job_folder)}</div>` : ''}
         <div class="dir ${t.job_folder ? 'indent1' : ''}">📁 ${esc(t.session_folder)}</div>
-        <div class="ren indent2">🎬 <b>${esc(masterName(t))}</b>
-          <span style="color:var(--muted)">· sets the Dur- token${
-            t.items.some((i) => i.kind === 'master') ? '' : ' · already in place'}</span></div>
+        ${masterRows(t)}
         <div class="dir indent2">📁 Clips for Insert</div>
         ${camGroups(t)}
       </div>
@@ -1387,11 +1458,17 @@ function renderCopy() {
     ${trees}`;
 }
 
-function masterName(t) {
-  const item = t.items.find((i) => i.kind === 'master');
-  if (item) return item.original_name;
-  const m = chosenMaster();
-  return m ? m.name : '—';
+function masterRows(t) {
+  const items = t.items.filter((i) => i.kind === 'master');
+  if (!items.length) {
+    const m = chosenMaster();
+    return `<div class="ren indent2">🎬 <b>${esc(m ? m.name : '—')}</b>
+      <span style="color:var(--muted)">· already in place</span></div>`;
+  }
+  return items.map((i) => `<div class="ren indent2">🎬
+    <span style="color:var(--muted)">${esc(i.original_name)} →</span>
+    <b>${esc(i.dst.split(/[\\/]/).pop())}</b>
+    <span style="color:var(--muted)">· ${fmtDurAuto(i.duration)}</span></div>`).join('');
 }
 
 function camGroups(t) {
@@ -1663,8 +1740,10 @@ function footerHint() {
   switch (state.step) {
     case 0: return state.sources.length ? `${state.sources.length} source(s) selected`
                                         : 'Add at least one source to continue';
-    case 1: return chosenMaster() ? `Dur- will read ${fmtDur(chosenMaster().duration)}`
-                                  : 'Find the session folder to continue';
+    case 1: return chosenMasters().length
+      ? `Folder Dur- will read ${fmtDurAuto(masterTotalSeconds())}`
+        + (chosenMasters().length > 1 ? ` from ${chosenMasters().length} clips` : '')
+      : 'Pick the master clip to continue';
     case 2: {
       const n = Object.values(state.assign).filter((v) => typeof v === 'number').length;
       return n ? `${n} clip(s) assigned` : 'Assign clips to cam folders';

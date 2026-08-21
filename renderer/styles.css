@@ -219,3 +219,24 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .toast.err { border-left-color: var(--err); }
 .toast.ok { border-left-color: var(--ok); }
+
+
+/* -------------------------------------------------- per-drive footage columns */
+.drive-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 14px;
+}
+.drive-col {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; background: var(--panel-2); min-width: 0;
+}
+.drive-col-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+}
+.drive-col-head .name { font-weight: 650; }
+.drive-col table { table-layout: fixed; }
+.drive-col td.mono {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0;
+}

@@ -156,9 +156,10 @@ function footageSources() {
 
 function primarySource() {
   const f = footageSources();
-  // Whichever drive the master was chosen from leads: the cam assignment is made
-  // against it, and the other drive is matched to it by Mirror.
+  // Cams are assigned against one drive and mirrored to the other. Prefer the
+  // drive the operator marked, then one that has masters picked, then by codec.
   return f.find((s) => s.path === state.masterSource)
+      || f.find((s) => (state.masters[s.path] || []).length)
       || f.find((s) => s.role === 'prores') || f.find((s) => s.role === 'h265') || f[0];
 }
 
@@ -263,21 +264,40 @@ function detection() {
  * A session can be recorded as more than one file — the folder's Dur- is their
  * total, and each carries its own Dur- and a Clip-NN telling them apart.
  */
-function chosenMasters() {
-  const src = primarySource();
-  const d = detection();
-  if (!src || !d) return [];
-  // Tolerate a single path as well as a list: several places record the pick,
-  // and one of them writing a bare string should not take the page down.
-  const raw = state.masters[state.masterSource || src.path];
+/**
+ * The master clips chosen on one specific drive, in shot order.
+ *
+ * Each drive holds the same recording in its own codec, so each picks its own
+ * master(s) independently — the ProRes master on one SSD, its H.265 twin on the
+ * other. Their durations match, so either drive gives the folder the same Dur-.
+ */
+function mastersFor(src) {
+  if (!src) return [];
+  const raw = state.masters[src.path];
   const picks = Array.isArray(raw) ? raw : (raw ? [raw] : []);
-  const pool = (d.master_candidates || []).concat(
-    footageSources().flatMap((f) => filePool(f)));
-  const found = picks
+  const pool = ((detection() && detection().master_candidates) || []).concat(filePool(src));
+  return picks
     .map((path) => pool.find((f) => f.path === path))
-    .filter(Boolean);
-  if (found.length) return found.sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
-  return d.suggested_master ? [d.suggested_master] : [];
+    .filter(Boolean)
+    .sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
+}
+
+function masterTotalFor(src) {
+  const timed = mastersFor(src).map((f) => f.duration).filter((d) => d != null);
+  return timed.length ? timed.reduce((a, b) => a + b, 0) : null;
+}
+
+/**
+ * The masters that set the folder name shown at the top.
+ *
+ * The two drives agree on duration, so the headline uses whichever drive the
+ * cams are assigned against; the fallback keeps an auto-detected master working.
+ */
+function chosenMasters() {
+  const primary = mastersFor(primarySource());
+  if (primary.length) return primary;
+  const d = detection();
+  return d && d.suggested_master ? [d.suggested_master] : [];
 }
 
 function chosenMaster() {
@@ -702,6 +722,17 @@ function selectDay(day) {
  * the actual answer. Anything at least half the length of the longest clip
  * qualifies; the full list is one click away when the heuristic misfires.
  */
+/** The half-longest heuristic, applied within a single drive's own clips. */
+function drivePlausibleMasters(src) {
+  const all = filePool(src);
+  if (state.showAllMasters || all.length <= 1) return all;
+  const longest = Math.max(...all.map((c) => c.duration || 0));
+  if (!longest) return all;
+  const picked = new Set(mastersFor(src).map((m) => m.path));
+  const kept = all.filter((c) => (c.duration || 0) >= longest * 0.5 || picked.has(c.path));
+  return kept.length ? kept : all;
+}
+
 function plausibleMasters() {
   const all = masterCandidates();
   if (state.showAllMasters || all.length <= 1) return all;
@@ -723,6 +754,65 @@ function masterCandidates() {
 }
 
 /** The Folder step when the name came from an imported structure template. */
+/** One drive's footage controls and its own master-clip picker, as a column. */
+function renderDriveColumn(f) {
+  const loaded = allFiles(f).length;
+  const inPlay = selected(f).length;
+  const held = skipped(f).length;
+  const base = stripClipsToken((state.template && (state.template.base_name
+    || state.template.session_name)) || '');
+  const masters = mastersFor(f);
+  const total = masterTotalFor(f);
+  const shown = drivePlausibleMasters(f);
+
+  return `<div class="drive-col">
+    <div class="drive-col-head">
+      <div>
+        <div class="name">${esc(f.label)} <span class="badge ${f.role}">${esc(f.role)}</span></div>
+        <div class="path">${esc(f.path)}</div>
+      </div>
+      <div class="row" style="gap:6px">
+        <button class="sm ${loaded ? '' : 'primary'}" data-scan="${esc(f.path)}">Scan</button>
+        <button class="sm" data-addfiles="${esc(f.path)}">Add files…</button>
+        <button class="sm" data-addfolder="${esc(f.path)}">Folder…</button>
+      </div>
+    </div>
+    <div class="row" style="margin:8px 0">
+      ${loaded ? `<span class="badge ${inPlay ? 'ok' : 'warn'}">${inPlay} selected</span>`
+        : '<span class="badge warn">nothing loaded</span>'}
+      ${held ? `<span class="badge">${held} on Skip</span>` : ''}
+      ${masters.length ? `<span class="badge ${f.role}">master ${
+        esc(fmtDurAuto(total))}${masters.length > 1 ? ` · ${masters.length} clips` : ''}</span>` : ''}
+    </div>
+    ${loaded ? `
+      <div class="scroll" style="max-height:300px"><table><thead><tr>
+        <th style="width:1%"></th><th>Master clip</th>
+        <th class="num">Length</th><th class="num">Size</th></tr></thead>
+      <tbody>${shown.map((c) => `
+        <tr><td><input type="checkbox" data-master="${esc(c.path)}" data-msrc="${esc(f.path)}"
+              ${masters.some((m) => m.path === c.path) ? 'checked' : ''} style="width:auto" /></td>
+          <td class="mono" title="${esc(c.name)}">${esc(c.name)}</td>
+          <td class="num">${esc(fmtClock(c.duration))}</td>
+          <td class="num">${fmtBytes(c.size)}</td></tr>`).join('')}
+      </tbody></table></div>
+      ${filePool(f).length > shown.length || state.showAllMasters ? `
+        <p class="hint" style="margin:8px 0 0">Showing ${shown.length} of ${filePool(f).length}
+          — short camera clips hidden.
+          <a href="#" data-allmasters="1">${state.showAllMasters
+            ? 'likely masters only' : 'show all'}</a></p>` : ''}
+      ${masters.length ? `
+        <p class="hint" style="margin:10px 0 4px">Renamed after the folder:</p>
+        <div class="preview-name" style="font-size:11px">${masters.map((m, i) => `🎬 ${
+          esc(masterClipName(base, m.duration, i + 1, masters.length, m.path))}`).join('<br>')}
+        </div>
+        ${masters.length > 1 ? `<p class="hint" style="margin:6px 0 0">${
+          masters.map((m) => esc(fmtDurAuto(m.duration))).join(' + ')} =
+          <b>${esc(fmtDurAuto(total))}</b>, Clips-${String(masters.length).padStart(2, '0')}.</p>` : ''}`
+        : '<p class="hint" style="margin:8px 0 0">Tick the program recording above.</p>'}`
+      : `<div class="note warn" style="margin:0">Nothing loaded — Scan or Add files.</div>`}
+  </div>`;
+}
+
 function renderTemplateFolder(src) {
   const t = state.template;
   const masters = chosenMasters();
@@ -756,69 +846,14 @@ function renderTemplateFolder(src) {
   </div>
 
   <div class="card">
-    <h3>Footage</h3>
-    <p class="hint">The structure carries no footage, so load it from the drives. Each drive
-      is loaded separately — the master sets the Dur- token, and the clips on the other
-      drive are matched to it later by Mirror.</p>
-    ${footageSources().map((f) => {
-      const loaded = allFiles(f).length;
-      const inPlay = selected(f).length;
-      const held = skipped(f).length;
-      return `<div class="source-card" style="padding:10px 12px">
-        <div class="icon">${f.kind === 'zip' ? '🗜️' : f.kind === 'folder' ? '📁' : '💾'}</div>
-        <div class="body">
-          <div class="name">${esc(f.label)}
-            <span class="badge ${f.role}">${esc(f.role)}</span>
-            ${loaded ? `<span class="badge ${inPlay ? 'ok' : 'warn'}">${inPlay} selected</span>`
-              : '<span class="badge warn">nothing loaded</span>'}
-            ${held ? `<span class="badge">${held} on Skip</span>` : ''}</div>
-          <div class="path">${esc(f.path)}</div>
-        </div>
-        <div class="row">
-          <button class="sm ${loaded ? '' : 'primary'}" data-scan="${esc(f.path)}">Scan</button>
-          <button class="sm" data-addfiles="${esc(f.path)}">Add files…</button>
-          <button class="sm" data-addfolder="${esc(f.path)}">Add a folder…</button>
-        </div>
-      </div>`;
-    }).join('')}
+    <h3>Footage &amp; master clip</h3>
+    <p class="hint">The structure carries no footage, so load it from each drive. Pick the
+      master on each drive independently — the same recording, one file per codec. Cam clips
+      are assigned on the next step and mirrored across.</p>
+    <div class="drive-cols">
+      ${footageSources().map((f) => renderDriveColumn(f)).join('')}
+    </div>
     ${dateSuggestion()}
-  </div>
-
-  <div class="card">
-    <h3>Master clip${masters.length > 1 ? 's' : ''}</h3>
-    <p class="hint">The program recording. Tick more than one if the session was recorded
-      in several files — the folder's Dur- becomes their total, and each clip is renamed
-      after the folder with its own Dur- and a Clip-NN.</p>
-    ${masterCandidates().length ? `
-      <div class="scroll"><table><thead><tr><th style="width:1%"></th><th>File</th>
-        <th>Drive</th><th class="num">Length</th><th>Codec</th><th class="num">Size</th></tr></thead>
-      <tbody>${plausibleMasters().map(({ file: c, source: from }) => `
-        <tr><td><input type="checkbox" data-master="${esc(c.path)}"
-              data-msrc="${esc(from.path)}"
-              ${masters.some((m) => m.path === c.path) ? 'checked' : ''} style="width:auto" /></td>
-          <td class="mono">${esc(c.name)}</td>
-          <td><span class="badge ${from.role}">${esc(from.label)}</span></td>
-          <td class="num">${esc(fmtClock(c.duration))}</td>
-          <td><span class="badge ${esc(c.family || '')}">${esc(c.video_codec || '?')}</span></td>
-          <td class="num">${fmtBytes(c.size)}</td></tr>`).join('')}
-      </tbody></table></div>
-      ${masters.length ? `
-        <p class="hint" style="margin:12px 0 6px">Renamed after the folder:</p>
-        <div class="preview-name">${masters.map((m, i) => `\ud83c\udfac ${
-          esc(masterClipName(base, m.duration, i + 1, masters.length, m.path))}`).join('<br>')}
-        </div>
-        ${masters.length > 1 ? `<p class="hint" style="margin:8px 0 0">
-          ${masters.map((m) => esc(fmtDurAuto(m.duration))).join(' + ')} =
-          <b>${esc(durLabel)}</b> on the folder, with <b>Clips-${
-            String(masters.length).padStart(2, '0')}</b>.</p>` : ''}` : ''}
-      ${masterCandidates().length > plausibleMasters().length || state.showAllMasters ? `
-        <p class="hint" style="margin:10px 0 0">
-          Showing ${plausibleMasters().length} of ${masterCandidates().length} clip(s) in this
-          session — short camera clips are hidden here and assigned on the Cameras step.
-          <a href="#" id="lnkAllMasters">${state.showAllMasters
-            ? 'Show likely masters only' : 'Show all clips'}</a></p>` : ''}`
-      : `<div class="note warn">No footage loaded yet — scan a drive above, or add files
-         by hand.</div>`}
   </div>
 
   <div class="card">
@@ -926,21 +961,22 @@ function wireSession() {
   document.querySelectorAll('[data-master]').forEach((box) => box.addEventListener('change', () => {
     const from = box.dataset.msrc || primarySource().path;
     const path = box.dataset.master;
-    if (state.masterSource !== from) {
-      // Masters share one drive: cams are assigned against it, and the other
-      // drive is matched to it by Mirror.
-      state.masterSource = from;
-      state.masters[from] = [];
-      state.assign = {};
-      state.pairing = null;
-    }
+    // Each drive keeps its own masters — ticking one never touches the other.
     const current = state.masters[from];
     const picks = new Set(Array.isArray(current) ? current : (current ? [current] : []));
     if (box.checked) picks.add(path); else picks.delete(path);
     state.masters[from] = [...picks];
     delete state.assign[path];     // promoted to master, no longer a cam clip
+    if (!state.masterSource || !(state.masters[state.masterSource] || []).length) {
+      state.masterSource = from;   // cams are assigned against a drive that has a master
+    }
     state.plan = null;
     ensureDefaultAssignments();
+    render();
+  }));
+  document.querySelectorAll('[data-allmasters]').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    state.showAllMasters = !state.showAllMasters;
     render();
   }));
 
@@ -1389,13 +1425,19 @@ function buildSpec() {
     return { ...base, session_source: (state.detected[src.path] || {}).session_path || null };
   };
 
-  const masters = chosenMasters();
-  targets.push(targetFor(a, camsFor((p) => p), masters.map((f) => f.path)));
+  // Cam clips are assigned once and mirrored, but each drive files its own
+  // master(s): the ProRes recording on one, its H.265 twin on the other.
+  targets.push(targetFor(a, camsFor((p) => p),
+    mastersFor(a).map((f) => f.path)));
 
   if (b && state.pairing) {
     const m = state.pairing.matches;
+    const bMasters = mastersFor(b).map((f) => f.path);
+    // If the other drive has no master of its own, fall back to the twin of
+    // this drive's master, so its folder still gets a Dur- token.
+    const fallback = mastersFor(a).map((f) => m[f.path]).filter(Boolean);
     targets.push(targetFor(b, camsFor((p) => m[p] || null),
-      masters.map((f) => m[f.path]).filter(Boolean)));
+      bMasters.length ? bMasters : fallback));
   }
 
   return {

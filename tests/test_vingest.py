@@ -841,3 +841,35 @@ class TestDurShapeIsCarriedOver:
         folder = plan["targets"][0]["session_folder"]
         assert folder.endswith("Dur-1m"), folder
         assert folder.count("Dur-") == 1
+
+
+class TestCamGrouping:
+    """Auto-suggest splits clips by recording signature."""
+
+    def _f(self, name, w=3840, h=2160, fps=25.0, codec="hevc", mtime=0):
+        return {"path": f"/V/{name}", "name": name, "width": w, "height": h,
+                "fps": fps, "video_codec": codec, "mtime": mtime, "duration": 5.0}
+
+    def test_one_camera_yields_one_group(self):
+        clips = [self._f(f"C{i}.MP4", mtime=i) for i in range(5)]
+        g = ingest.suggest_cam_groups(clips)
+        assert len(g["groups"]) == 1
+        assert g["groups"][0]["cam"] == 1
+        assert len(g["groups"][0]["files"]) == 5
+
+    def test_two_bodies_are_separated(self):
+        clips = [self._f("A1.MP4"), self._f("A2.MP4"),
+                 self._f("B1.MP4", w=1920, h=1080)]
+        g = ingest.suggest_cam_groups(clips)
+        assert len(g["groups"]) == 2
+        # The busiest signature is offered as Cam-01.
+        assert len(g["groups"][0]["files"]) == 2
+
+    def test_a_differing_frame_rate_alone_separates_them(self):
+        clips = [self._f("A.MP4", fps=25.0), self._f("B.MP4", fps=29.97)]
+        assert len(ingest.suggest_cam_groups(clips)["groups"]) == 2
+
+    def test_files_within_a_group_are_in_shot_order(self):
+        clips = [self._f("late.MP4", mtime=900), self._f("early.MP4", mtime=100)]
+        files = ingest.suggest_cam_groups(clips)["groups"][0]["files"]
+        assert [f["name"] for f in files] == ["early.MP4", "late.MP4"]

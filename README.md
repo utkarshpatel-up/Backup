@@ -84,8 +84,13 @@ it by last-modified day and suggests the bucket matching that date:
 
 The suggestion is applied automatically when it matches, and every other day
 stays one click away — nothing is hidden, and the day buttons show the full
-breakdown. Clips filtered out are also unassigned from any cam, so what you see
-is exactly what gets copied.
+breakdown on the Folder page. Clips filtered out are also unassigned from any
+cam, so what you see is exactly what gets copied.
+
+**A file you pick by hand is never filtered out.** The day suggestion applies to
+what a drive scan sweeps up; an explicit **Add files…** is an instruction, so the
+clip stays in play even when it was shot on another day, and the confirmation
+says when that happened.
 
 Two cases it deliberately does **not** guess:
 
@@ -131,11 +136,14 @@ remembers the choice.
    added `Dur-` in bold. Every footage drive gets its own Scan / Add files /
    Add a folder controls, and files from the session date are suggested. Pick the
    master from any drive — the one it sits on becomes the drive you assign cams
-   against — then choose move vs copy.
+   against. Only clips long enough to plausibly be the program recording are
+   listed here, since a shoot's short camera clips would bury it; the full list
+   is one click away. Then choose move vs copy.
 3. **Cameras** — every clip in play listed with length, codec, resolution and
-   last-modified time; clips already sitting in a cam folder come pre-selected
-   and are not re-copied. Assign the rest to cams, then **Mirror** to apply the
-   same assignment to the other drive.
+   last-modified time. Clips default to **Cam-01**, so a single-camera shoot
+   needs no clicks at all; **Auto-suggest by camera** splits them by resolution,
+   frame rate and codec when more than one body was rolling. Then **Mirror** to
+   apply the same assignment to the other drive.
    *Auto-suggest* groups by resolution + fps + codec as a starting point.
 
 4. **Copy** — the full plan is shown first: the folder rename, and every clip
@@ -220,7 +228,7 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-100 tests covering duration formatting, the "filenames are never changed"
+104 tests covering duration formatting, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
 rename-only-on-success guarantee, structure-template import (both zip layouts,
 plus path-escape refusal), per-source destinations, the same-day footage

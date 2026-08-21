@@ -179,7 +179,10 @@ function allFiles(src) {
 function filePool(src) {
   const all = allFiles(src);
   if (!state.dateFilter) return all;
-  return all.filter((f) => f.shoot_date === state.dateFilter);
+  // A file picked by hand is an explicit instruction, so the date suggestion
+  // never removes it. Saying "added" and then showing nothing is worse than
+  // showing one clip from another day.
+  return all.filter((f) => f.manual || f.shoot_date === state.dateFilter);
 }
 
 /** The detection result for the primary source. */
@@ -545,6 +548,61 @@ function renderSession() {
   </div>`;
 }
 
+/**
+ * Give every clip in play a cam, defaulting to Cam-01.
+ *
+ * Landing on the Cameras page with everything set to Skip means the common case
+ * — one camera, all clips to Cam-01 — needs a click per clip for no reason.
+ * Skip stays available, it is just no longer the default.
+ */
+/**
+ * Split clips into likely cameras by their recording signature.
+ *
+ * Two bodies rarely agree on resolution, frame rate and codec all at once, so
+ * that triple separates them. Everything matching lands in one group — which is
+ * the right answer for a single-camera shoot.
+ */
+function camGroupsFromPool(files) {
+  const groups = new Map();
+  for (const f of files) {
+    const key = `${f.width}x${f.height}@${f.fps}/${f.video_codec}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(f);
+  }
+  return [...groups.values()]
+    .sort((a, b) => b.length - a.length)
+    .map((g) => g.sort((x, y) => (x.mtime || 0) - (y.mtime || 0)));
+}
+
+function ensureDefaultAssignments() {
+  const src = primarySource();
+  if (!src) return;
+  const master = chosenMaster();
+  for (const f of filePool(src)) {
+    if (master && f.path === master.path) continue;
+    if (state.assign[f.path] === undefined) state.assign[f.path] = 1;
+  }
+}
+
+/**
+ * Clips long enough to plausibly be the program recording.
+ *
+ * The Folder page only needs to answer "which file sets the Dur- token", and a
+ * list of eighty 6-second camera clips buries the one 60-minute file that is
+ * the actual answer. Anything at least half the length of the longest clip
+ * qualifies; the full list is one click away when the heuristic misfires.
+ */
+function plausibleMasters() {
+  const all = masterCandidates();
+  if (state.showAllMasters || all.length <= 1) return all;
+  const longest = Math.max(...all.map((c) => c.file.duration || 0));
+  if (!longest) return all;
+  const picked = chosenMaster();
+  const kept = all.filter((c) => (c.file.duration || 0) >= longest * 0.5
+    || (picked && c.file.path === picked.path));
+  return kept.length ? kept : all;
+}
+
 /** Every clip in play on every footage drive, tagged with the drive it is on. */
 function masterCandidates() {
   const out = [];
@@ -575,9 +633,12 @@ function renderTemplateFolder(src) {
       ${cams.map((c) => `<div class="indent2" style="color:var(--muted)">📁 ${esc(c)}</div>`).join('')}
     </div>
     <p class="hint" style="margin:8px 0 0">The bold <b>Dur-${esc(durLabel)}</b> is the only
-      part the app adds${t.has_dur ? `, replacing the placeholder
-      <b>Dur-${esc(fmtDurLike(t.current_dur, t.session_name))}</b> the structure came with` : ''}. The empty cam
-      folders are recreated exactly as the structure defines them.</p>
+      part the app adds${t.has_dur && dur != null
+        ? (fmtDurLike(t.current_dur, t.session_name) === durLabel
+            ? `, and it already matches what the structure came with`
+            : `, replacing the <b>Dur-${esc(fmtDurLike(t.current_dur, t.session_name))}</b>
+               placeholder the structure came with`)
+        : ''}. The empty cam folders are recreated exactly as the structure defines them.</p>
     <div class="row" style="margin-top:12px">
       ${footageSources().map((f) => `<span class="badge ${f.role}">${esc(f.label)}
         → ${esc(destOf(f).split(/[\\/]/).pop() || destOf(f))}</span>`).join('')}
@@ -618,7 +679,7 @@ function renderTemplateFolder(src) {
     ${masterCandidates().length ? `
       <div class="scroll"><table><thead><tr><th style="width:1%"></th><th>File</th>
         <th>Drive</th><th class="num">Length</th><th>Codec</th><th class="num">Size</th></tr></thead>
-      <tbody>${masterCandidates().map(({ file: c, source: from }) => `
+      <tbody>${plausibleMasters().map(({ file: c, source: from }) => `
         <tr><td><input type="radio" name="master" data-master="${esc(c.path)}"
               data-msrc="${esc(from.path)}"
               ${master && c.path === master.path ? 'checked' : ''} style="width:auto" /></td>
@@ -627,7 +688,13 @@ function renderTemplateFolder(src) {
           <td class="num">${esc(fmtClock(c.duration))}</td>
           <td><span class="badge ${esc(c.family || '')}">${esc(c.video_codec || '?')}</span></td>
           <td class="num">${fmtBytes(c.size)}</td></tr>`).join('')}
-      </tbody></table></div>`
+      </tbody></table></div>
+      ${masterCandidates().length > plausibleMasters().length || state.showAllMasters ? `
+        <p class="hint" style="margin:10px 0 0">
+          Showing ${plausibleMasters().length} of ${masterCandidates().length} clip(s) —
+          the short camera clips are hidden here and assigned on the Cameras step.
+          <a href="#" id="lnkAllMasters">${state.showAllMasters
+            ? 'Show likely masters only' : 'Show all clips'}</a></p>` : ''}`
       : `<div class="note warn">No footage loaded yet — scan a drive above, or add files
          by hand.</div>`}
   </div>
@@ -725,6 +792,7 @@ function wireSession() {
     state.assign = {};
     state.pairing = null;
     state.plan = null;
+    ensureDefaultAssignments();
     render();
   }));
 
@@ -757,12 +825,22 @@ async function addFootage(kind, target = null) {
   try {
     const r = await call('add_files', { paths, session_date: sessionDate() },
       { label: 'Reading footage' });
+    if (!r.count) { toast('No video files found there.', 'err'); return render(); }
     const existing = state.extraFiles[src.path] || [];
     const seen = new Set(existing.map((f) => f.path));
-    state.extraFiles[src.path] = existing.concat(r.files.filter((f) => !seen.has(f.path)));
-    if (!r.count) { toast('No video files found there.', 'err'); return render(); }
-    toast(`Added ${r.count} clip(s) from ${src.label}.`, 'ok');
+    const added = r.files.filter((f) => !seen.has(f.path))
+      .map((f) => ({ ...f, manual: true }));
+    state.extraFiles[src.path] = existing.concat(added);
+
+    const offDay = state.dateFilter
+      ? added.filter((f) => f.shoot_date !== state.dateFilter).length : 0;
+    toast(offDay
+      ? `Added ${added.length} clip(s) from ${src.label} — ${offDay} from another day, `
+        + `kept because you picked them.`
+      : `Added ${added.length} clip(s) from ${src.label}.`, 'ok');
+
     await applyDateSuggestion(src);
+    ensureDefaultAssignments();
     render();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -849,6 +927,7 @@ function wireDayButtons() {
     for (const path of Object.keys(state.assign)) {
       if (!live.has(path)) delete state.assign[path];
     }
+    ensureDefaultAssignments();
     render();
   }));
 }
@@ -909,6 +988,9 @@ function renderCameras() {
     else counts[a] = (counts[a] || 0) + 1;
   }
 
+  // The badge is only worth showing when the list actually mixes days.
+  const mixedDates = new Set(files.map((f) => f.shoot_date)).size > 1;
+
   const rows = files.map((f) => {
     const a = state.assign[f.path] ?? 'skip';
     return `<tr>
@@ -917,8 +999,10 @@ function renderCameras() {
           @ ${esc(f.fps ?? '?')} · <span class="badge ${f.family}">${esc(f.video_codec || '?')}</span></div></td>
       <td class="num">${esc(fmtClock(f.duration))}</td>
       <td>${esc(fmtTime(f.shoot_iso))}
-        ${sessionDate() && f.shoot_date === sessionDate()
-          ? '<span class="badge ok">session date</span>' : ''}</td>
+        ${mixedDates && sessionDate() && f.shoot_date === sessionDate()
+          ? '<span class="badge ok">session date</span>' : ''}
+        ${mixedDates && sessionDate() && f.shoot_date !== sessionDate()
+          ? '<span class="badge warn">other day</span>' : ''}</td>
       <td class="num">${fmtBytes(f.size)}</td>
       <td><div class="seg">
         ${cams.map((n) => `<button class="${a === n ? 'on' : ''}" data-assign="${n}"
@@ -961,7 +1045,7 @@ function renderCameras() {
     <div class="row" style="margin-bottom:12px">
       <button class="sm" id="btnAddFiles">Add files…</button>
       <button class="sm" id="btnAddFolder2">Add a folder…</button>
-      <button class="sm" id="btnAutoGroup" ${scan.suggestion ? '' : 'disabled'}>Auto-suggest by camera</button>
+      <button class="sm" id="btnAutoGroup">Auto-suggest by camera</button>
       <button class="sm" id="btnAddCam">Add cam (${state.camCount})</button>
       <button class="sm" id="btnRemoveCam" ${state.camCount <= 1 ? 'disabled' : ''}>Remove cam</button>
       <button class="sm" id="btnClearAssign">Clear all</button>
@@ -973,7 +1057,6 @@ function renderCameras() {
       ${cams.map((n) => `<span class="badge">Cam-${String(n).padStart(2, '0')}: ${counts[n] || 0}</span>`).join('')}
       <span class="badge">Skipped: ${skipped}</span>
     </div>
-    ${dateSuggestion()}
     ${pairInfo}
     <div class="scroll"><table>
       <thead><tr><th>File</th><th class="num">Length</th><th>Last modified</th>
@@ -1010,19 +1093,23 @@ function wireCameras() {
   });
 
   $('btnAutoGroup')?.addEventListener('click', () => {
-    const scan = state.scans[primarySource().path];
-    if (!scan || !scan.suggestion) return;
+    const src = primarySource();
     const master = chosenMaster();
-    let cam = 0;
-    for (const g of scan.suggestion.groups) {
-      cam++;
-      for (const f of g.files) {
-        if (master && f.path === master.path) continue;
-        state.assign[f.path] = cam;
-      }
-    }
-    state.camCount = Math.max(state.camCount, cam);
-    toast(`Grouped by ${scan.suggestion.basis} into ${cam} cam(s). Check before copying.`);
+    // Grouped from the clips actually in play, so hand-picked files are included
+    // and clips filtered out by the day suggestion are not.
+    const clips = filePool(src).filter((f) => !master || f.path !== master.path);
+    if (!clips.length) return toast('No clips to group.', 'err');
+
+    const groups = camGroupsFromPool(clips);
+    groups.forEach((files, i) => {
+      for (const f of files) state.assign[f.path] = i + 1;
+    });
+    state.camCount = Math.max(state.camCount, groups.length);
+    state.plan = null;
+    toast(groups.length === 1
+      ? `All ${clips.length} clip(s) look like one camera — assigned to Cam-01.`
+      : `Grouped ${clips.length} clip(s) into ${groups.length} cams by resolution, `
+        + `frame rate and codec. Check before copying.`);
     render();
   });
 
@@ -1036,7 +1123,7 @@ async function scanSource(src, force = false) {
       { label: `Reading ${src.label}` });
     state.scans[src.path] = r;
     if (!r.files.length) toast(`No video files found on ${src.label}.`, 'err');
-    else await applyDateSuggestion(src);
+    else { await applyDateSuggestion(src); ensureDefaultAssignments(); }
     render();
   } catch (e) { toast(e.message, 'err'); }
 }

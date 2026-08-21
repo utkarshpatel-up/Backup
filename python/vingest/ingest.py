@@ -209,10 +209,22 @@ def build_plan(spec: dict, progress=None) -> dict:
             staging_path = session_path
             in_place = False
 
-        ensure = [d for d in (t.get("template_dirs") or []) if d]
+        _names = t.get("cam_names") or {}
+
+        def _apply_cam_name(rel: str) -> str:
+            # Rewrite a "…/Cam-NN" folder to its custom name when one is set.
+            m = naming.CAM_FOLDER_RE.search(rel.split("/")[-1])
+            if m:
+                custom = _names.get(str(int(m.group(1)))) or _names.get(int(m.group(1)))
+                if custom:
+                    return "/".join(rel.split("/")[:-1] + [naming.sanitize(custom)])
+            return rel
+
+        ensure = [_apply_cam_name(d) for d in (t.get("template_dirs") or []) if d]
         if not ensure:
             # No template: still create a cam folder for every cam in play.
-            ensure = [f"{naming.CLIPS_DIRNAME}/{naming.cam_folder(int(c))}"
+            ensure = [f"{naming.CLIPS_DIRNAME}/"
+                      f"{naming.sanitize(_names.get(str(c)) or naming.cam_folder(int(c)))}"
                       for c in sorted((t.get("cams") or {}), key=int)]
 
         plan = TargetPlan(
@@ -265,11 +277,18 @@ def build_plan(spec: dict, progress=None) -> dict:
 
         clips_root = staging_path / naming.CLIPS_DIRNAME
         final_clips_root = session_path / naming.CLIPS_DIRNAME
+        # A cam may carry a custom folder name; otherwise it is "Cam-NN".
+        cam_names = t.get("cam_names") or {}
+
+        def cam_folder_name(idx: int) -> str:
+            custom = cam_names.get(str(idx)) or cam_names.get(idx)
+            return naming.sanitize(custom) if custom else naming.cam_folder(idx)
+
         for cam_key, paths in sorted((t.get("cams") or {}).items(),
                                      key=lambda kv: int(kv[0])):
             cam_index = int(cam_key)
-            cam_dir = clips_root / naming.cam_folder(cam_index)
-            final_cam_dir = final_clips_root / naming.cam_folder(cam_index)
+            cam_dir = clips_root / cam_folder_name(cam_index)
+            final_cam_dir = final_clips_root / cam_folder_name(cam_index)
             cam_taken: set[str] = set()
             for p in paths:
                 info = get(p)

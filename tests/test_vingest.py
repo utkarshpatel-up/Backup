@@ -1073,3 +1073,39 @@ class TestNoDeletion:
         assert res["failed"] == 0
         assert not (drive / "Master.mov").exists(), "master moved into the folder"
         assert any(i["message"] == "moved" for i in res["items"])
+
+
+class TestCustomCamNames:
+    """A cam folder can be renamed; the clip and the empty folder agree."""
+
+    @needs_ffmpeg
+    def test_custom_name_used_for_folder_and_clip(self, tmp_path):
+        drive = tmp_path / "SSD"; drive.mkdir()
+        make_clip(drive / "M.MOV", 60)
+        card = tmp_path / "CARD"; card.mkdir()
+        make_clip(card / "CLIP.MP4", 5)
+        plan = ingest.build_plan({"mode": "move", "targets": [{
+            "role": "prores", "source_root": str(drive), "dest_root": str(drive),
+            "session_name": "S Dt-20-Aug-26",
+            "template_dirs": ["Clips for Insert/Cam-01", "Clips for Insert/Cam-02"],
+            "masters": [str(drive / "M.MOV")],
+            "cams": {"2": [str(card / "CLIP.MP4")]},
+            "cam_names": {"2": "Cam-02 Wide"}}]})
+        t = plan["targets"][0]
+        assert "Clips for Insert/Cam-02 Wide" in t["ensure_dirs"]
+        clip = next(i for i in t["items"] if i["kind"] == "clip")
+        assert "/Cam-02 Wide/" in clip["final_dst"]
+
+    @needs_ffmpeg
+    def test_default_name_when_none_given(self, tmp_path):
+        drive = tmp_path / "SSD"; drive.mkdir()
+        make_clip(drive / "M.MOV", 60)
+        card = tmp_path / "CARD"; card.mkdir()
+        make_clip(card / "CLIP.MP4", 5)
+        plan = ingest.build_plan({"mode": "move", "targets": [{
+            "role": "prores", "source_root": str(drive), "dest_root": str(drive),
+            "session_name": "S Dt-20-Aug-26",
+            "masters": [str(drive / "M.MOV")],
+            "cams": {"1": [str(card / "CLIP.MP4")]}}]})
+        clip = next(i for i in plan["targets"][0]["items"] if i["kind"] == "clip")
+        assert "/Cam-01/" in clip["final_dst"]

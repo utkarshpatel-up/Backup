@@ -16,6 +16,10 @@ const state = {
   activeDay: null,      // the day last bulk-selected, for highlighting only
   masters: {},          // sourcePath -> chosen master file path
   masterSource: null,   // the drive the master was picked from
+  cardCams: {},         // card label -> cam number (distinct card = distinct camera)
+  camNames: {},         // cam number -> custom folder name (default "Cam-NN")
+  mastersFiled: false,  // true once the first copy is done; later adds skip masters
+  filedSessions: {},    // role -> final session folder, for adding cameras afterwards
   pairing: null,
   session: { title: '', jobNumber: '', date: '', destMode: 'inPlace', destRoots: {} },
   assign: {},           // primary file path -> 'master' | cam number | 'skip'
@@ -356,6 +360,7 @@ function nameStatesOtherDate(file, day) {
 
 /** Pre-select each drive's root/date masters, leaving manual picks alone. */
 function suggestMasters() {
+  if (state.mastersFiled) return;    // the master is already filed; do not re-detect
   for (const f of footageSources()) {
     const already = state.masters[f.path];
     if (Array.isArray(already) && already.length) continue;   // operator has chosen
@@ -788,6 +793,11 @@ function camGroupsFromPool(files) {
     .map((g) => g.sort((x, y) => (x.mtime || 0) - (y.mtime || 0)));
 }
 
+/** A cam's folder name: the custom name if set, else "Cam-NN". */
+function camLabel(n) {
+  return (state.camNames[n] || '').trim() || `Cam-${String(n).padStart(2, '0')}`;
+}
+
 function ensureDefaultAssignments() {
   const src = primarySource();
   if (!src) return;
@@ -1116,10 +1126,21 @@ async function importCameraCards() {
       return toast(`No camera cards mounted. Looked for ${r.searched.join(' and ')}.`, 'err');
     }
 
+    // Each distinct card is a distinct camera. Compare every card's name against
+    // the ones already inserted: a name seen before keeps its cam; a new name is
+    // assigned the next free cam number (Cam-02, Cam-03, …).
+    const nextFreeCam = () => {
+      const used = new Set(Object.values(state.cardCams));
+      let n = 1; while (used.has(n)) n += 1; return n;
+    };
+    for (const c of r.cards) {
+      if (state.cardCams[c.label] == null) state.cardCams[c.label] = nextFreeCam();
+    }
     const camByPath = new Map();
     const paths = [];
     for (const c of r.cards) {
-      for (const f of c.files) { paths.push(f); camByPath.set(f, c.suggested_cam); }
+      const cam = state.cardCams[c.label];
+      for (const f of c.files) { paths.push(f); camByPath.set(f, cam); }
     }
     if (!paths.length) {
       return toast(`Found ${r.card_count} card(s) but no clips inside them.`, 'err');
@@ -1139,12 +1160,11 @@ async function importCameraCards() {
       const cam = camByPath.get(f.path);
       if (cam) state.assign[f.path] = cam;
     }
-    state.camCount = Math.max(state.camCount,
-      ...r.cards.map((c) => c.suggested_cam || 0));
+    state.camCount = Math.max(state.camCount, ...Object.values(state.cardCams));
     state.plan = null;
 
     toast(`${probed.count} clip(s) from ${r.card_count} card(s) — `
-      + r.cards.map((c) => `${c.label} → Cam-${String(c.suggested_cam || 1).padStart(2, '0')}`)
+      + r.cards.map((c) => `${c.label} → ${camLabel(state.cardCams[c.label])}`)
           .join(', '), 'ok');
     render();
   } catch (e) { toast(e.message, 'err'); }
@@ -1359,7 +1379,8 @@ function renderCameras() {
       ${masters.length > 1 ? 'total' : 'sets'} the folder's Dur-
       <b>${esc(fmtDurAuto(masterTotalSeconds()))}</b>. Change on the Folder step.</div>` : ''}
     <div class="row" style="margin-bottom:12px">
-      <button class="sm primary" id="btnCards">Import camera cards</button>
+      <button class="sm primary" id="btnCards">${state.mastersFiled
+        ? 'Add another camera (import card)' : 'Import camera cards'}</button>
       <button class="sm" id="btnAddFiles">Add files…</button>
       <button class="sm" id="btnAddFolder2">Add a folder…</button>
       <button class="sm" id="btnAutoGroup">Auto-suggest by camera</button>
@@ -1370,7 +1391,12 @@ function renderCameras() {
       <button class="sm ghost" id="btnRescanFiles">Re-scan</button>
     </div>
     <div class="row" style="margin-bottom:6px">
-      ${cams.map((n) => `<span class="badge">Cam-${String(n).padStart(2, '0')}: ${counts[n] || 0}</span>`).join('')}
+      ${cams.map((n) => `<span class="badge" style="gap:4px">
+        <input type="text" data-camname="${n}" value="${esc(camLabel(n))}"
+          title="Rename this camera's folder"
+          style="width:${Math.max(64, camLabel(n).length * 8)}px;background:transparent;
+          border:none;border-bottom:1px dashed var(--line);color:inherit;padding:0 2px;font:inherit" />
+        : ${counts[n] || 0}</span>`).join('')}
       <span class="badge">Skipped: ${skipped}</span>
     </div>
     ${pairInfo}
@@ -1402,6 +1428,16 @@ function wireCameras() {
     render();
   }));
 
+  document.querySelectorAll('[data-camname]').forEach((inp) => {
+    inp.addEventListener('change', () => {
+      const n = Number(inp.dataset.camname);
+      const v = inp.value.trim();
+      if (v && v !== `Cam-${String(n).padStart(2, '0')}`) state.camNames[n] = v;
+      else delete state.camNames[n];
+      state.plan = null;
+      render();
+    });
+  });
   $('btnAddCam')?.addEventListener('click', () => { state.camCount++; render(); });
   $('btnRemoveCam')?.addEventListener('click', () => {
     const gone = state.camCount;
@@ -1502,8 +1538,17 @@ function buildSpec() {
   /** A template names the folder and is written to the chosen destination;
    *  otherwise the folder already on the drive is completed in place. */
   const targetFor = (src, cams, masterList) => {
+    // Once the first copy is done, the master is already filed and the folder is
+    // named — adding a camera later must not touch or re-detect it.
+    const masters = state.mastersFiled ? [] : masterList;
     const base = { role: src.role, source_root: src.path, dest_root: destOf(src),
-                   masters: masterList, cams };
+                   masters, cams, cam_names: state.camNames };
+    // After the first copy, file additional cameras straight into the existing
+    // session folder, so nothing about the master or the name is recomputed.
+    const filed = state.filedSessions[src.role];
+    if (state.mastersFiled && filed) {
+      return { ...base, session_source: filed };
+    }
     if (t) {
       return { ...base, session_name: t.session_name, job_name: t.job_name,
                template_dirs: t.tree };
@@ -1574,7 +1619,8 @@ function renderCopy() {
   const emptyNotice = empties.length ? `
     <div class="card">
       <div class="note warn">
-        <b>${empties.map((n) => `Cam-${String(n).padStart(2, '0')}`).join(', ')}
+        <b>${empties.map((n) => esc((p.targets[0].cam_names || {})[n]
+          || `Cam-${String(n).padStart(2, '0')}`)).join(', ')}
         ${empties.length > 1 ? 'are' : 'is'} empty.</b>
         ${empties.length > 1 ? 'These folders' : 'This folder'} will be created with no clips
         inside. Add clips now if you have footage for ${empties.length > 1 ? 'them' : 'it'},
@@ -1583,7 +1629,8 @@ function renderCopy() {
       </div>
       <div class="row">
         ${empties.map((n) => `<button class="sm" data-addcam="${n}">
-          Add clips to Cam-${String(n).padStart(2, '0')}…</button>`).join('')}
+          Add clips to ${esc((p.targets[0].cam_names || {})[n]
+            || `Cam-${String(n).padStart(2, '0')}`)}…</button>`).join('')}
         <div class="spacer"></div>
         <button class="sm ghost" id="btnLeaveEmpty">Leave empty, continue</button>
       </div>
@@ -1648,9 +1695,11 @@ function camGroups(t) {
   t.items.filter((i) => i.kind === 'clip').forEach((i) => {
     (byCam[i.cam] = byCam[i.cam] || []).push(i);
   });
+  const names = t.cam_names || {};
+  const fname = (n) => (names[n] || names[String(n)] || `Cam-${String(n).padStart(2, '0')}`);
   return definedCams(t).map((cam) => {
     const items = byCam[cam] || [];
-    const head = `<div class="dir indent3">📁 Cam-${String(cam).padStart(2, '0')}${
+    const head = `<div class="dir indent3">📁 ${esc(fname(cam))}${
       items.length ? '' : ' <span style="color:var(--warn)">· empty</span>'}</div>`;
     return head + items.map((i) => `<div class="ren indent3" style="padding-left:72px">
       <b>${esc(i.original_name)}</b>
@@ -1815,6 +1864,12 @@ async function doRun() {
     state.runResult = await call('execute_plan', { plan: p, write_manifest: true },
       { label: 'Copying' });
     const r = state.runResult;
+    if (!r.failed && !r.cancelled) {
+      // The masters are filed and the folders named; remember where, so adding a
+      // camera afterwards goes straight into these folders without re-detection.
+      state.mastersFiled = true;
+      for (const t of p.targets) state.filedSessions[t.role] = t.session_path;
+    }
     toast(r.failed ? `${r.failed} file(s) failed.` : `Copied ${r.copied} files.`,
       r.failed ? 'err' : 'ok');
     render();

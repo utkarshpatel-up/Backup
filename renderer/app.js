@@ -298,12 +298,20 @@ function parentDir(path) {
  */
 function suggestedMastersFor(src) {
   if (!src) return [];
-  const root = String(src.path).replace(/[\\/]+$/, '');
   const day = sessionDate();
-  return filePool(src)
-    .filter((f) => parentDir(f.path) === root)          // sits at the drive root
-    .filter((f) => !day || f.shoot_date === day)        // modified on the folder's date
-    .filter((f) => !nameStatesOtherDate(f, day))        // and its own name agrees
+  // Files at the drive root whose own name does not name a different shoot.
+  // Modification time is NOT used: copying a card to the SSD resets it, so a
+  // genuine master often reads the wrong mtime. The filename is what we trust.
+  const rootOk = filePool(src)
+    .filter((f) => atDriveRoot(f, src))
+    .filter((f) => !nameStatesOtherDate(f, day));
+  if (!rootOk.length) return [];
+  // The program recording is the long one; take every root clip within half the
+  // longest (so a two-part master, Clip-01 + Clip-02, is picked up together).
+  const longest = Math.max(...rootOk.map((f) => f.duration || 0));
+  if (!longest) return [];
+  return rootOk
+    .filter((f) => (f.duration || 0) >= longest * 0.5)
     .sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
 }
 
@@ -340,12 +348,10 @@ function suggestMasters() {
   }
 }
 
-/** True if a master looks like it belongs to another day (by mtime or by name). */
+/** True only if a master's own NAME states a different shoot date.
+ *  Modification time is ignored — it is reset by copying and cannot be trusted. */
 function offSessionDate(file) {
-  const day = sessionDate();
-  if (!day) return false;
-  if (file.shoot_date && file.shoot_date !== day) return true;
-  return nameStatesOtherDate(file, day);
+  return nameStatesOtherDate(file, sessionDate());
 }
 
 function masterTotalFor(src) {
@@ -798,15 +804,18 @@ function selectDay(day) {
  * the actual answer. Anything at least half the length of the longest clip
  * qualifies; the full list is one click away when the heuristic misfires.
  */
-/** The half-longest heuristic, applied within a single drive's own clips. */
+/**
+ * The clips offered as masters for one drive: those at the drive ROOT.
+ *
+ * The program recording lives at the drive root; camera clips are nested in
+ * card folders. Showing only root files keeps the picker to the handful of
+ * files that could actually be the master. "Show all" lifts the root filter.
+ */
 function drivePlausibleMasters(src) {
-  const all = filePool(src);
-  if (state.showAllMasters || all.length <= 1) return all;
-  const longest = Math.max(...all.map((c) => c.duration || 0));
-  if (!longest) return all;
   const picked = new Set(mastersFor(src).map((m) => m.path));
-  const kept = all.filter((c) => (c.duration || 0) >= longest * 0.5 || picked.has(c.path));
-  return kept.length ? kept : all;
+  if (state.showAllMasters) return filePool(src);
+  const root = filePool(src).filter((c) => atDriveRoot(c, src) || picked.has(c.path));
+  return root.length ? root : filePool(src);
 }
 
 function plausibleMasters() {

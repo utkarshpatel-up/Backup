@@ -1633,6 +1633,12 @@ function renderRunResult() {
                 : `Folder not renamed — ${esc(rn.message)}`}</div>`).join('')}
     ${r.errors.map((e) => `<div class="note err mono">${esc(e)}</div>`).join('')}
     <div class="row">
+      <button class="primary" id="btnOpenAll">📂 Open all folders in Finder</button>
+      <span class="hint" style="margin:0">${finderTargets().length} window(s):
+        each drive's session folder${cardFolders().length
+          ? ` + ${cardFolders().length} camera card${cardFolders().length > 1 ? 's' : ''}` : ''}</span>
+    </div>
+    <div class="row" style="margin-top:8px">
       ${(r.manifests || []).map((m) => `<button class="sm" data-open="${esc(m.json)}">
         Open manifest (${m.file_count} files)</button>`).join('')}
       ${state.plan.targets.map((t) => `<button class="sm" data-reveal="${esc(t.session_path)}">
@@ -1643,6 +1649,47 @@ function renderRunResult() {
   </div>`;
 }
 
+/** The session folder on each destination drive. */
+function destFolders() {
+  return (state.plan ? state.plan.targets : []).map((t) => t.session_path);
+}
+
+/** The volume a path lives on (/Volumes/NAME on macOS, a drive letter on Windows). */
+function volumeOf(path) {
+  const p = String(path);
+  const mac = /^(\/Volumes\/[^/]+)/.exec(p);
+  if (mac) return mac[1].toLowerCase();
+  const win = /^([A-Za-z]:)[\\/]/.exec(p);
+  if (win) return win[1].toLowerCase();
+  return ('/' + p.split(/[\\/]/).filter(Boolean)[0] || '').toLowerCase();
+}
+
+/**
+ * The camera-card folders the clips were copied FROM.
+ *
+ * A master relocates within its own SSD, so its source volume matches a
+ * destination — that is not a card. A card is external footage: a source on a
+ * volume that holds no destination. Its clip folder (the REEL) is opened.
+ */
+function cardFolders() {
+  if (!state.plan) return [];
+  const destVols = new Set(destFolders().map(volumeOf));
+  const dirs = new Set();
+  for (const t of state.plan.targets) {
+    for (const i of t.items) {
+      if (destVols.has(volumeOf(i.src))) continue;   // same drive as a dest → not a card
+      const dir = parentDir(i.src);
+      if (dir) dirs.add(dir);
+    }
+  }
+  return [...dirs];
+}
+
+/** Every folder the "open all" button reveals: destinations first, then cards. */
+function finderTargets() {
+  return [...new Set([...destFolders(), ...cardFolders()])];
+}
+
 function wireCopy() {
   $('btnPlan')?.addEventListener('click', doPlan);
   $('btnReplan')?.addEventListener('click', doPlan);
@@ -1650,6 +1697,15 @@ function wireCopy() {
   $('btnGoVerify')?.addEventListener('click', () => {
     state.compareRoots = state.plan.targets.map((t) => t.session_path);
     goStep(4);
+  });
+  $('btnOpenAll')?.addEventListener('click', async () => {
+    const res = await window.api.openFolders(finderTargets());
+    if (res.missing && res.missing.length) {
+      toast(`${res.opened.length} opened; ${res.missing.length} folder(s) not found `
+        + `(a card may have been ejected).`, 'warn');
+    } else {
+      toast(`Opened ${res.opened.length} Finder window(s).`, 'ok');
+    }
   });
   document.querySelectorAll('[data-reveal]').forEach((b) =>
     b.addEventListener('click', () => window.api.reveal(b.dataset.reveal)));

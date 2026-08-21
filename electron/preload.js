@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
 
   reveal: (p) => ipcRenderer.invoke('shell:reveal', p),
   open: (p) => ipcRenderer.invoke('shell:open', p),
+  openFolders: (paths) => ipcRenderer.invoke('shell:openFolders', paths),
 
   setBusy: (busy) => ipcRenderer.invoke('app:setBusy', busy),
   getSettings: () => ipcRenderer.invoke('settings:get'),

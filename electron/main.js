@@ -154,5 +154,16 @@ ipcMain.handle('shell:reveal', (_e, p) => {
 });
 ipcMain.handle('shell:open', (_e, p) => shell.openPath(p));
 
+// Open each existing folder as its own window (Finder on macOS, Explorer on Win).
+ipcMain.handle('shell:openFolders', async (_e, paths) => {
+  const opened = [];
+  const missing = [];
+  for (const p of paths || []) {
+    if (p && fs.existsSync(p)) { await shell.openPath(p); opened.push(p); }
+    else if (p) missing.push(p);
+  }
+  return { opened, missing };
+});
+
 ipcMain.handle('settings:get', () => loadSettings());
 ipcMain.handle('settings:set', (_e, patch) => saveSettings(patch));

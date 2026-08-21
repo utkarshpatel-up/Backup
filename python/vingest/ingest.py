@@ -432,6 +432,17 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                 **kw,
             })
 
+    # A camera-card clip is filed to both SSDs, so one source has several
+    # destinations. Count them, so move mode copies to every drive before the
+    # source is deleted rather than losing it after the first.
+    import os as _os
+    writes_left: dict[str, int] = {}
+    for _t in plan.get("targets", []):
+        for _i in _t.get("items", []):
+            key = _os.path.normcase(_i["src"])
+            writes_left[key] = writes_left.get(key, 0) + 1
+    src_failed: set[str] = set()
+
     for target in plan.get("targets", []):
         staging_root = Path(target.get("staging_path") or target["session_path"])
         staging_root.mkdir(parents=True, exist_ok=True)
@@ -478,7 +489,11 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                         _acc["n"] = 0
                         emit(current=src.name, target=target["role"])
 
-                renamed = mode == "move" and _same_volume(src.parent, dst.parent)
+                src_key = os.path.normcase(item["src"])
+                # An atomic rename is only safe when this is the source's single
+                # destination; a clip bound for both SSDs must be copied.
+                renamed = (mode == "move" and writes_left.get(src_key, 1) == 1
+                           and _same_volume(src.parent, dst.parent))
                 if renamed:
                     src.replace(dst)          # atomic within a volume
                     done_bytes += item["size"]
@@ -492,12 +507,17 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                 else:
                     problem = _verify(src, dst, verify)
 
+                writes_left[src_key] = writes_left.get(src_key, 1) - 1
                 if problem:
                     item["status"] = "failed"
                     item["message"] = problem
                     errors.append(f"{src.name}: {problem}")
+                    src_failed.add(src_key)
                 else:
-                    if mode == "move" and not renamed and src.exists():
+                    # In move mode delete the source only once every drive that
+                    # needed it has its copy, and none of those copies failed.
+                    if (mode == "move" and not renamed and writes_left[src_key] <= 0
+                            and src_key not in src_failed and src.exists()):
                         src.unlink()
                     item["status"] = "done"
                     item["message"] = ""

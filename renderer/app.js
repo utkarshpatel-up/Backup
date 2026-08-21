@@ -1311,11 +1311,10 @@ function renderCameras() {
   const cams = Array.from({ length: state.camCount }, (_, i) => i + 1);
   const masters = chosenMasters();
   const isMaster = masterPaths();
-  // Masters were settled on the Folder step; they are not cam clips. Only clips
-  // at the drive root (plus anything added or imported by hand) are shown — a
-  // recursive scan also sweeps up nested card files, which are noise here.
-  const files = pool.filter((f) => !isMaster.has(f.path)
-    && (atDriveRoot(f, src) || f.manual));
+  // Cam clips are the ones brought in by hand — Import camera cards, Add files,
+  // Add a folder. The drive scan is only for finding the master, so scanned
+  // clips never appear here; that keeps stray root files out of the cam list.
+  const files = pool.filter((f) => !isMaster.has(f.path) && f.manual);
   const counts = {};
   cams.forEach((n) => { counts[n] = 0; });
   let skipped = 0;
@@ -1327,6 +1326,7 @@ function renderCameras() {
 
   // The badge is only worth showing when the list actually mixes days.
   const mixedDates = new Set(files.map((f) => f.shoot_date)).size > 1;
+  const noClips = files.length === 0;
 
   const rows = files.map((f) => {
     const a = state.assign[f.path] ?? 'skip';
@@ -1352,24 +1352,11 @@ function renderCameras() {
   const sec = secondarySource();
   const prim = src;
   const secName = sec ? sec.label : 'the other drive';
-  const masterTwin = state.pairing && masters.length
-    ? masters.every((m) => state.pairing.matches[m.path]) : null;
-  const pairInfo = state.pairing
-    ? `${state.pairing.unmatched_primary.length
-        ? `<div class="note warn"><b>${state.pairing.unmatched_primary.length} clip(s) have no
-             twin on ${esc(secName)}</b>, so they will be filed on ${esc(prim.label)} only:
-             ${esc(state.pairing.unmatched_primary.map((p) => p.split(/[\\/]/).pop()).join(', '))}
-             </div>`
-        : `<div class="note ok">All ${Object.keys(state.pairing.matches).length} clip(s) matched
-             to a twin on ${esc(secName)}. Whatever you assign here is applied to both drives.
-             </div>`}
-       ${masters.length && !masterTwin
-        ? `<div class="note err"><b>A master clip has no twin on ${esc(secName)}.</b>
-             Without it that drive's folder gets no Dur- token. Load its footage, or check
-             the day filter.</div>` : ''}`
-    : (sec ? `<div class="note info">Assignments here apply to ${esc(prim.label)} only.
-              Press <b>Mirror to ${esc(secName)}</b> to match each clip to its twin and file
-              both drives the same way.</div>` : '');
+  const pairInfo = sec
+    ? `<div class="note info">These clips are filed to <b>both</b> ${esc(prim.label)} and
+         ${esc(secName)} — the two SSDs are kept as identical backups. Each drive keeps its
+         own master (${esc(prim.role)} / ${esc(sec.role)}).</div>`
+    : '';
 
   return `
   <div class="card">
@@ -1391,7 +1378,6 @@ function renderCameras() {
       <button class="sm" id="btnRemoveCam" ${state.camCount <= 1 ? 'disabled' : ''}>Remove cam</button>
       <button class="sm" id="btnClearAssign">Clear all</button>
       <div class="spacer"></div>
-      ${sec ? `<button class="sm primary" id="btnMirror">Mirror to ${esc(sec.label)}</button>` : ''}
       <button class="sm ghost" id="btnRescanFiles">Re-scan</button>
     </div>
     <div class="row" style="margin-bottom:6px">
@@ -1399,7 +1385,12 @@ function renderCameras() {
       <span class="badge">Skipped: ${skipped}</span>
     </div>
     ${pairInfo}
-    <div class="scroll"><table>
+    ${noClips ? `<div class="empty"><div class="big">🎥</div>
+      <div>No cam clips yet.</div>
+      <div style="margin-top:4px">Press <b>Import camera cards</b>, or add clips with
+        <b>Add files…</b> / <b>Add a folder…</b>. The drive scan is only used to find the
+        master, so it does not fill this list.</div></div>` : ''}
+    <div class="scroll" ${noClips ? 'style="display:none"' : ''}><table>
       <thead><tr><th>File</th><th class="num">Length</th><th>Last modified</th>
         <th class="num">Size</th><th style="width:1%">Goes to</th></tr></thead>
       <tbody>${rows}</tbody>
@@ -1453,7 +1444,6 @@ function wireCameras() {
     render();
   });
 
-  $('btnMirror')?.addEventListener('click', mirrorToSecondary);
 }
 
 async function scanSource(src, force = false) {
@@ -1532,20 +1522,13 @@ function buildSpec() {
     return { ...base, session_source: (state.detected[src.path] || {}).session_path || null };
   };
 
-  // The drive the cams were assigned against.
-  targets.push(targetFor(a, camsFor((p) => p),
-    mastersFor(a).map((f) => f.path)));
-
-  // The other SSD holds the same session, so it is always filed too. Its cam
-  // clips are matched to the assignments by Mirror; its master is whatever was
-  // ticked for it (the drives' masters have different filenames, so each is
-  // picked on its own). Falls back to the paired twin if none was ticked.
+  // Both SSDs are backups of each other, so the same cam clips are filed to each
+  // — the imported card clips are copied to both drives identically. Only the
+  // master differs, because it is that drive's own recording (ProRes vs H.265).
+  const cams = camsFor((p) => p);
+  targets.push(targetFor(a, cams, mastersFor(a).map((f) => f.path)));
   if (b) {
-    const m = (state.pairing && state.pairing.matches) || {};
-    const bMasters = mastersFor(b).map((f) => f.path);
-    const fallback = mastersFor(a).map((f) => m[f.path]).filter(Boolean);
-    targets.push(targetFor(b, camsFor((p) => m[p] || null),
-      bMasters.length ? bMasters : fallback));
+    targets.push(targetFor(b, cams, mastersFor(b).map((f) => f.path)));
   }
 
   return {
@@ -1689,10 +1672,7 @@ function wireCopy() {
 async function doPlan() {
   try {
     state.runResult = null;
-    // The second SSD holds the same session, so it is always part of the plan —
-    // its clips are matched to the assignments automatically, no separate step.
-    const b = secondarySource();
-    if (b && !state.pairing) await mirrorToSecondary({ quiet: true });
+    // Both SSDs are filed identically, so there is nothing to match up first.
     state.plan = await call('build_plan', buildSpec(), { label: 'Building plan' });
     render();
   } catch (e) { toast(e.message, 'err'); }

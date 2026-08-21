@@ -1568,6 +1568,26 @@ function renderCopy() {
       </div>
     </div>`).join('');
 
+  // Cams are mirrored across the drives, so the empty set is the same on each.
+  const empties = p.targets.length ? emptyCams(p.targets[0]) : [];
+  const emptyNotice = empties.length ? `
+    <div class="card">
+      <div class="note warn">
+        <b>${empties.map((n) => `Cam-${String(n).padStart(2, '0')}`).join(', ')}
+        ${empties.length > 1 ? 'are' : 'is'} empty.</b>
+        ${empties.length > 1 ? 'These folders' : 'This folder'} will be created with no clips
+        inside. Add clips now if you have footage for ${empties.length > 1 ? 'them' : 'it'},
+        or leave ${empties.length > 1 ? 'them' : 'it'} empty — the ${
+          empties.length > 1 ? 'folders are' : 'folder is'} still created either way.
+      </div>
+      <div class="row">
+        ${empties.map((n) => `<button class="sm" data-addcam="${n}">
+          Add clips to Cam-${String(n).padStart(2, '0')}…</button>`).join('')}
+        <div class="spacer"></div>
+        <button class="sm ghost" id="btnLeaveEmpty">Leave empty, continue</button>
+      </div>
+    </div>` : '';
+
   const status = state.runResult ? renderRunResult() : '';
 
   return `
@@ -1587,6 +1607,7 @@ function renderCopy() {
       </div>
     </div>
     ${status}
+    ${emptyNotice}
     ${trees}`;
 }
 
@@ -1603,19 +1624,40 @@ function masterRows(t) {
     <span style="color:var(--muted)">· ${fmtDurAuto(i.duration)}</span></div>`).join('');
 }
 
+/** Every cam number the plan defines — from its folder list and its clips. */
+function definedCams(t) {
+  const nums = new Set();
+  for (const d of t.ensure_dirs || []) {
+    const m = /Cam-(\d+)/i.exec(d);
+    if (m) nums.add(Number(m[1]));
+  }
+  t.items.filter((i) => i.kind === 'clip').forEach((i) => nums.add(i.cam));
+  if (!nums.size) for (let n = 1; n <= state.camCount; n++) nums.add(n);
+  return [...nums].sort((a, b) => a - b);
+}
+
+/** Cam numbers that will be created with no clips in them. */
+function emptyCams(t) {
+  const filled = new Set(t.items.filter((i) => i.kind === 'clip').map((i) => i.cam));
+  return definedCams(t).filter((n) => !filled.has(n));
+}
+
 function camGroups(t) {
   const byCam = {};
   t.items.filter((i) => i.kind === 'clip').forEach((i) => {
     (byCam[i.cam] = byCam[i.cam] || []).push(i);
   });
-  return Object.keys(byCam).sort((a, b) => a - b).map((cam) => `
-    <div class="dir indent3">📁 Cam-${String(cam).padStart(2, '0')}</div>
-    ${byCam[cam].map((i) => `<div class="ren indent3" style="padding-left:72px">
+  return definedCams(t).map((cam) => {
+    const items = byCam[cam] || [];
+    const head = `<div class="dir indent3">📁 Cam-${String(cam).padStart(2, '0')}${
+      items.length ? '' : ' <span style="color:var(--warn)">· empty</span>'}</div>`;
+    return head + items.map((i) => `<div class="ren indent3" style="padding-left:72px">
       <b>${esc(i.original_name)}</b>
       <span style="color:var(--muted)">· ${fmtDur(i.duration)} · ${fmtBytes(i.size)}${
         i.original_name !== i.dst.split(/[\\/]/).pop()
           ? ` · renamed to ${esc(i.dst.split(/[\\/]/).pop())} to avoid a clash` : ''}</span>
-      </div>`).join('')}`).join('');
+      </div>`).join('');
+  }).join('');
 }
 
 function renderRunResult() {
@@ -1693,6 +1735,10 @@ function finderTargets() {
 function wireCopy() {
   $('btnPlan')?.addEventListener('click', doPlan);
   $('btnReplan')?.addEventListener('click', doPlan);
+  document.querySelectorAll('[data-addcam]').forEach((b) => b.addEventListener('click', () =>
+    addClipsToCam(Number(b.dataset.addcam))));
+  $('btnLeaveEmpty')?.addEventListener('click', () =>
+    toast('Empty cam folders will still be created.', 'ok'));
   $('btnRun')?.addEventListener('click', doRun);
   $('btnGoVerify')?.addEventListener('click', () => {
     state.compareRoots = state.plan.targets.map((t) => t.session_path);
@@ -1711,6 +1757,28 @@ function wireCopy() {
     b.addEventListener('click', () => window.api.reveal(b.dataset.reveal)));
   document.querySelectorAll('[data-open]').forEach((b) =>
     b.addEventListener('click', () => window.api.open(b.dataset.open)));
+}
+
+/** Pick footage for a specific cam from the Copy step, then rebuild the plan. */
+async function addClipsToCam(cam) {
+  const src = primarySource();
+  if (!src) return;
+  const paths = await window.api.pickVideoFiles();
+  if (!paths || !paths.length) return;
+  try {
+    const r = await call('add_files', { paths, session_date: sessionDate() },
+      { label: `Reading clips for Cam-${String(cam).padStart(2, '0')}` });
+    if (!r.count) return toast('No video files found there.', 'err');
+    const existing = state.extraFiles[src.path] || [];
+    const seen = new Set(existing.map((f) => f.path));
+    const added = r.files.filter((f) => !seen.has(f.path)).map((f) => ({ ...f, manual: true }));
+    state.extraFiles[src.path] = existing.concat(added);
+    // These clips go to the cam the operator picked, on both drives.
+    for (const f of added) state.assign[f.path] = cam;
+    state.camCount = Math.max(state.camCount, cam);
+    toast(`Added ${added.length} clip(s) to Cam-${String(cam).padStart(2, '0')}.`, 'ok');
+    await doPlan();               // rebuild so the review reflects the new clips
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 async function doPlan() {

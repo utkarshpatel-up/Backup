@@ -87,10 +87,16 @@ stays one click away — nothing is hidden, and the day buttons show the full
 breakdown on the Folder page. Clips filtered out are also unassigned from any
 cam, so what you see is exactly what gets copied.
 
-**A file you pick by hand is never filtered out.** The day suggestion applies to
-what a drive scan sweeps up; an explicit **Add files…** is an instruction, so the
-clip stays in play even when it was shot on another day, and the confirmation
-says when that happened.
+**The day filter is absolute.** A session is one day's footage, so nothing shot
+on another day is ever in play — however it was loaded, hand-picked included.
+Files you picked are kept rather than discarded, so switching the day reveals
+them, and adding clips from the wrong day says exactly that instead of reporting
+success and showing nothing.
+
+The plan is built from the clips currently in play, never from the record of
+what you clicked. A clip assigned to a cam and then excluded by the day filter is
+dropped from the assignment, so it cannot resurface in the copy. As a backstop
+the engine also warns if a plan's clips span more than one day.
 
 Two cases it deliberately does **not** guess:
 
@@ -228,7 +234,7 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-104 tests covering duration formatting, the "filenames are never changed"
+106 tests covering duration formatting, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
 rename-only-on-success guarantee, structure-template import (both zip layouts,
 plus path-escape refusal), per-source destinations, the same-day footage

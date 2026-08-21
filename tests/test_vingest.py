@@ -873,3 +873,44 @@ class TestCamGrouping:
         clips = [self._f("late.MP4", mtime=900), self._f("early.MP4", mtime=100)]
         files = ingest.suggest_cam_groups(clips)["groups"][0]["files"]
         assert [f["name"] for f in files] == ["early.MP4", "late.MP4"]
+
+
+class TestSingleDayPlans:
+    """A session is one day's footage; a plan spanning days is worth flagging."""
+
+    @needs_ffmpeg
+    def test_clips_from_two_days_are_flagged(self, tmp_path):
+        import os
+        import datetime as _dt
+        drive = tmp_path / "SSD"
+        drive.mkdir()
+        make_clip(drive / "Program.mov", 65)
+        for name, day in (("today.mov", (2026, 8, 20)), ("june.mov", (2026, 6, 17))):
+            make_clip(drive / name, 2)
+            when = _dt.datetime(*day, 12, 0).timestamp()
+            os.utime(drive / name, (when, when))
+
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(drive), "dest_root": str(tmp_path / "o"),
+            "session_name": "S Dt-20-Aug-26",
+            "master": str(drive / "Program.mov"),
+            "cams": {"1": [str(drive / "today.mov"), str(drive / "june.mov")]}}]})
+        assert any("more than one day" in w for w in plan["warnings"])
+
+    @needs_ffmpeg
+    def test_a_single_day_plan_is_not_flagged(self, tmp_path):
+        import os
+        import datetime as _dt
+        drive = tmp_path / "SSD"
+        drive.mkdir()
+        make_clip(drive / "Program.mov", 65)
+        for name in ("a.mov", "b.mov"):
+            make_clip(drive / name, 2)
+            when = _dt.datetime(2026, 8, 20, 12, 0).timestamp()
+            os.utime(drive / name, (when, when))
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(drive), "dest_root": str(tmp_path / "o"),
+            "session_name": "S Dt-20-Aug-26",
+            "master": str(drive / "Program.mov"),
+            "cams": {"1": [str(drive / "a.mov"), str(drive / "b.mov")]}}]})
+        assert not any("more than one day" in w for w in plan["warnings"])

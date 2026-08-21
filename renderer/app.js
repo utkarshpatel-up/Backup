@@ -176,13 +176,47 @@ function allFiles(src) {
 }
 
 /** The files actually in play — narrowed to the suggested day when one is active. */
+/**
+ * The clips in play for a source.
+ *
+ * The day filter is absolute: a session is one day's footage, so nothing from
+ * another day is ever in play, however it was loaded. Files picked by hand are
+ * kept in `extraFiles` rather than discarded, so switching the day reveals them
+ * — but they are not silently smuggled into the plan.
+ */
 function filePool(src) {
   const all = allFiles(src);
   if (!state.dateFilter) return all;
-  // A file picked by hand is an explicit instruction, so the date suggestion
-  // never removes it. Saying "added" and then showing nothing is worse than
-  // showing one clip from another day.
-  return all.filter((f) => f.manual || f.shoot_date === state.dateFilter);
+  return all.filter((f) => f.shoot_date === state.dateFilter);
+}
+
+/** Files loaded for a source but excluded by the current day filter. */
+function heldBack(src) {
+  if (!state.dateFilter) return [];
+  return allFiles(src).filter((f) => f.shoot_date !== state.dateFilter);
+}
+
+/** Every path currently in play, across every footage drive. */
+function livePaths() {
+  return new Set(footageSources().flatMap((f) => filePool(f)).map((f) => f.path));
+}
+
+/**
+ * Drop assignments for clips no longer in play.
+ *
+ * Without this, a clip assigned to a cam before the day filter narrowed the pool
+ * stayed assigned invisibly and turned up in the plan — the whole reason clips
+ * from other shoots were being filed.
+ */
+function pruneAssignments() {
+  const live = livePaths();
+  for (const path of Object.keys(state.assign)) {
+    if (!live.has(path)) delete state.assign[path];
+  }
+  if (state.pairing) {
+    const stale = Object.keys(state.pairing.matches).some((p) => !live.has(p));
+    if (stale) state.pairing = null;      // pairing was made against a different set
+  }
 }
 
 /** The detection result for the primary source. */
@@ -653,13 +687,15 @@ function renderTemplateFolder(src) {
     ${footageSources().map((f) => {
       const loaded = allFiles(f).length;
       const inPlay = filePool(f).length;
+      const held = heldBack(f).length;
       return `<div class="source-card" style="padding:10px 12px">
         <div class="icon">${f.kind === 'zip' ? '🗜️' : f.kind === 'folder' ? '📁' : '💾'}</div>
         <div class="body">
           <div class="name">${esc(f.label)}
             <span class="badge ${f.role}">${esc(f.role)}</span>
-            ${loaded ? `<span class="badge ${inPlay ? 'ok' : 'warn'}">${inPlay} of ${loaded}
-              clip(s) in play</span>` : '<span class="badge warn">nothing loaded</span>'}</div>
+            ${loaded ? `<span class="badge ${inPlay ? 'ok' : 'warn'}">${inPlay} clip(s) in this
+              session</span>` : '<span class="badge warn">nothing loaded</span>'}
+            ${held ? `<span class="badge warn">${held} from other days, not used</span>` : ''}</div>
           <div class="path">${esc(f.path)}</div>
         </div>
         <div class="row">
@@ -691,8 +727,8 @@ function renderTemplateFolder(src) {
       </tbody></table></div>
       ${masterCandidates().length > plausibleMasters().length || state.showAllMasters ? `
         <p class="hint" style="margin:10px 0 0">
-          Showing ${plausibleMasters().length} of ${masterCandidates().length} clip(s) —
-          the short camera clips are hidden here and assigned on the Cameras step.
+          Showing ${plausibleMasters().length} of ${masterCandidates().length} clip(s) in this
+          session — short camera clips are hidden here and assigned on the Cameras step.
           <a href="#" id="lnkAllMasters">${state.showAllMasters
             ? 'Show likely masters only' : 'Show all clips'}</a></p>` : ''}`
       : `<div class="note warn">No footage loaded yet — scan a drive above, or add files
@@ -832,15 +868,22 @@ async function addFootage(kind, target = null) {
       .map((f) => ({ ...f, manual: true }));
     state.extraFiles[src.path] = existing.concat(added);
 
-    const offDay = state.dateFilter
-      ? added.filter((f) => f.shoot_date !== state.dateFilter).length : 0;
-    toast(offDay
-      ? `Added ${added.length} clip(s) from ${src.label} — ${offDay} from another day, `
-        + `kept because you picked them.`
-      : `Added ${added.length} clip(s) from ${src.label}.`, 'ok');
-
     await applyDateSuggestion(src);
+    pruneAssignments();
     ensureDefaultAssignments();
+
+    // Report against the day filter, so "added" never means "added and hidden".
+    const inPlay = added.filter((f) => !state.dateFilter
+      || f.shoot_date === state.dateFilter).length;
+    const held = added.length - inPlay;
+    if (!inPlay && held) {
+      toast(`None of those ${held} clip(s) are from ${fmtDay(state.dateFilter)} — `
+        + `nothing added to this session. Pick another day below to use them.`, 'err');
+    } else {
+      toast(held
+        ? `Added ${inPlay} clip(s) from ${src.label}. ${held} other-day clip(s) ignored.`
+        : `Added ${inPlay} clip(s) from ${src.label}.`, 'ok');
+    }
     render();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -922,11 +965,7 @@ function wireDayButtons() {
   document.querySelectorAll('[data-day]').forEach((b) => b.addEventListener('click', () => {
     state.dateFilter = b.dataset.day || null;
     state.plan = null;
-    // Clips filtered out must not stay assigned to a cam behind the scenes.
-    const live = new Set(filePool(primarySource()).map((f) => f.path));
-    for (const path of Object.keys(state.assign)) {
-      if (!live.has(path)) delete state.assign[path];
-    }
+    pruneAssignments();
     ensureDefaultAssignments();
     render();
   }));
@@ -1123,7 +1162,7 @@ async function scanSource(src, force = false) {
       { label: `Reading ${src.label}` });
     state.scans[src.path] = r;
     if (!r.files.length) toast(`No video files found on ${src.label}.`, 'err');
-    else { await applyDateSuggestion(src); ensureDefaultAssignments(); }
+    else { await applyDateSuggestion(src); pruneAssignments(); ensureDefaultAssignments(); }
     render();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -1166,10 +1205,13 @@ function buildSpec() {
   const master = masterInfo();
   const targets = [];
 
+  // Only clips currently in play can reach the plan. state.assign is a record of
+  // choices, not a source of truth about what exists.
+  const live = livePaths();
   const camsFor = (mapPath) => {
     const cams = {};
     for (const [p, v] of Object.entries(state.assign)) {
-      if (v === 'skip' || v === undefined || typeof v !== 'number') continue;
+      if (typeof v !== 'number' || !live.has(p)) continue;
       const mapped = mapPath(p);
       if (!mapped) continue;
       (cams[v] = cams[v] || []).push(mapped);
@@ -1259,7 +1301,10 @@ function renderCopy() {
       <div class="row">
         <div><b>${p.item_count} file(s) to file</b> · ${fmtBytes(p.total_bytes)} ·
           mode <b>${esc(p.mode)}</b> · verify <b>${esc(p.verify)}</b>
-          ${(p.renames || []).length ? `· <b>${p.renames.length} folder rename(s)</b>` : ''}</div>
+          ${(p.renames || []).length ? `· <b>${p.renames.length} folder rename(s)</b>` : ''}
+          ${state.dateFilter
+            ? `<br><span class="hint">Only clips shot on
+               ${esc(fmtDay(state.dateFilter))} are included.</span>` : ''}</div>
         <div class="spacer"></div>
         <button class="sm" id="btnReplan">Rebuild plan</button>
         <button class="primary" id="btnRun" ${state.busy ? 'disabled' : ''}>

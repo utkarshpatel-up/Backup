@@ -272,6 +272,14 @@ def build_plan(spec: dict, progress=None) -> dict:
                 if info.error:
                     plan.warnings.append(f"{Path(p).name}: {info.error}")
 
+        clip_days = {get(i.src).shoot_datetime().date().isoformat()
+                     for i in plan.items if i.kind == "clip"}
+        if len(clip_days) > 1:
+            plan.warnings.append(
+                "These clips were shot on more than one day ("
+                + ", ".join(sorted(clip_days))
+                + "). A session is normally one day's footage — check the day filter.")
+
         # In place, a clip already filed in the right cam folder needs no copy.
         plan.items = [i for i in plan.items
                       if os.path.normcase(i.src) != os.path.normcase(i.dst)]

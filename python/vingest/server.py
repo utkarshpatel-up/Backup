@@ -224,13 +224,15 @@ def m_verify_pairs(p, req_id):
     emit = _progress(req_id)
     mode = p.get("mode", "size")
     pairs = p.get("pairs", [])
+    labels = p.get("labels", [])
     results = []
     for n, pair in enumerate(pairs, 1):
         a, b = pair[0], pair[1]
         if req_id in _CANCELLED:
             return {"cancelled": True, "results": results}
-        emit({"stage": "verify", "done": n, "total": len(pairs), "name": _P(a).name})
-        rec = {"name": _P(a).name, "a": a, "b": b, "match": False, "detail": ""}
+        label = labels[n - 1] if n - 1 < len(labels) else _P(a).name
+        emit({"stage": "verify", "done": n, "total": len(pairs), "name": label})
+        rec = {"name": label, "a": a, "b": b, "match": False, "detail": ""}
         try:
             sa, sb = _P(a).stat().st_size, _P(b).stat().st_size
             if sa != sb:

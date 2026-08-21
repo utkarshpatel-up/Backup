@@ -1821,31 +1821,35 @@ async function doRun() {
 /* ------------------------------------------------------------- step: verify */
 
 /**
- * The clips that were copied to both SSDs, as (drive-A path, drive-B path) pairs.
+ * Every copied camera-card clip, paired with the ORIGINAL it was copied from.
  *
- * Only files with the same source on both targets qualify — the mirrored cam
- * clips. The per-drive masters have different sources (ProRes vs H.265) and are
- * not compared, and the camera card is never involved.
+ * The card is the reference: each SSD's copy is checked against the card clip it
+ * came from, which confirms the copy is faithful — and if both drives match the
+ * card, they match each other. Masters relocated in place (no card source) and
+ * are not part of this.
  */
-function mirroredPairs() {
-  if (!state.plan || state.plan.targets.length < 2) return [];
-  const [a, b] = state.plan.targets;
-  const norm = (x) => String(x).toLowerCase();
-  const bBySrc = new Map(b.items.map((i) => [norm(i.src), i]));
-  const pairs = [];
-  for (const ia of a.items) {
-    const ib = bBySrc.get(norm(ia.src));
-    if (!ib) continue;
-    pairs.push({ name: ia.original_name,
-      a: ia.final_dst || ia.dst, b: ib.final_dst || ib.dst,
-      aRole: a.role, bRole: b.role });
+function cardCopyChecks() {
+  if (!state.plan) return [];
+  const out = [];
+  for (const t of state.plan.targets) {
+    for (const i of t.items) {
+      if (i.kind !== 'clip') continue;      // masters have no card source
+      out.push({ name: i.original_name, role: t.role,
+        source: i.src, copy: i.final_dst || i.dst });
+    }
   }
-  return pairs;
+  return out;
+}
+
+/** Distinct camera-card folders the clips came from, for the message. */
+function sourceCardLabels() {
+  const dirs = new Set(cardCopyChecks().map((c) => parentDir(c.source).split(/[\\/]/).pop()));
+  return [...dirs].filter(Boolean);
 }
 
 function renderVerify() {
-  const pairs = mirroredPairs();
-  const canVerify = pairs.length > 0;
+  const checks = cardCopyChecks();
+  const canVerify = checks.length > 0;
   const roots = state.compareRoots;
   const rows = roots.map((r, i) => `
     <div class="row" style="margin-bottom:8px">
@@ -1854,24 +1858,25 @@ function renderVerify() {
       <button class="sm ghost" data-drop-root="${i}">Remove</button>
     </div>`).join('');
 
-  const b = state.plan && state.plan.targets[1];
-  const a = state.plan && state.plan.targets[0];
+  const drives = [...new Set(checks.map((c) => c.role))];
+  const cards = sourceCardLabels();
 
   return `
   <div class="card">
-    <h3>Verify the copied clips match on both SSDs</h3>
-    <p class="hint">Checks only the clips that were copied to both drives — the cam inserts.
-      Each drive keeps its own master, and the camera cards are not part of this; those are
-      meant to differ, so they are left out.</p>
+    <h3>Verify the copied clips against the camera card${cards.length > 1 ? 's' : ''}</h3>
+    <p class="hint">Checks every clip copied from the camera card${cards.length > 1 ? 's' : ''}
+      against the original still on the card — on ${esc(drives.join(' and '))}. If both copies
+      match the card, the copy is faithful and the two SSDs are identical. Masters relocated in
+      place and are not part of this.</p>
     ${canVerify ? `<div class="note info">
-        <b>${pairs.length} clip(s)</b> were copied to both
-        <b>${esc(a.role)}</b> and <b>${esc(b.role)}</b>. Verify they are identical:</div>
+        <b>${checks.length} copy check(s)</b> — ${esc(cards.join(', ') || 'card clips')} →
+        ${esc(drives.join(' + '))}. The cards must stay connected for this:</div>
       <div class="row">
         <button class="primary" id="btnVerifyPairs">Verify (size, fast)</button>
         <button class="sm" id="btnVerifyPairsHash">Checksum verify (bit-exact)</button>
       </div>`
-      : `<div class="note warn">No copy has run yet, or only one drive was filed — there is
-         nothing to cross-check. Run the copy first.</div>`}
+      : `<div class="note warn">No camera-card clips were copied, or no copy has run yet.
+         Run the copy first.</div>`}
   </div>
   ${state.pairVerify ? renderPairVerify() : ''}
 
@@ -1893,19 +1898,19 @@ function renderVerify() {
   </details>`;
 }
 
-/** Result card for the focused copied-clip verification. */
+/** Result card for the card→copy verification. */
 function renderPairVerify() {
   const v = state.pairVerify;
   return `<div class="card">
     <div class="note ${v.ok ? 'ok' : 'err'}">
-      <b>${v.ok ? 'All copied clips are identical on both SSDs.'
-                : `${v.mismatched.length} clip(s) differ between the drives.`}</b>
-      ${v.checked} clip(s) checked by ${esc(v.algorithm)}.
+      <b>${v.ok ? 'Every copy matches the camera card.'
+                : `${v.mismatched.length} copy(ies) do not match the card.`}</b>
+      ${v.checked} check(s) by ${esc(v.algorithm)}.
     </div>
     ${v.mismatched.map((m) => `<div class="note err mono">
       ${esc(m.name)} — ${esc(m.detail)}</div>`).join('')}
-    ${v.ok ? `<p class="hint" style="margin:6px 0 0">The two SSDs are verified backups of
-      each other for every clip that was copied.</p>` : ''}
+    ${v.ok ? `<p class="hint" style="margin:6px 0 0">Each copied clip is identical to its
+      camera-card original, so both SSDs are faithful, matching backups.</p>` : ''}
   </div>`;
 }
 
@@ -1956,14 +1961,15 @@ function renderDeepResult() {
 
 function wireVerify() {
   const runPairVerify = async (mode) => {
-    const pairs = mirroredPairs();
-    if (!pairs.length) return;
+    const checks = cardCopyChecks();
+    if (!checks.length) return;
     try {
       state.pairVerify = await call('verify_pairs',
-        { pairs: pairs.map((p) => [p.a, p.b]), mode },
-        { label: mode === 'hash' ? 'Checksumming copied clips' : 'Verifying copied clips' });
-      toast(state.pairVerify.ok ? 'Both SSDs hold identical copied clips.'
-        : `${state.pairVerify.mismatched.length} clip(s) differ.`,
+        { pairs: checks.map((c) => [c.source, c.copy]), mode,
+          labels: checks.map((c) => `${c.name} → ${c.role}`) },
+        { label: mode === 'hash' ? 'Checksumming against the card' : 'Verifying against the card' });
+      toast(state.pairVerify.ok ? 'Every copy matches the camera card.'
+        : `${state.pairVerify.mismatched.length} copy(ies) do not match the card.`,
         state.pairVerify.ok ? 'ok' : 'err');
       render();
     } catch (e) { toast(e.message, 'err'); }
@@ -1971,8 +1977,9 @@ function wireVerify() {
   $('btnVerifyPairs')?.addEventListener('click', () => runPairVerify('size'));
   $('btnVerifyPairsHash')?.addEventListener('click', async () => {
     const ok = await window.api.confirm({
-      message: `Checksum ${mirroredPairs().length} copied clip(s) on both SSDs?`,
-      detail: 'Each clip is read end to end on both drives. Bit-exact, but slower over USB.',
+      message: `Checksum ${cardCopyChecks().length} copied clip(s) against the card?`,
+      detail: 'Each clip is read end to end on the card and on the SSD. Bit-exact, but slower '
+            + 'over USB. The camera cards must stay connected.',
       confirmLabel: 'Checksum',
     });
     if (ok) runPairVerify('hash');

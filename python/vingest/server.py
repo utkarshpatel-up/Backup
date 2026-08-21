@@ -232,18 +232,21 @@ def m_verify_pairs(p, req_id):
             return {"cancelled": True, "results": results}
         label = labels[n - 1] if n - 1 < len(labels) else _P(a).name
         emit({"stage": "verify", "done": n, "total": len(pairs), "name": label})
-        rec = {"name": label, "a": a, "b": b, "match": False, "detail": ""}
+        rec = {"name": label, "a": a, "b": b, "match": False, "detail": "",
+               "size_a": None, "size_b": None}
         try:
             sa, sb = _P(a).stat().st_size, _P(b).stat().st_size
+            rec["size_a"], rec["size_b"] = sa, sb
             if sa != sb:
-                rec["detail"] = f"size differs: {sa} vs {sb}"
+                rec["detail"] = f"size differs by {abs(sa - sb)} bytes"
             elif mode == "hash":
                 ha, hb = file_digest(a), file_digest(b)
                 rec["match"] = ha == hb
+                rec["hash_a"], rec["hash_b"] = ha, hb
                 rec["detail"] = "checksums match" if rec["match"] else "checksums differ"
             else:
                 rec["match"] = True
-                rec["detail"] = f"same size ({sa} bytes)"
+                rec["detail"] = "same size"
         except OSError as e:
             rec["detail"] = str(e)
         results.append(rec)

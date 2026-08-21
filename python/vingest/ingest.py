@@ -401,6 +401,8 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
     verify = plan.get("verify", "size")
     total_bytes = plan.get("total_bytes", 0) or 1
     done_bytes = 0
+    copied_bytes = 0        # bytes that were actually COPIED (relocations excluded)
+    copy_seconds = 0.0      # wall-clock spent copying, for a meaningful rate
     started = time.time()
     results: list[dict] = []
     errors: list[str] = []
@@ -408,8 +410,10 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
 
     def emit(**kw):
         if progress:
-            elapsed = max(time.time() - started, 0.001)
-            rate = done_bytes / elapsed
+            # Rate and ETA are based on copied bytes over the time spent copying:
+            # relocations (same-drive renames) move their whole size instantly and
+            # would otherwise report a wildly inflated, useless speed.
+            rate = copied_bytes / copy_seconds if copy_seconds > 0.05 else 0
             remaining = max(total_bytes - done_bytes, 0)
             progress({
                 "stage": "copy",
@@ -417,6 +421,7 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                 "bytes_total": total_bytes,
                 "percent": round(done_bytes / total_bytes * 100, 2),
                 "rate_bps": rate,
+                "copied_bytes": copied_bytes,
                 "eta_seconds": round(remaining / rate) if rate > 1 else None,
                 **kw,
             })
@@ -494,7 +499,10 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                     done_bytes += item["size"]
                     problem = _verify_moved(dst, item["size"])
                 else:
+                    _t0 = time.time()
                     _copy_with_progress(src, dst, on_chunk, should_cancel)
+                    copy_seconds += time.time() - _t0
+                    copied_bytes += item["size"]
                     problem = _verify(src, dst, verify)
 
                 if problem:
@@ -558,6 +566,9 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
         "skipped": sum(1 for i in results if i["status"] == "skipped"),
         "failed": sum(1 for i in results if i["status"] == "failed"),
         "bytes": done_bytes,
+        "copied_bytes": copied_bytes,
+        "copy_seconds": round(copy_seconds, 1),
+        "rate_bps": round(copied_bytes / copy_seconds) if copy_seconds > 0.05 else 0,
         "seconds": round(time.time() - started, 1),
         "renames": renames,
         "errors": errors,

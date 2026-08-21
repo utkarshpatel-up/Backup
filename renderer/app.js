@@ -1668,8 +1668,11 @@ function renderRunResult() {
     <div class="note ${kind}">
       <b>${r.cancelled ? 'Cancelled.' : r.failed ? 'Finished with errors.' : 'Done.'}</b>
       ${r.copied} filed, ${r.skipped} already present, ${r.failed} failed ·
-      ${fmtBytes(r.bytes)} in ${r.seconds}s
-      ${r.seconds > 0 && r.bytes ? `(${fmtBytes(r.bytes / r.seconds)}/s)` : ''}
+      ${fmtBytes(r.bytes)} in ${r.seconds}s${
+        r.copied_bytes && r.copy_seconds > 0
+          ? ` · copied ${fmtBytes(r.copied_bytes)} at ${fmtBytes(r.rate_bps)}/s`
+          + ` (masters relocated instantly, not counted)`
+          : ''}
     </div>
     ${(r.renames || []).map((rn) => `<div class="note ${rn.done ? 'ok' : 'warn'}">
       ${rn.done ? `Folder renamed to <span class="mono">${esc(rn.to)}</span>`
@@ -1898,18 +1901,30 @@ function renderVerify() {
   </details>`;
 }
 
-/** Result card for the card→copy verification. */
+/** Result card for the card→copy verification, with every check listed. */
 function renderPairVerify() {
   const v = state.pairVerify;
+  const rows = (v.results || []).map((r) => `
+    <tr>
+      <td>${r.match ? '<span class="badge ok">match</span>'
+                    : '<span class="badge err">differs</span>'}</td>
+      <td class="mono">${esc(r.name)}</td>
+      <td class="num">${r.size_a != null ? fmtBytes(r.size_a) : '—'}</td>
+      <td class="num">${r.size_b != null ? fmtBytes(r.size_b) : '—'}</td>
+      <td>${esc(r.detail)}</td>
+    </tr>`).join('');
   return `<div class="card">
     <div class="note ${v.ok ? 'ok' : 'err'}">
       <b>${v.ok ? 'Every copy matches the camera card.'
-                : `${v.mismatched.length} copy(ies) do not match the card.`}</b>
-      ${v.checked} check(s) by ${esc(v.algorithm)}.
+                : `${v.mismatched.length} of ${v.checked} copy(ies) do not match the card.`}</b>
+      Checked by ${esc(v.algorithm)}.
     </div>
-    ${v.mismatched.map((m) => `<div class="note err mono">
-      ${esc(m.name)} — ${esc(m.detail)}</div>`).join('')}
-    ${v.ok ? `<p class="hint" style="margin:6px 0 0">Each copied clip is identical to its
+    <div class="scroll" style="max-height:420px"><table>
+      <thead><tr><th style="width:1%"></th><th>Clip → drive</th>
+        <th class="num">Card</th><th class="num">Copy</th><th>Result</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    ${v.ok ? `<p class="hint" style="margin:10px 0 0">Each copied clip is identical to its
       camera-card original, so both SSDs are faithful, matching backups.</p>` : ''}
   </div>`;
 }

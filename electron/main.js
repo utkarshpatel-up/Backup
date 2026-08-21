@@ -39,6 +39,7 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  win.maximize();
 
   // A long copy must not be lost to a stray Cmd-W.
   win.on('close', (e) => {

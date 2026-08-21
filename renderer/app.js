@@ -307,6 +307,12 @@ function suggestedMastersFor(src) {
     .sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
 }
 
+/** True if a file sits directly at its drive's root, not down in a subfolder. */
+function atDriveRoot(file, src) {
+  if (!src) return false;
+  return parentDir(file.path) === String(src.path).replace(/[\\/]+$/, '');
+}
+
 /** A file whose own name carries a Dt- token for a different day than `day`. */
 function nameStatesOtherDate(file, day) {
   if (!day) return false;
@@ -1279,8 +1285,11 @@ function renderCameras() {
   const cams = Array.from({ length: state.camCount }, (_, i) => i + 1);
   const masters = chosenMasters();
   const isMaster = masterPaths();
-  // Masters were settled on the Folder step; they are not cam clips.
-  const files = pool.filter((f) => !isMaster.has(f.path));
+  // Masters were settled on the Folder step; they are not cam clips. Only clips
+  // at the drive root (plus anything added or imported by hand) are shown — a
+  // recursive scan also sweeps up nested card files, which are noise here.
+  const files = pool.filter((f) => !isMaster.has(f.path)
+    && (atDriveRoot(f, src) || f.manual));
   const counts = {};
   cams.forEach((n) => { counts[n] = 0; });
   let skipped = 0;
@@ -1440,7 +1449,8 @@ async function scanSource(src, force = false) {
  * — hand-picked as well as scanned, and narrowed by the same day filter. Pairing
  * against a raw drive scan would drag in footage from other shoots.
  */
-async function mirrorToSecondary() {
+async function mirrorToSecondary(opts = {}) {
+  const quiet = opts.quiet;
   const a = primarySource(), b = secondarySource();
   if (!a || !b) return;
   try {
@@ -1450,17 +1460,15 @@ async function mirrorToSecondary() {
     }
     const primary = filePool(a);
     const secondary = filePool(b);
-    if (!primary.length) return toast(`No footage loaded for ${a.label}.`, 'err');
-    if (!secondary.length) {
-      return toast(
-        `No footage loaded for ${b.label}. Scan it or add files on the Folder step first.`,
-        'err');
+    if (!primary.length || !secondary.length) {
+      if (!quiet) toast(`No footage loaded for ${(!primary.length ? a : b).label}.`, 'err');
+      return;
     }
     state.pairing = await call('pair', { primary, secondary },
-      { label: `Matching against ${b.label}` });
+      { label: `Matching ${a.label} → ${b.label}` });
     state.plan = null;
-    render();
-  } catch (e) { toast(e.message, 'err'); }
+    if (!quiet) render();
+  } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
 
 /* --------------------------------------------------------------- step: copy */
@@ -1498,16 +1506,17 @@ function buildSpec() {
     return { ...base, session_source: (state.detected[src.path] || {}).session_path || null };
   };
 
-  // Cam clips are assigned once and mirrored, but each drive files its own
-  // master(s): the ProRes recording on one, its H.265 twin on the other.
+  // The drive the cams were assigned against.
   targets.push(targetFor(a, camsFor((p) => p),
     mastersFor(a).map((f) => f.path)));
 
-  if (b && state.pairing) {
-    const m = state.pairing.matches;
+  // The other SSD holds the same session, so it is always filed too. Its cam
+  // clips are matched to the assignments by Mirror; its master is whatever was
+  // ticked for it (the drives' masters have different filenames, so each is
+  // picked on its own). Falls back to the paired twin if none was ticked.
+  if (b) {
+    const m = (state.pairing && state.pairing.matches) || {};
     const bMasters = mastersFor(b).map((f) => f.path);
-    // If the other drive has no master of its own, fall back to the twin of
-    // this drive's master, so its folder still gets a Dur- token.
     const fallback = mastersFor(a).map((f) => m[f.path]).filter(Boolean);
     targets.push(targetFor(b, camsFor((p) => m[p] || null),
       bMasters.length ? bMasters : fallback));
@@ -1654,6 +1663,10 @@ function wireCopy() {
 async function doPlan() {
   try {
     state.runResult = null;
+    // The second SSD holds the same session, so it is always part of the plan —
+    // its clips are matched to the assignments automatically, no separate step.
+    const b = secondarySource();
+    if (b && !state.pairing) await mirrorToSecondary({ quiet: true });
     state.plan = await call('build_plan', buildSpec(), { label: 'Building plan' });
     render();
   } catch (e) { toast(e.message, 'err'); }

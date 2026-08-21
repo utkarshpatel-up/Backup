@@ -117,7 +117,9 @@ class MediaInfo:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["family"] = self.family
-        d["shoot_iso"] = self.shoot_datetime().isoformat(timespec="seconds")
+        stamp = self.shoot_datetime()
+        d["shoot_iso"] = stamp.isoformat(timespec="seconds")
+        d["shoot_date"] = stamp.date().isoformat()
         return d
 
 

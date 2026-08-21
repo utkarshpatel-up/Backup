@@ -579,3 +579,61 @@ def suggest_cam_groups(files: list[dict], gap_minutes: float = 45.0) -> dict:
         ],
         "basis": "resolution + frame rate + codec",
     }
+
+
+def group_by_date(files: list[dict], session_date: str | None = None) -> dict:
+    """Bucket files by the day they were last modified.
+
+    The session folder already states its shoot date, so the files written on
+    that day are almost certainly the ones belonging to it. This does not filter
+    anything — it reports the buckets and flags the matching one, leaving the
+    operator to accept the suggestion or ignore it.
+    """
+    buckets: dict[str, dict] = {}
+    for f in files:
+        day = f.get("shoot_date")
+        if not day:
+            continue
+        b = buckets.setdefault(day, {"date": day, "count": 0, "bytes": 0,
+                                     "duration": 0.0, "paths": []})
+        b["count"] += 1
+        b["bytes"] += f.get("size") or 0
+        b["duration"] += f.get("duration") or 0.0
+        b["paths"].append(f["path"])
+
+    for b in buckets.values():
+        b["is_session_date"] = session_date is not None and b["date"] == session_date
+
+    ordered = sorted(buckets.values(), key=lambda b: b["date"])
+    matching = next((b for b in ordered if b["is_session_date"]), None)
+
+    # The busiest day is a reasonable guess only when the folder states no date at
+    # all. If it states one and nothing on the drive matches, that mismatch is the
+    # useful signal — quietly proposing a different day's shoot would hide it.
+    fallback = None
+    if ordered and not matching and session_date is None:
+        fallback = max(ordered, key=lambda b: b["count"])
+
+    pick = matching or fallback
+    if matching:
+        basis = "the session date stated in the folder name"
+    elif fallback:
+        basis = "the busiest day, since the folder states no date"
+    elif session_date:
+        basis = (f"nothing on this source was modified on {session_date}, "
+                 f"the date the folder states — check you have the right drive, "
+                 f"or choose a day below")
+    else:
+        basis = ""
+
+    return {
+        "session_date": session_date,
+        "dates": [{k: v for k, v in b.items() if k != "paths"} for b in ordered],
+        "suggested": (pick or {}).get("paths", []),
+        "suggested_date": (pick or {}).get("date"),
+        "suggestion_basis": basis,
+        "matched_session_date": matching is not None,
+        "date_mismatch": bool(session_date and ordered and not matching),
+        "other_count": sum(b["count"] for b in ordered
+                           if not pick or b["date"] != pick["date"]),
+    }

@@ -39,6 +39,7 @@ class Detected:
     cams: dict = field(default_factory=dict)      # "1" -> [paths already filed]
     master_candidates: list = field(default_factory=list)
     loose_clips: list = field(default_factory=list)
+    session_date: str | None = None  # ISO date parsed from the folder's Dt- token
     tree: list = field(default_factory=list)      # every folder, relative to session
     video_count: int = 0
     is_template: bool = False        # a structure with no footage in it at all
@@ -124,15 +125,20 @@ def detect(root: str | Path, probe_masters: bool = True) -> Detected:
         out.reason = "No session folder recognised — pick one by hand."
         return out
 
+    parent = session.parent
     out.session_path = str(session)
     out.session_name = session.name
     out.base_name = naming.DUR_TOKEN_RE.sub("", session.name).strip()
+    # The folder already states the shoot date; that is what makes it possible to
+    # suggest which files on the drive belong to this session.
+    dated = naming.parse_date_token(session.name) or naming.parse_date_token(parent.name)
+    out.session_date = dated.isoformat() if dated else None
+
     token = naming.DUR_TOKEN_RE.search(session.name)
     out.has_dur = token is not None
     if token:
         out.current_dur = naming.parse_duration(token.group(0).strip()[4:])
 
-    parent = session.parent
     if session != root and parent != session:
         out.job_path, out.job_name = str(parent), parent.name
 

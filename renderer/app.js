@@ -12,6 +12,8 @@ const state = {
   detected: {},         // sourcePath -> the session folder found on it
   template: null,       // structure + name imported from a zip/folder of empty folders
   extraFiles: {},       // sourcePath -> files the operator picked by hand
+  byDate: null,         // last-modified breakdown of the loaded footage
+  dateFilter: null,     // when set, only footage from this day is in play
   masters: {},          // sourcePath -> chosen master file path
   pairing: null,
   session: { title: '', jobNumber: '', date: '', destMode: 'inPlace', destRoots: {} },
@@ -27,9 +29,9 @@ const state = {
 
 const STEPS = [
   { key: 'sources', label: 'Sources', title: 'Sources',
-    hint: 'Plug in both SSDs. The app probes each one and works out which holds ProRes and which holds H.265.' },
+    hint: 'Import the structure zip, then add the drives holding the footage and set where each one writes.' },
   { key: 'session', label: 'Folder', title: 'Session folder',
-    hint: 'The folder is already named. The app reads it from the drive and appends the Dur- token.' },
+    hint: 'The folder name comes from the structure. Pick the footage — files from the session date are suggested.' },
   { key: 'cameras', label: 'Cameras', title: 'Camera assignment',
     hint: 'Choose which clip belongs to which cam. The same choice is mirrored onto the other SSD.' },
   { key: 'copy', label: 'Copy', title: 'Review and copy',
@@ -131,13 +133,27 @@ function destOf(src) {
   return (src && (src.dest || src.path)) || '';
 }
 
-/** Every file available to assign for a source: what was scanned, plus manual picks. */
-function filePool(src) {
+/** The shoot date the folder name states, if any. */
+function sessionDate() {
+  if (state.template) return state.template.session_date || null;
+  const d = primarySource() ? state.detected[primarySource().path] : null;
+  return (d && d.session_date) || null;
+}
+
+/** Everything loaded for a source, before the date suggestion is applied. */
+function allFiles(src) {
   if (!src) return [];
   const scanned = (state.scans[src.path] || {}).files || [];
   const extra = state.extraFiles[src.path] || [];
   const seen = new Set(scanned.map((f) => f.path));
   return scanned.concat(extra.filter((f) => !seen.has(f.path)));
+}
+
+/** The files actually in play — narrowed to the suggested day when one is active. */
+function filePool(src) {
+  const all = allFiles(src);
+  if (!state.dateFilter) return all;
+  return all.filter((f) => f.shoot_date === state.dateFilter);
 }
 
 /** The detection result for the primary source. */
@@ -184,8 +200,9 @@ function renderSources() {
     <p class="hint">Removable volumes only — your system disk is never listed.</p>
     <div class="row" style="margin-bottom:12px">
       <button class="sm" id="btnRescan">Rescan drives</button>
-      <button class="sm" id="btnAddFolder">Add folder…</button>
-      <button class="sm" id="btnAddZip">Add zip…</button>
+      <button class="sm" id="btnAddFolder">Add folder as source…</button>
+      <button class="sm ${state.template ? '' : 'primary'}" id="btnAddZip">
+        ${state.template ? 'Replace structure zip…' : 'Import structure zip…'}</button>
       <div class="spacer"></div>
       <button class="sm primary" id="btnClassify"
         ${state.sources.length ? '' : 'disabled'}>Probe codecs &amp; assign roles</button>
@@ -194,7 +211,8 @@ function renderSources() {
   if (!state.volumes.length && !state.sources.length) {
     c.push(`<div class="empty"><div class="big">💾</div>
       <div>No drives detected yet.</div>
-      <div style="margin-top:4px">Plug in both SSDs and press Rescan — or add a folder or zip by hand.</div>
+      <div style="margin-top:4px">Import the structure zip for the folder name, then plug in
+        the SSDs and press Rescan — or point the app at a folder by hand.</div>
     </div>`);
   }
 
@@ -333,28 +351,23 @@ async function addZipSource() {
   try {
     const info = await call('inspect_zip', { path: zip }, { label: 'Reading zip' });
     const ok = await window.api.confirm({
-      message: info.is_template
-        ? `Use “${info.label}” as the folder structure?`
-        : `Extract “${info.label}”?`,
-      detail: info.is_template
-        ? `This archive holds ${info.folder_count} folders and no video, so it is a `
-          + `structure template: it supplies the session folder name and the cam `
-          + `layout.\n\nYou will pick the footage yourself from the source drive.`
-        : `${info.video_count} video files, ${fmtBytes(info.uncompressed_bytes)} once `
-          + `extracted.\nIt will be unpacked to a temporary folder and used as a source.`,
-      confirmLabel: info.is_template ? 'Use as structure' : 'Extract',
+      message: `Use “${info.label}” as the folder structure?`,
+      detail: `${info.folder_count} folders, ${info.video_count} video files.\n\n`
+        + `It supplies the session folder name and the cam layout. `
+        + (info.video_count
+            ? `The ${info.video_count} clip(s) inside will be available as footage too.`
+            : `You pick the footage yourself from the source drive.`),
+      confirmLabel: 'Use as structure',
     });
     if (!ok) return;
     const r = await call('extract_zip', { path: zip },
       { label: `Extracting ${info.label}` });
+    // A structure zip is always the template, whether or not anything is in it.
     addSource(r.path, info.label, 'zip');
     const added = state.sources.find((x) => x.path === r.path);
-    if (info.is_template && added) {
+    if (added) {
       added.role = 'template';
       await loadTemplate(added);
-      toast(`Structure imported from ${info.label}`, 'ok');
-    } else {
-      toast(`Extracted ${info.video_count} clips from ${info.label}`, 'ok');
     }
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -539,6 +552,7 @@ function renderTemplateFolder(src) {
     <h3>Master file</h3>
     <p class="hint">The structure carries no footage, so pick the program recording from
       the source drive. Its length becomes the Dur- token.</p>
+    ${dateSuggestion()}
     ${pool.length ? `
       <div class="scroll"><table><thead><tr><th style="width:1%"></th><th>File</th>
         <th class="num">Length</th><th>Codec</th><th class="num">Size</th></tr></thead>
@@ -633,6 +647,7 @@ function wireSession() {
   });
 
   $('btnScanFootage')?.addEventListener('click', () => scanSource(primarySource(), true));
+  wireDayButtons();
   $('btnAddFiles')?.addEventListener('click', () => addFootage('files'));
   $('btnAddFolder2')?.addEventListener('click', () => addFootage('folder'));
 
@@ -669,19 +684,97 @@ async function addFootage(kind) {
     : await window.api.pickVideoFiles();
   if (!paths || !paths.length) return;
   try {
-    const r = await call('add_files', { paths }, { label: 'Reading footage' });
+    const r = await call('add_files', { paths, session_date: sessionDate() },
+      { label: 'Reading footage' });
     const existing = state.extraFiles[src.path] || [];
     const seen = new Set(existing.map((f) => f.path));
     state.extraFiles[src.path] = existing.concat(r.files.filter((f) => !seen.has(f.path)));
+    if (!r.count) { toast('No video files found there.', 'err'); return render(); }
+    toast(`Added ${r.count} clip(s).`, 'ok');
+    applyDateSuggestion(src);
+    render();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/**
+ * Re-run the last-modified breakdown over everything loaded, and adopt the
+ * suggestion when the folder's stated date matches a day on the drive.
+ *
+ * A drive routinely holds more than one shoot, so this is what separates this
+ * session's files from the rest without the operator sifting through them.
+ */
+async function applyDateSuggestion(src) {
+  const all = allFiles(src);
+  if (!all.length) { state.byDate = null; return; }
+  try {
+    state.byDate = await call('group_dates',
+      { files: all, session_date: sessionDate() });
+    if (state.byDate.matched_session_date && state.dateFilter === null) {
+      state.dateFilter = state.byDate.suggested_date;
+    }
     if (!state.masters[src.path]) {
-      const longest = r.files.reduce((a, b) => ((b.duration || 0) > (a?.duration || 0) ? b : a), null);
+      const pool = filePool(src);
+      const longest = pool.reduce((a, b) => ((b.duration || 0) > (a?.duration || 0) ? b : a), null);
       if (longest) state.masters[src.path] = longest.path;
     }
     state.plan = null;
-    toast(r.count ? `Added ${r.count} clip(s).` : 'No video files found there.',
-      r.count ? 'ok' : 'err');
-    render();
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/** The suggestion banner, shown wherever footage is listed. */
+function dateSuggestion() {
+  const g = state.byDate;
+  if (!g || !g.dates.length) return '';
+  const active = state.dateFilter;
+  const suggested = g.dates.find((d) => d.date === g.suggested_date);
+
+  if (g.date_mismatch) {
+    return `
+      <div class="note err">
+        <b>None of this footage was shot on ${esc(fmtDay(g.session_date))}</b>, the date the
+        folder name states. Check you have the right drive, or pick a day yourself.
+        <div class="row" style="margin-top:8px">
+          ${g.dates.map((d) => `<button class="sm ${active === d.date ? 'primary' : ''}"
+            data-day="${esc(d.date)}">${esc(fmtDay(d.date))} · ${d.count}</button>`).join('')}
+          <button class="sm ${active ? '' : 'primary'}" data-day="">All days</button>
+        </div>
+      </div>`;
+  }
+  if (!suggested || g.dates.length < 2) return '';
+
+  return `
+    <div class="note ${g.matched_session_date ? 'ok' : 'warn'}">
+      <b>${suggested.count} file(s) were modified on ${esc(fmtDay(g.suggested_date))}</b>
+      — ${esc(g.suggestion_basis)}. The drive also holds
+      ${g.other_count} file(s) from other days.
+      <div class="row" style="margin-top:8px">
+        ${g.dates.map((d) => `<button class="sm ${active === d.date ? 'primary' : ''}"
+          data-day="${esc(d.date)}">${esc(fmtDay(d.date))} · ${d.count}${
+            d.is_session_date ? ' ★' : ''}</button>`).join('')}
+        <button class="sm ${active ? '' : 'primary'}" data-day="">All days · ${
+          g.dates.reduce((n, d) => n + d.count, 0)}</button>
+      </div>
+    </div>`;
+}
+
+function fmtDay(iso) {
+  if (!iso) return '—';
+  const [y, m, d] = iso.split('-').map(Number);
+  const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${d} ${M[m - 1]} ${y}`;
+}
+
+function wireDayButtons() {
+  document.querySelectorAll('[data-day]').forEach((b) => b.addEventListener('click', () => {
+    state.dateFilter = b.dataset.day || null;
+    state.plan = null;
+    // Clips filtered out must not stay assigned to a cam behind the scenes.
+    const live = new Set(filePool(primarySource()).map((f) => f.path));
+    for (const path of Object.keys(state.assign)) {
+      if (!live.has(path)) delete state.assign[path];
+    }
+    render();
+  }));
 }
 
 /** Read the session folder off a source and seed the cam assignment from it. */
@@ -747,7 +840,9 @@ function renderCameras() {
           <div class="hint" style="margin:0">${esc(f.width || '?')}×${esc(f.height || '?')}
           @ ${esc(f.fps ?? '?')} · <span class="badge ${f.family}">${esc(f.video_codec || '?')}</span></div></td>
       <td class="num">${esc(fmtClock(f.duration))}</td>
-      <td>${esc(fmtTime(f.shoot_iso))}</td>
+      <td>${esc(fmtTime(f.shoot_iso))}
+        ${sessionDate() && f.shoot_date === sessionDate()
+          ? '<span class="badge ok">session date</span>' : ''}</td>
       <td class="num">${fmtBytes(f.size)}</td>
       <td><div class="seg">
         ${cams.map((n) => `<button class="${a === n ? 'on' : ''}" data-assign="${n}"
@@ -792,6 +887,7 @@ function renderCameras() {
       ${cams.map((n) => `<span class="badge">Cam-${String(n).padStart(2, '0')}: ${counts[n] || 0}</span>`).join('')}
       <span class="badge">Skipped: ${skipped}</span>
     </div>
+    ${dateSuggestion()}
     ${pairInfo}
     <div class="scroll"><table>
       <thead><tr><th>File</th><th class="num">Length</th><th>Last modified</th>
@@ -806,6 +902,7 @@ function wireCameras() {
   $('btnRescanFiles')?.addEventListener('click', () => scanSource(primarySource(), true));
   $('btnAddFiles')?.addEventListener('click', () => addFootage('files'));
   $('btnAddFolder2')?.addEventListener('click', () => addFootage('folder'));
+  wireDayButtons();
 
   document.querySelectorAll('[data-assign]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.assign;
@@ -849,9 +946,11 @@ function wireCameras() {
 async function scanSource(src, force = false) {
   if (!src || (state.scans[src.path] && !force)) return;
   try {
-    const r = await call('scan', { root: src.path }, { label: `Reading ${src.label}` });
+    const r = await call('scan', { root: src.path, session_date: sessionDate() },
+      { label: `Reading ${src.label}` });
     state.scans[src.path] = r;
     if (!r.files.length) toast(`No video files found on ${src.label}.`, 'err');
+    else await applyDateSuggestion(src);
     render();
   } catch (e) { toast(e.message, 'err'); }
 }

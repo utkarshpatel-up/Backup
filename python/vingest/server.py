@@ -104,6 +104,7 @@ def m_scan(p, req_id):
         out.append(probe.probe(path).to_dict())
     out.sort(key=lambda f: (f.get("mtime") or 0))
     return {"root": p["root"], "files": out, "count": len(out),
+            "by_date": ingest.group_by_date(out, p.get("session_date")),
             "suggestion": ingest.suggest_cam_groups(out)}
 
 
@@ -139,7 +140,12 @@ def m_add_files(p, req_id):
         out.append(probe.probe(item).to_dict())
     out.sort(key=lambda f: (f.get("mtime") or 0))
     return {"files": out, "count": len(out),
-            "skipped": len(p.get("paths", [])) - len(unique) if not unique else 0}
+            "by_date": ingest.group_by_date(out, p.get("session_date"))}
+
+
+def m_group_dates(p, _id):
+    """Re-bucket an already-probed file list by last-modified day."""
+    return ingest.group_by_date(p.get("files", []), p.get("session_date"))
 
 
 def m_probe(p, _id):

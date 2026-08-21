@@ -641,3 +641,70 @@ class TestPlanFromTemplate:
         assert res["failed"] == 0
         for dest in dests:
             assert list(dest.rglob("Program.mov")), f"nothing landed in {dest}"
+
+
+class TestDateSuggestion:
+    """A drive holds several shoots; the folder's Dt- token says which is ours."""
+
+    def _f(self, name, day, size=1000, duration=10.0):
+        return {"path": f"/drive/{name}", "name": name, "shoot_date": day,
+                "size": size, "duration": duration}
+
+    def test_files_from_the_stated_session_date_are_suggested(self):
+        files = [self._f("a.mov", "2026-08-16"), self._f("b.mov", "2026-08-16"),
+                 self._f("other.mov", "2026-08-18")]
+        g = ingest.group_by_date(files, "2026-08-16")
+        assert g["matched_session_date"] is True
+        assert sorted(Path(p).name for p in g["suggested"]) == ["a.mov", "b.mov"]
+        assert g["other_count"] == 1
+        assert "folder name" in g["suggestion_basis"]
+
+    def test_every_day_present_is_reported_not_just_the_match(self):
+        files = [self._f("a.mov", "2026-08-16"), self._f("b.mov", "2026-08-18"),
+                 self._f("c.mov", "2026-08-20")]
+        g = ingest.group_by_date(files, "2026-08-16")
+        assert [d["date"] for d in g["dates"]] == ["2026-08-16", "2026-08-18", "2026-08-20"]
+        assert sum(d["is_session_date"] for d in g["dates"]) == 1
+
+    def test_sizes_and_counts_are_totalled_per_day(self):
+        files = [self._f("a.mov", "2026-08-16", size=100, duration=5.0),
+                 self._f("b.mov", "2026-08-16", size=250, duration=7.5)]
+        day = ingest.group_by_date(files, "2026-08-16")["dates"][0]
+        assert day["count"] == 2 and day["bytes"] == 350 and day["duration"] == 12.5
+
+    def test_falls_back_to_the_busiest_day_when_no_date_is_stated(self):
+        files = [self._f("a.mov", "2026-08-16"), self._f("b.mov", "2026-08-16"),
+                 self._f("c.mov", "2026-08-18")]
+        g = ingest.group_by_date(files, None)
+        assert g["matched_session_date"] is False
+        assert g["suggested_date"] == "2026-08-16"
+        assert "busiest day" in g["suggestion_basis"]
+
+    def test_a_session_date_matching_nothing_suggests_nothing(self):
+        # Better to offer no suggestion than to quietly propose the wrong shoot.
+        files = [self._f("a.mov", "2026-08-18")]
+        g = ingest.group_by_date(files, "2026-08-16")
+        assert g["matched_session_date"] is False
+        assert g["suggested"] == []
+        assert g["date_mismatch"] is True
+        assert "right drive" in g["suggestion_basis"]
+
+    def test_empty_input_is_handled(self):
+        g = ingest.group_by_date([], "2026-08-16")
+        assert g["dates"] == [] and g["suggested"] == []
+
+    def test_the_session_date_is_read_off_the_folder_name(self, tmp_path):
+        session = tmp_path / "3017 Dt-16 Aug 2026" / (
+            "Adalaj Soneri … General Satsang E. Dt-16-Aug-26 Dur-54m1s")
+        (session / "Clips for Insert" / "Cam-01").mkdir(parents=True)
+        d = structure.detect(tmp_path, probe_masters=False)
+        assert d.session_date == "2026-08-16"
+
+    def test_a_probed_file_reports_the_day_it_was_modified(self, tmp_path):
+        import os
+        import datetime as _dt
+        f = tmp_path / "clip.mov"
+        f.write_bytes(b"x")
+        when = _dt.datetime(2026, 8, 16, 14, 30).timestamp()
+        os.utime(f, (when, when))
+        assert probe.probe(f).to_dict()["shoot_date"] == "2026-08-16"

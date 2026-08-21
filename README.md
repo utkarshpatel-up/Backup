@@ -42,25 +42,46 @@ rather than silently overwriting the first. The plan flags it when it happens.
 
 ### Where the folder name comes from
 
-Two ways, neither of which involves typing:
+**The structure zip.** A zip holding the folder tree and no footage — the empty
+`3017 Dt-16 Aug 2026/… Dt-16-Aug-26/Clips for Insert/Cam-01…03` skeleton. This is
+the normal way a job starts. It supplies the session folder's name, the job
+folder, and the cam layout; any `Dur-` placeholder it carries is replaced with
+the real one. Its empty cam folders are recreated at the destination even when
+no clip is assigned to them, because they are part of what the template defines.
 
-**A structure template.** Import a zip (or folder) that holds the folder tree
-and no footage — the empty `3017 Dt-16 Aug 2026/… Dt-16-Aug-26/Clips for Insert/
-Cam-01…03` skeleton. It supplies the session folder's name, the job folder, and
-the cam layout. Any `Dur-` placeholder it carries is replaced with the real one.
-Its empty cam folders are recreated at the destination even when no clip is
-assigned to them, because they are part of what the template defines. Since a
-template has no footage in it, you pick the clips yourself off the source drive.
+The footage never comes from the zip — you point the app at the source drive and
+pick it yourself, which is what the date suggestion below is for.
 
-**A folder already on the drive.** If the source already contains the session
+**A folder already on the drive.** If a source already contains the session
 folder, the app finds it — by the "Clips for Insert" it holds, failing that a
-`Dt-` token in its name, failing that a zip's single root folder — and completes
-that folder in place. Whatever it settles on is shown with its reasoning, and
-you can point it elsewhere.
+`Dt-` token in its name — and completes that folder in place instead.
 
-If neither applies, it says so and offers to build a folder from a name you
-type. That is the only path where typing is involved, and it exists for loose
-footage that was never structured.
+If neither applies, it offers to build a folder from a name you type. That is
+the only path where typing is involved.
+
+### Which files belong to this session
+
+A working drive holds more than one shoot. The session folder's name already
+states the shoot date (`Dt-16-Aug-26`), so once footage is loaded the app buckets
+it by last-modified day and suggests the bucket matching that date:
+
+```
+2026-08-16   4 files   ★ session date     ← suggested
+2026-08-18   2 files                        different shoot
+```
+
+The suggestion is applied automatically when it matches, and every other day
+stays one click away — nothing is hidden, and the day buttons show the full
+breakdown. Clips filtered out are also unassigned from any cam, so what you see
+is exactly what gets copied.
+
+Two cases it deliberately does **not** guess:
+
+* If the folder name states no date, it falls back to the busiest day and says
+  that is what it did.
+* If the folder states a date and **nothing** on the source matches it, it makes
+  no suggestion at all and says so — that mismatch usually means the wrong drive
+  is plugged in, and quietly proposing another day's shoot would bury it.
 
 ### Sources and destinations
 
@@ -69,9 +90,9 @@ to the source drive itself. So the ProRes drive can write to one place and the
 H.265 drive to another, or both can organise themselves in place. The app warns
 if two sources would write into the same folder.
 
-Footage can come from a drive scan, a zip, or files you pick by hand — **Add
-files…** and **Add a folder…** are on both the Folder and Cameras steps, and
-matter most when the structure came from a template that carries no media.
+Footage is selected manually: **Add files…** (multi-select) and **Add a
+folder…** are on both the Folder and Cameras steps, alongside a scan of the whole
+drive. Picking a folder pulls in every video beneath it.
 
 ## Running it
 
@@ -86,17 +107,18 @@ remembers the choice.
 
 ## The five steps
 
-1. **Sources** — lists removable drives (never your system disk). Press
+1. **Sources** — import the structure zip, then add the drives. Removable drives
+   are listed automatically (never your system disk), or point at a folder. Press
    *Probe codecs* and it ffprobes the largest files on each drive and assigns
    ProRes / H.265 roles, showing its confidence and reasoning. Roles are always
    yours to override, and one source can be marked **Structure** to act as the
    template. Each footage source gets its own destination picker. Folders and
    `.zip` archives can be added too; a zip is extracted to a temp folder with
    its original timestamps restored, because the naming depends on them.
-2. **Folder** — the folder name, either from the imported template or found on
-   the drive, previewed with the added `Dur-` in bold. Pick the master file
-   (defaulting to the longest recording available), adding footage by hand if
-   the structure carries none, then choose move vs copy.
+2. **Folder** — the folder name from the imported structure, previewed with the
+   added `Dur-` in bold. Add the footage by hand; files from the session date are
+   suggested. Pick the master (defaulting to the longest clip in play), then
+   choose move vs copy.
 3. **Cameras** — every unfiled clip listed with length, codec, resolution and
    last-modified time; clips already sitting in a cam folder come pre-selected
    and are not re-copied. Assign the rest to cams.
@@ -165,11 +187,11 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-68 tests covering duration formatting, the "filenames are never changed"
+76 tests covering duration formatting, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
 rename-only-on-success guarantee, structure-template import (both zip layouts,
-plus path-escape refusal), per-source destinations, exFAT case-insensitive
-de-duplication,
+plus path-escape refusal), per-source destinations, the same-day footage
+suggestion and its two refusal cases, exFAT case-insensitive de-duplication,
 cross-drive pairing, `.mov`/`.mp4` tolerance, comparison severity rules, and the
 cancel-leaves-no-partial-file guarantee. Tests needing real media are skipped
 automatically when ffmpeg is absent.

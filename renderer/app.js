@@ -282,6 +282,43 @@ function mastersFor(src) {
     .sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
 }
 
+/** The directory a file sits in, from its path (POSIX or Windows). */
+function parentDir(path) {
+  const i = Math.max(String(path).lastIndexOf('/'), String(path).lastIndexOf('\\'));
+  return i < 0 ? '' : path.slice(0, i);
+}
+
+/**
+ * Masters the app is willing to suggest — never a guess.
+ *
+ * A master is the program recording, which sits at the ROOT of the drive, not
+ * down inside a camera card's folders. And it must carry the shoot date the
+ * folder name states. Anything failing either test is left for the operator to
+ * tick by hand; the app does not promote a random long clip to master.
+ */
+function suggestedMastersFor(src) {
+  if (!src) return [];
+  const root = String(src.path).replace(/[\\/]+$/, '');
+  const day = sessionDate();
+  return filePool(src)
+    .filter((f) => parentDir(f.path) === root)          // sits at the drive root
+    .filter((f) => !day || f.shoot_date === day)        // matches the folder's date
+    .sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
+}
+
+/** Pre-select each drive's root/date masters, leaving manual picks alone. */
+function suggestMasters() {
+  for (const f of footageSources()) {
+    const already = state.masters[f.path];
+    if (Array.isArray(already) && already.length) continue;   // operator has chosen
+    const sug = suggestedMastersFor(f);
+    if (sug.length) {
+      state.masters[f.path] = sug.map((x) => x.path);
+      state.masterSource = state.masterSource || f.path;
+    }
+  }
+}
+
 function masterTotalFor(src) {
   const timed = mastersFor(src).map((f) => f.duration).filter((d) => d != null);
   return timed.length ? timed.reduce((a, b) => a + b, 0) : null;
@@ -800,6 +837,11 @@ function renderDriveColumn(f) {
           — short camera clips hidden.
           <a href="#" data-allmasters="1">${state.showAllMasters
             ? 'likely masters only' : 'show all'}</a></p>` : ''}
+      ${masters.filter((m) => sessionDate() && m.shoot_date && m.shoot_date !== sessionDate()).length ? `
+        <div class="note warn" style="margin:8px 0 0">
+          ${masters.filter((m) => sessionDate() && m.shoot_date !== sessionDate())
+            .map((m) => esc(m.name)).join(', ')} — not from ${esc(fmtDay(sessionDate()))}.
+          Master clips should be this session's recording.</div>` : ''}
       ${masters.length ? `
         <p class="hint" style="margin:10px 0 4px">Renamed after the folder:</p>
         <div class="preview-name" style="font-size:11px">${masters.map((m, i) => `🎬 ${
@@ -847,9 +889,10 @@ function renderTemplateFolder(src) {
 
   <div class="card">
     <h3>Footage &amp; master clip</h3>
-    <p class="hint">The structure carries no footage, so load it from each drive. Pick the
-      master on each drive independently — the same recording, one file per codec. Cam clips
-      are assigned on the next step and mirrored across.</p>
+    <p class="hint">The structure carries no footage, so load it from each drive. The master is
+      the program recording at the drive's root, dated ${esc(fmtDay(sessionDate()) || 'the session day')};
+      the app pre-selects it and leaves the rest for you. Pick each drive's master independently —
+      the same recording, one file per codec.</p>
     <div class="drive-cols">
       ${footageSources().map((f) => renderDriveColumn(f)).join('')}
     </div>
@@ -1097,14 +1140,7 @@ async function applyDateSuggestion(_src) {
     if (state.byDate.matched_session_date && state.activeDay === null) {
       state.activeDay = state.byDate.suggested_date;
     }
-    if (!state.masterSource) {
-      const best = masterCandidates().reduce(
-        (a, b) => ((b.file.duration || 0) > (a?.file.duration || 0) ? b : a), null);
-      if (best) {
-        state.masterSource = best.source.path;
-        state.masters[best.source.path] = [best.file.path];
-      }
-    }
+    suggestMasters();
     state.plan = null;
   } catch (e) { toast(e.message, 'err'); }
 }

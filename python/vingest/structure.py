@@ -40,6 +40,7 @@ class Detected:
     master_candidates: list = field(default_factory=list)
     loose_clips: list = field(default_factory=list)
     session_date: str | None = None  # ISO date parsed from the folder's Dt- token
+    dur_precision: str = "s"         # smallest unit the folder's Dur- token uses
     tree: list = field(default_factory=list)      # every folder, relative to session
     video_count: int = 0
     is_template: bool = False        # a structure with no footage in it at all
@@ -133,8 +134,9 @@ def detect(root: str | Path, probe_masters: bool = True) -> Detected:
     # suggest which files on the drive belong to this session.
     dated = naming.parse_date_token(session.name) or naming.parse_date_token(parent.name)
     out.session_date = dated.isoformat() if dated else None
+    out.dur_precision = naming.token_precision(token.group(0).strip()[4:]) \
+        if (token := naming.DUR_TOKEN_RE.search(session.name)) else "s"
 
-    token = naming.DUR_TOKEN_RE.search(session.name)
     out.has_dur = token is not None
     if token:
         out.current_dur = naming.parse_duration(token.group(0).strip()[4:])
@@ -231,12 +233,15 @@ def pick_master(detected: Detected | dict) -> dict | None:
 
 def planned_rename(detected: dict, seconds: float | None) -> dict:
     """What the session folder is called now, and what it becomes."""
-    base = detected.get("base_name") or ""
-    final = base + (f" Dur-{naming.fmt_duration(seconds)}" if seconds is not None else "")
-    final = naming.sanitize(final) if final else ""
+    current = detected.get("session_name", "")
+    final = naming.complete_with_dur(current, seconds) if current else ""
+    token = naming.DUR_TOKEN_RE.search(final)
     return {
-        "from": detected.get("session_name", ""),
+        "from": current,
         "to": final,
-        "changed": bool(final) and final != detected.get("session_name"),
-        "duration_label": naming.fmt_duration(seconds) if seconds is not None else "",
+        "changed": bool(final) and final != current,
+        "duration_label": token.group(0).strip()[4:] if token else "",
+        "precision": naming.token_precision(
+            naming.DUR_TOKEN_RE.search(current).group(0).strip()[4:])
+        if naming.DUR_TOKEN_RE.search(current) else "s",
     }

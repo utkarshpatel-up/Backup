@@ -31,6 +31,18 @@ Adalaj Soneri … General Satsang E. Dt-16-Aug-26 Dur-54m1s
 either left alone (if it is right) or corrected (if it is wrong) — never
 doubled. If the token is already correct the folder is not renamed at all.
 
+**The token is written in the shape the folder already uses.** Real folder names
+come in more than one form — `Dur-54m1s` (minutes + seconds) and `Dur-1h0m`
+(hours + minutes, no seconds) — so the app reads the smallest unit the existing
+name uses and matches it, rather than imposing one format:
+
+| Existing name | Master | Result |
+|---|---|---|
+| `… Dur-1h0m` | 3601s | `… Dur-1h0m` |
+| `… Dur-1h0m` | 3241s | `… Dur-54m` |
+| `… Dur-54m1s` | 3601s | `… Dur-1h0m1s` |
+| no token yet | 3241s | `… Dur-54m1s` |
+
 **Media files are never renamed.** They arrive already named — from the zip, the
 card, or the editor — and land in their cam folder byte-identical, name
 included. Case, spaces, punctuation and extension all survive. The master is not
@@ -116,9 +128,10 @@ remembers the choice.
    `.zip` archives can be added too; a zip is extracted to a temp folder with
    its original timestamps restored, because the naming depends on them.
 2. **Folder** — the folder name from the imported structure, previewed with the
-   added `Dur-` in bold. Add the footage by hand; files from the session date are
-   suggested. Pick the master (defaulting to the longest clip in play), then
-   choose move vs copy.
+   added `Dur-` in bold. Every footage drive gets its own Scan / Add files /
+   Add a folder controls, and files from the session date are suggested. Pick the
+   master from any drive — the one it sits on becomes the drive you assign cams
+   against — then choose move vs copy.
 3. **Cameras** — every clip in play listed with length, codec, resolution and
    last-modified time; clips already sitting in a cam folder come pre-selected
    and are not re-copied. Assign the rest to cams, then **Mirror** to apply the
@@ -207,12 +220,12 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-79 tests covering duration formatting, the "filenames are never changed"
+100 tests covering duration formatting, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
 rename-only-on-success guarantee, structure-template import (both zip layouts,
 plus path-escape refusal), per-source destinations, the same-day footage
-suggestion and its two refusal cases, mirror scoping, exFAT case-insensitive
-de-duplication,
+suggestion and its two refusal cases, mirror scoping, every `Dur-` token shape
+and its carry-over, exFAT case-insensitive de-duplication,
 cross-drive pairing, `.mov`/`.mp4` tolerance, comparison severity rules, and the
 cancel-leaves-no-partial-file guarantee. Tests needing real media are skipped
 automatically when ffmpeg is absent.

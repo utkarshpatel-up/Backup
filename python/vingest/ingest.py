@@ -175,9 +175,7 @@ def build_plan(spec: dict, progress=None) -> dict:
         if not existing and template_name:
             # The name comes from an imported template (usually a zip of empty
             # folders). It is authoritative — only the Dur- token is ours.
-            base = naming.DUR_TOKEN_RE.sub("", template_name).strip()
-            session_folder = naming.sanitize(
-                base + (f" Dur-{naming.fmt_duration(duration)}" if duration is not None else ""))
+            session_folder = naming.complete_with_dur(template_name, duration)
             job_folder = naming.sanitize(t.get("job_name") or "") if t.get("job_name") else ""
             dest_root = Path(t["dest_root"])
             session_path = dest_root / job_folder / session_folder if job_folder \
@@ -188,9 +186,7 @@ def build_plan(spec: dict, progress=None) -> dict:
         elif existing:
             # The folder is already named; only the Dur- token is ours to add.
             existing_path = Path(existing)
-            base = naming.DUR_TOKEN_RE.sub("", existing_path.name).strip()
-            session_folder = naming.sanitize(
-                base + (f" Dur-{naming.fmt_duration(duration)}" if duration is not None else ""))
+            session_folder = naming.complete_with_dur(existing_path.name, duration)
             session_path = existing_path.parent / session_folder
             staging_path = existing_path
             job_folder = existing_path.parent.name if existing_path.parent != existing_path.parent.parent else ""

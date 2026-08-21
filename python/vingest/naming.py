@@ -44,25 +44,51 @@ CAM_FOLDER_RE = re.compile(r"^Cam-(\d{2,})$")
 CLIPS_DIRNAME = "Clips for Insert"
 
 
-def fmt_duration(seconds: float | None) -> str:
+def fmt_duration(seconds: float | None, precision: str = "s") -> str:
     """54.9s -> '54s'; 3241.4 -> '54m1s'; 7384 -> '2h3m4s'.
 
     Seconds are truncated, not rounded: a 54m1.9s file reads 54m1s, which is
     what the reference folder name shows for a 3241.9s master.
+
+    `precision` is the smallest unit to write — 's' for the full h/m/s form,
+    'm' to stop at minutes ('1h0m'), 'h' to stop at hours. Existing folder names
+    are written in more than one of these shapes, so the shape is carried over
+    from whatever the folder already uses rather than imposed.
     """
     if seconds is None:
         return ""
-    total = int(seconds)
-    if total < 0:
-        total = 0
+    total = max(int(seconds), 0)
     h, rem = divmod(total, 3600)
     m, s = divmod(rem, 60)
-    out = ""
-    if h:
-        out += f"{h}h"
-    if h or m:
-        out += f"{m}m"
-    return out + f"{s}s"
+
+    if precision == "h":
+        return f"{h}h"
+    if precision == "m":
+        return (f"{h}h" if h else "") + f"{m}m"
+    return (f"{h}h" if h else "") + (f"{m}m" if h or m else "") + f"{s}s"
+
+
+def token_precision(body: str) -> str:
+    """The smallest unit a written token uses: '1h0m' -> 'm', '54m1s' -> 's'."""
+    body = body.strip().lower()
+    for unit in ("s", "m", "h"):
+        if body.endswith(unit):
+            return unit
+    return "s"
+
+
+def complete_with_dur(name: str, seconds: float | None) -> str:
+    """Put the right `Dur-` token on `name`, in the shape the name already uses.
+
+    Replaces an existing token rather than appending beside it, so this is safe
+    to run over a folder that has already been through the app.
+    """
+    token = DUR_TOKEN_RE.search(name)
+    precision = token_precision(token.group(0).strip()[4:]) if token else "s"
+    base = re.sub(r"\s{2,}", " ", DUR_TOKEN_RE.sub("", name)).strip()
+    if seconds is None:
+        return sanitize(base)
+    return sanitize(f"{base} Dur-{fmt_duration(seconds, precision)}")
 
 
 def parse_duration(text: str) -> int | None:
@@ -141,12 +167,14 @@ def build_session_folder(title: str, when=None, seconds: float | None = None,
     A `Dt-` token is added only when `add_date` is on AND the name does not
     already carry one; a date the operator typed themselves always wins.
     """
+    token = DUR_TOKEN_RE.search(title)
+    precision = token_precision(token.group(0).strip()[4:]) if token else "s"
     base = DUR_TOKEN_RE.sub("", title)
     base = re.sub(r"\s{2,}", " ", base).strip()
     if add_date and when is not None and not DATE_TOKEN_RE.search(base):
         base += f" Dt-{fmt_date(when)}"
     if seconds is not None:
-        base += f" Dur-{fmt_duration(seconds)}"
+        base += f" Dur-{fmt_duration(seconds, precision)}"
     return sanitize(base)
 
 

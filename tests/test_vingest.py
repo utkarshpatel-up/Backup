@@ -787,3 +787,57 @@ class TestDurTokenShapes:
         d = structure.detect(tmp_path, probe_masters=False)
         assert d.has_dur is True and d.current_dur == 3600
         assert d.base_name.endswith("Dt-20-Aug-26"), "the Dur- token must be stripped off"
+
+
+class TestDurShapeIsCarriedOver:
+    """The token is written in whatever shape the folder already uses."""
+
+    @pytest.mark.parametrize("existing,seconds,expected", [
+        # An hours+minutes folder stays hours+minutes: no seconds are introduced.
+        ("Session Dt-20-Aug-26 Dur-1h0m", 3601, "1h0m"),
+        ("Session Dt-20-Aug-26 Dur-1h0m", 3241, "54m"),
+        # A full h/m/s folder keeps its seconds.
+        ("Session Dt-16-Aug-26 Dur-54m1s", 3601, "1h0m1s"),
+        ("Session Dt-16-Aug-26 Dur-54m1s", 3241, "54m1s"),
+        # No token yet: the full form is the default.
+        ("Session Dt-16-Aug-26", 3241, "54m1s"),
+        # Hours-only stays hours-only.
+        ("Session Dt-20-Aug-26 Dur-1h", 7384, "2h"),
+    ])
+    def test_shape_follows_the_existing_name(self, existing, seconds, expected):
+        out = naming.complete_with_dur(existing, seconds)
+        assert out.endswith(f"Dur-{expected}")
+        assert out.count("Dur-") == 1
+
+    def test_precision_is_read_off_the_token(self):
+        assert naming.token_precision("1h0m") == "m"
+        assert naming.token_precision("54m1s") == "s"
+        assert naming.token_precision("1h") == "h"
+
+    def test_fmt_duration_honours_precision(self):
+        assert naming.fmt_duration(3601, "s") == "1h0m1s"
+        assert naming.fmt_duration(3601, "m") == "1h0m"
+        assert naming.fmt_duration(3601, "h") == "1h"
+        assert naming.fmt_duration(3241, "m") == "54m"
+
+    def test_completing_twice_is_stable(self):
+        once = naming.complete_with_dur("Session Dt-20-Aug-26 Dur-1h0m", 3601)
+        assert naming.complete_with_dur(once, 3601) == once
+
+    def test_the_original_reference_folder_is_unaffected(self):
+        title = ("Adalaj Soneri Satsang Experience session of USA and Canada Satsang "
+                 "Trip, General Satsang E.")
+        assert naming.build_session_folder(title, dt.date(2026, 8, 16), 3241.9) == \
+            title + " Dt-16-Aug-26 Dur-54m1s"
+
+    @needs_ffmpeg
+    def test_a_template_in_hours_minutes_plans_in_hours_minutes(self, tmp_path):
+        drive = tmp_path / "SSD"; drive.mkdir()
+        make_clip(drive / "Program.mov", 65)
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(drive), "dest_root": str(tmp_path / "out"),
+            "session_name": "Adalaj Soneri Satsang with SMHT MHTs E. Dt-20-Aug-26 Dur-1h0m",
+            "master": str(drive / "Program.mov"), "cams": {}}]})
+        folder = plan["targets"][0]["session_folder"]
+        assert folder.endswith("Dur-1m"), folder
+        assert folder.count("Dur-") == 1

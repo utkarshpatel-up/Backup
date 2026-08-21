@@ -62,6 +62,28 @@ function fmtDur(sec) {
   return (h ? `${h}h` : '') + (h || m ? `${m}m` : '') + `${s}s`;
 }
 
+/**
+ * Format a duration to the smallest unit an existing name already uses, so the
+ * token the app writes matches the shape of the folder it is completing.
+ * 'Dur-1h0m' keeps hours+minutes; 'Dur-54m1s' keeps the full h/m/s form.
+ */
+function durPrecisionOf(name) {
+  const m = /\bDur-(?=\d)(?:\d+h)?(?:\d+m)?(?:\d+s)?\b/i.exec(name || '');
+  if (!m) return 's';
+  const body = m[0].trim().slice(4).toLowerCase();
+  return body.endsWith('s') ? 's' : body.endsWith('m') ? 'm' : body.endsWith('h') ? 'h' : 's';
+}
+
+function fmtDurLike(sec, name) {
+  if (sec == null) return '…';
+  const p = durPrecisionOf(name);
+  const t = Math.floor(sec);
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sx = t % 60;
+  if (p === 'h') return `${h}h`;
+  if (p === 'm') return (h ? `${h}h` : '') + `${m}m`;
+  return (h ? `${h}h` : '') + (h || m ? `${m}m` : '') + `${sx}s`;
+}
+
 function fmtClock(sec) {
   if (sec == null) return '—';
   const t = Math.round(sec);
@@ -453,7 +475,7 @@ function renderSession() {
   const master = chosenMaster();
   const dur = master ? master.duration : null;
   const base = d.base_name || d.session_name;
-  const durLabel = dur != null ? fmtDur(dur) : '…';
+  const durLabel = fmtDurLike(dur, d.session_name);
   const already = d.has_dur && d.current_dur != null;
   const unchanged = already && dur != null && Math.abs(d.current_dur - dur) < 1;
 
@@ -471,9 +493,9 @@ function renderSession() {
       is the folder's existing name, left exactly as it is.</p>
     ${already ? `<div class="note ${unchanged ? 'ok' : 'warn'}" style="margin-top:10px">
       ${unchanged
-        ? `This folder already reads <b>Dur-${esc(fmtDur(d.current_dur))}</b> and matches the
+        ? `This folder already reads <b>Dur-${esc(fmtDurLike(d.current_dur, d.session_name))}</b> and matches the
            master, so its name will not change.`
-        : `This folder currently reads <b>Dur-${esc(fmtDur(d.current_dur))}</b>, but the master
+        : `This folder currently reads <b>Dur-${esc(fmtDurLike(d.current_dur, d.session_name))}</b>, but the master
            is <b>${esc(durLabel)}</b>. The token will be corrected.`}
     </div>` : ''}
     <div class="row" style="margin-top:12px">
@@ -538,7 +560,7 @@ function renderTemplateFolder(src) {
   const master = chosenMaster();
   const dur = master ? master.duration : null;
   const base = t.base_name || t.session_name;
-  const durLabel = dur != null ? fmtDur(dur) : '…';
+  const durLabel = fmtDurLike(dur, t.session_name);
   const pool = filePool(src);
   const cams = (t.tree || []).filter((x) => /Cam-\d+$/.test(x));
 
@@ -554,7 +576,7 @@ function renderTemplateFolder(src) {
     </div>
     <p class="hint" style="margin:8px 0 0">The bold <b>Dur-${esc(durLabel)}</b> is the only
       part the app adds${t.has_dur ? `, replacing the placeholder
-      <b>Dur-${esc(fmtDur(t.current_dur))}</b> the structure came with` : ''}. The empty cam
+      <b>Dur-${esc(fmtDurLike(t.current_dur, t.session_name))}</b> the structure came with` : ''}. The empty cam
       folders are recreated exactly as the structure defines them.</p>
     <div class="row" style="margin-top:12px">
       ${footageSources().map((f) => `<span class="badge ${f.role}">${esc(f.label)}

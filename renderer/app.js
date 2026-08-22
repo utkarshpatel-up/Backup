@@ -1608,7 +1608,9 @@ function renderCopy() {
       <div class="tree">
         ${t.job_folder ? `<div class="dir">📁 ${esc(t.job_folder)}</div>` : ''}
         <div class="dir ${t.job_folder ? 'indent1' : ''}">📁 ${esc(t.session_folder)}</div>
-        ${masterRows(t)}
+        ${t.master_present && !t.items.some((i) => i.kind === 'master')
+          ? '<div class="ren indent2">🎬 <span style="color:var(--ok)">master already filed, kept</span></div>'
+          : masterRows(t)}
         <div class="dir indent2">📁 Clips for Insert</div>
         ${camGroups(t)}
       </div>
@@ -1703,11 +1705,26 @@ function camGroups(t) {
   });
   const names = t.cam_names || {};
   const fname = (n) => (names[n] || names[String(n)] || `Cam-${String(n).padStart(2, '0')}`);
-  return definedCams(t).map((cam) => {
-    const items = byCam[cam] || [];
-    const head = `<div class="dir indent3">📁 ${esc(fname(cam))}${
-      items.length ? '' : ' <span style="color:var(--warn)">· empty</span>'}</div>`;
-    return head + items.map((i) => `<div class="ren indent3" style="padding-left:72px">
+  const existing = t.existing_cams || {};      // folder name -> clips already on disk
+
+  // Cam folders to show: those with new clips, those defined, and those already
+  // on disk from an earlier pass — so a filed Cam-01 never looks like it vanished.
+  const shown = new Map();                     // display name -> { newItems, existing }
+  for (const cam of definedCams(t)) shown.set(fname(cam), { newItems: byCam[cam] || [], existing: 0 });
+  for (const [folder, n] of Object.entries(existing)) {
+    const cur = shown.get(folder) || { newItems: [], existing: 0 };
+    cur.existing = n;
+    shown.set(folder, cur);
+  }
+
+  return [...shown.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([folder, info]) => {
+    const already = info.existing
+      ? ` <span style="color:var(--ok)">· ${info.existing} already filed, kept</span>` : '';
+    const emptyTag = (!info.newItems.length && !info.existing)
+      ? ' <span style="color:var(--warn)">· empty</span>' : '';
+    const head = `<div class="dir indent3">📁 ${esc(folder)}${already}${
+      info.newItems.length ? ` <span style="color:var(--accent)">· +${info.newItems.length} new</span>` : ''}${emptyTag}</div>`;
+    return head + info.newItems.map((i) => `<div class="ren indent3" style="padding-left:72px">
       <b>${esc(i.original_name)}</b>
       <span style="color:var(--muted)">· ${fmtDur(i.duration)} · ${fmtBytes(i.size)}${
         i.original_name !== i.dst.split(/[\\/]/).pop()

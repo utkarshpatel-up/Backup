@@ -1160,3 +1160,31 @@ class TestPostCopyCardSwap:
             "masters": [], "cams": {"2": [str(tmp_path / "CARD_B" / "B1.MP4")]}}]})["targets"][0]
         clip = next(i for i in t["items"] if i["kind"] == "clip")
         assert "/Cam-02/B1.MP4" in clip["final_dst"]
+
+
+class TestExistingCamsReported:
+    """A post-copy add must show — and keep — the cams already on disk."""
+
+    @needs_ffmpeg
+    def test_existing_cam_folders_are_reported_and_untouched(self, tmp_path):
+        session = tmp_path / "DEST" / "S Dt-20-Aug-26 Dur-1h0m"
+        (session / "Clips for Insert" / "Cam-01").mkdir(parents=True)
+        make_clip(session / "M Dur-1h0m.MOV", 3)
+        make_clip(session / "Clips for Insert" / "Cam-01" / "A1.MP4", 2)
+        make_clip(session / "Clips for Insert" / "Cam-01" / "A2.MP4", 2)
+        make_clip(tmp_path / "CARD_B" / "B1.MP4", 2)
+
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(tmp_path / "SSD"),
+            "dest_root": str(tmp_path / "DEST"), "session_source": str(session),
+            "masters": [], "cams": {"2": [str(tmp_path / "CARD_B" / "B1.MP4")]}}]})
+        t = plan["targets"][0]
+        assert t["existing_cams"] == {"Cam-01": 2}
+        assert t["master_present"] is True
+
+        res = ingest.execute_plan(plan)
+        assert res["failed"] == 0
+        cam01 = session / "Clips for Insert" / "Cam-01"
+        assert cam01.is_dir()
+        assert sorted(f.name for f in cam01.iterdir()) == ["A1.MP4", "A2.MP4"]
+        assert (session / "Clips for Insert" / "Cam-02" / "B1.MP4").exists()

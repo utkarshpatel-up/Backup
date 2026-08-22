@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import naming
 from .hashing import file_digest
-from .probe import MediaInfo, probe, scan_videos
+from .probe import MediaInfo, VIDEO_EXTS, probe, scan_videos
 
 
 @dataclass
@@ -53,6 +53,8 @@ class TargetPlan:
     in_place: bool = False    # True when completing a folder that already exists
     from_template: bool = False
     ensure_dirs: list = field(default_factory=list)   # folders to create even if empty
+    existing_cams: dict = field(default_factory=dict) # cam folder -> clips already filed there
+    master_present: bool = False                      # a master already sits in the folder
     items: list[PlanItem] = field(default_factory=list)
     total_bytes: int = 0
     free_bytes: int = 0
@@ -331,6 +333,27 @@ def build_plan(spec: dict, progress=None) -> dict:
         plan.items = [i for i in plan.items
                       if os.path.normcase(i.src) != os.path.normcase(i.dst)]
         plan.total_bytes = sum(i.size for i in plan.items)
+
+        # Report what the folder already contains, so the plan shows the cams that
+        # were filed on an earlier pass rather than looking like they vanished.
+        clips_dir = Path(staging_path) / naming.CLIPS_DIRNAME
+        if clips_dir.is_dir():
+            for child in sorted(clips_dir.iterdir()):
+                if not child.is_dir():
+                    continue
+                try:
+                    n = sum(1 for f in child.iterdir()
+                            if f.is_file() and f.suffix.lower() in VIDEO_EXTS)
+                except OSError:
+                    n = 0
+                if n:
+                    plan.existing_cams[child.name] = n
+        try:
+            plan.master_present = Path(staging_path).is_dir() and any(
+                f.is_file() and f.suffix.lower() in VIDEO_EXTS
+                for f in Path(staging_path).iterdir())
+        except OSError:
+            plan.master_present = False
         try:
             plan.free_bytes = shutil.disk_usage(dest_root).free
         except OSError:

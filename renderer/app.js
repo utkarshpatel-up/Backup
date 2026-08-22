@@ -1646,7 +1646,14 @@ function renderCopy() {
        — review the details on each drive below.</div>` : ''}
     <div class="card">
       <div class="row">
-        <div><b>${p.item_count} file(s) to file</b> · ${fmtBytes(p.total_bytes)} ·
+        <div>${(() => {
+          const per = p.targets.map((t) => t.items.length);
+          const allEqual = per.length > 1 && per.every((n) => n === per[0]);
+          return allEqual
+            ? `<b>${per[0]} clip(s) to each of ${p.targets.length} drive(s)</b> · `
+              + `${fmtBytes(p.targets[0].total_bytes)} per drive`
+            : `<b>${p.item_count} file(s) to file</b> · ${fmtBytes(p.total_bytes)}`;
+        })()} ·
           master moved · clips copied · verify <b>${esc(p.verify)}</b>
           ${(p.renames || []).length ? `· <b>${p.renames.length} folder rename(s)</b>` : ''}
           <br><span class="hint">Only the clips you assigned on the Cameras page are

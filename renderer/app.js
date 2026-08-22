@@ -1628,8 +1628,9 @@ function renderCopy() {
           empties.length > 1 ? 'folders are' : 'folder is'} still created either way.
       </div>
       <div class="row">
+        <button class="sm primary" id="btnNoticeImportCard">📇 Import camera card</button>
         ${empties.map((n) => `<button class="sm" data-addcam="${n}">
-          Add clips to ${esc((p.targets[0].cam_names || {})[n]
+          Add files to ${esc((p.targets[0].cam_names || {})[n]
             || `Cam-${String(n).padStart(2, '0')}`)}…</button>`).join('')}
         <div class="spacer"></div>
         <button class="sm ghost" id="btnLeaveEmpty">Leave empty, continue</button>
@@ -1649,10 +1650,15 @@ function renderCopy() {
           <br><span class="hint">Only the clips you assigned on the Cameras page are
             included — anything on Skip is untouched, and no source files are deleted.</span></div>
         <div class="spacer"></div>
+        <button class="sm" id="btnCopyImportCard">📇 Import camera card</button>
         <button class="sm" id="btnReplan">Rebuild plan</button>
         <button class="primary" id="btnRun" ${state.busy ? 'disabled' : ''}>
           ${state.runResult ? 'Run again' : 'Start copy'}</button>
       </div>
+      <div class="hint" style="margin-top:6px">
+        Swapped a card? Press <b>Import camera card</b> — a new card is added to the next cam
+        folder${state.runResult ? ' and filed straight into the folders already on disk' : ''},
+        and the plan updates.</div>
     </div>
     ${status}
     ${emptyNotice}
@@ -1788,6 +1794,16 @@ function finderTargets() {
 function wireCopy() {
   $('btnPlan')?.addEventListener('click', doPlan);
   $('btnReplan')?.addEventListener('click', doPlan);
+  // Import a swapped-in card from the Copy step, then rebuild the plan so the new
+  // clips appear in their cam folders. After a copy this files them straight into
+  // the folders already on disk (buildSpec targets the filed session, no master).
+  const importThenReplan = async () => {
+    const before = selected(primarySource()).length;
+    await importCameraCards();
+    if (selected(primarySource()).length > before || state.plan === null) await doPlan();
+  };
+  $('btnCopyImportCard')?.addEventListener('click', importThenReplan);
+  $('btnNoticeImportCard')?.addEventListener('click', importThenReplan);
   document.querySelectorAll('[data-addcam]').forEach((b) => b.addEventListener('click', () =>
     addClipsToCam(Number(b.dataset.addcam))));
   $('btnLeaveEmpty')?.addEventListener('click', () =>

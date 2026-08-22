@@ -23,6 +23,7 @@ needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not in
 
 def make_clip(path: Path, seconds: int) -> Path:
     """A real, probeable video file — the Dur- token has to come from somewhere."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
          "-i", f"testsrc=size=160x120:rate=25:duration={seconds}",

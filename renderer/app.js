@@ -1885,6 +1885,21 @@ async function doRun() {
       // camera afterwards goes straight into these folders without re-detection.
       state.mastersFiled = true;
       for (const t of p.targets) state.filedSessions[t.role] = t.session_path;
+
+      // Clips that landed are done. Drop them from the pool and the assignment so
+      // a later card swap does not try to re-plan them from a now-ejected card.
+      const filed = new Set((r.items || [])
+        .filter((i) => i.kind === 'clip' && (i.status === 'done' || i.status === 'skipped'))
+        .map((i) => i.src));
+      for (const path of filed) delete state.assign[path];
+      for (const key of Object.keys(state.extraFiles)) {
+        state.extraFiles[key] = state.extraFiles[key].filter((f) => !filed.has(f.path));
+      }
+      for (const key of Object.keys(state.scans)) {
+        if (state.scans[key] && state.scans[key].files) {
+          state.scans[key].files = state.scans[key].files.filter((f) => !filed.has(f.path));
+        }
+      }
     }
     toast(r.failed ? `${r.failed} file(s) failed.` : `Copied ${r.copied} files.`,
       r.failed ? 'err' : 'ok');

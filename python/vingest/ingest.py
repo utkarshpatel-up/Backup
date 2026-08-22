@@ -164,7 +164,9 @@ def build_plan(spec: dict, progress=None) -> dict:
 
     for t in spec.get("targets", []):
         # One session can hold several master clips; Clip-01 is the earliest.
-        master_paths = t.get("masters") or ([t["master"]] if t.get("master") else [])
+        master_paths = [mp for mp in (t.get("masters")
+                        or ([t["master"]] if t.get("master") else []))
+                        if Path(mp).exists()]
         masters = sorted((get(mp) for mp in master_paths),
                          key=lambda m: (m.mtime, m.name))
         timed = [m.duration for m in masters if m.duration is not None]
@@ -188,10 +190,16 @@ def build_plan(spec: dict, progress=None) -> dict:
             in_place = False
             from_template = True
         elif existing:
-            # The folder is already named; only the Dur- token is ours to add.
             existing_path = Path(existing)
-            session_folder = naming.session_folder_name(
-                existing_path.name, duration, len(masters))
+            if not masters:
+                # Adding cameras to an already-filed folder: its name (and Dur-)
+                # is already correct, so leave it exactly as it is — recomputing
+                # with no master would wrongly strip the existing Dur- token.
+                session_folder = existing_path.name
+            else:
+                # First pass over this folder: complete its Dur- from the master.
+                session_folder = naming.session_folder_name(
+                    existing_path.name, duration, len(masters))
             session_path = existing_path.parent / session_folder
             staging_path = existing_path
             job_folder = existing_path.parent.name if existing_path.parent != existing_path.parent.parent else ""
@@ -269,11 +277,13 @@ def build_plan(spec: dict, progress=None) -> dict:
             elif master.error:
                 plan.warnings.append(f"Master probed with a warning: {master.error}")
 
-        if not masters:
-            # No master at all — usually a mirrored target whose twin was not found.
-            plan.warnings.append(
-                f"No master file for the {plan.role} target, so its folder gets no "
-                f"Dur- token. Check that drive's footage is loaded and mirrored.")
+        if not masters and not (existing and not master_paths and Path(existing).exists()):
+            # Warn about a missing master only on a first pass. Adding cameras to
+            # an already-named folder legitimately has no master to file.
+            if not existing:
+                plan.warnings.append(
+                    f"No master file for the {plan.role} target, so its folder gets no "
+                    f"Dur- token. Check that drive's footage is loaded and mirrored.")
 
         clips_root = staging_path / naming.CLIPS_DIRNAME
         final_clips_root = session_path / naming.CLIPS_DIRNAME
@@ -291,6 +301,13 @@ def build_plan(spec: dict, progress=None) -> dict:
             final_cam_dir = final_clips_root / cam_folder_name(cam_index)
             cam_taken: set[str] = set()
             for p in paths:
+                if not Path(p).exists():
+                    # A clip whose card was already ejected (its footage is filed
+                    # from an earlier pass). Skip it rather than crashing the build.
+                    plan.warnings.append(
+                        f"{Path(p).name} is no longer on any connected drive — skipped. "
+                        f"It was likely filed from an earlier card.")
+                    continue
                 info = get(p)
                 name = naming.dedupe(Path(p).name, cam_taken)
                 cam_taken.add(name)

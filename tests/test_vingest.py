@@ -1109,3 +1109,53 @@ class TestCustomCamNames:
             "cams": {"1": [str(card / "CLIP.MP4")]}}]})
         clip = next(i for i in plan["targets"][0]["items"] if i["kind"] == "clip")
         assert "/Cam-01/" in clip["final_dst"]
+
+
+class TestPostCopyCardSwap:
+    """Swapping a card after the first copy: add cams without re-planning the old."""
+
+    @needs_ffmpeg
+    def _filed_session(self, tmp_path):
+        session = tmp_path / "DEST" / "S Dt-20-Aug-26 Dur-1m0s"
+        (session / "Clips for Insert" / "Cam-01").mkdir(parents=True)
+        make_clip(session / "S Dt-20-Aug-26 Dur-1m0s.MOV", 60)
+        make_clip(session / "Clips for Insert" / "Cam-01" / "A1.MP4", 5)
+        return session
+
+    @needs_ffmpeg
+    def test_a_missing_source_is_skipped_not_fatal(self, tmp_path):
+        session = self._filed_session(tmp_path)
+        make_clip(tmp_path / "CARD_B" / "B1.MP4", 6)
+        # References a clip whose card was ejected — must not crash the build.
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(tmp_path / "SSD"),
+            "dest_root": str(tmp_path / "DEST"), "session_source": str(session),
+            "masters": [],
+            "cams": {"1": [str(tmp_path / "GONE" / "A1.MP4")],
+                     "2": [str(tmp_path / "CARD_B" / "B1.MP4")]}}]})
+        names = [Path(i["final_dst"]).name for i in plan["targets"][0]["items"]]
+        assert names == ["B1.MP4"], "only the present clip is planned"
+        assert any("no longer" in w for w in plan["targets"][0]["warnings"])
+
+    @needs_ffmpeg
+    def test_cam_only_add_keeps_the_folder_name(self, tmp_path):
+        session = self._filed_session(tmp_path)
+        make_clip(tmp_path / "CARD_B" / "B1.MP4", 6)
+        t = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(tmp_path / "SSD"),
+            "dest_root": str(tmp_path / "DEST"), "session_source": str(session),
+            "masters": [], "cams": {"2": [str(tmp_path / "CARD_B" / "B1.MP4")]}}]})["targets"][0]
+        assert t["session_folder"] == "S Dt-20-Aug-26 Dur-1m0s", "existing Dur- must survive"
+        assert t["rename_to"] == "", "a cam-only add renames nothing"
+        assert not any("No master" in w for w in t["warnings"])
+
+    @needs_ffmpeg
+    def test_new_card_clip_lands_in_its_cam(self, tmp_path):
+        session = self._filed_session(tmp_path)
+        make_clip(tmp_path / "CARD_B" / "B1.MP4", 6)
+        t = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(tmp_path / "SSD"),
+            "dest_root": str(tmp_path / "DEST"), "session_source": str(session),
+            "masters": [], "cams": {"2": [str(tmp_path / "CARD_B" / "B1.MP4")]}}]})["targets"][0]
+        clip = next(i for i in t["items"] if i["kind"] == "clip")
+        assert "/Cam-02/B1.MP4" in clip["final_dst"]

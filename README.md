@@ -127,6 +127,9 @@ npm start
 ```
 
 Requires Python 3.9+ and ffmpeg on `PATH`. On macOS: `brew install ffmpeg`.
+On Windows, install Python from python.org (the `py` launcher is supported) and
+install an FFmpeg build, then add its `bin` folder to `PATH`. `python`, `py -3`,
+and `python3` are all detected automatically.
 If ffprobe lives somewhere unusual, the app has a **Locate ffprobe** button and
 remembers the choice.
 
@@ -140,8 +143,9 @@ remembers the choice.
    template. Each footage source gets its own destination picker. Folders and
    `.zip` archives can be added too; a zip is extracted to a temp folder with
    its original timestamps restored, because the naming depends on them.
-2. **Folder** — the folder name from the imported structure, previewed with the
-   added `Dur-` in bold. Tick one master clip, or several if the session was
+2. **Folder** — edit and preview the imported structure before copying: the job
+   folder, session folder, camera-folder names, and camera-folder count. The
+   generated `Dur-` remains visible in bold. Tick one master clip, or several if the session was
    recorded in more than one file; the names they will be given are shown. Every footage drive gets its own Scan / Add files /
    Add a folder controls, and files from the session date are suggested. Pick the
    master from any drive — the one it sits on becomes the drive you assign cams
@@ -149,10 +153,11 @@ remembers the choice.
    listed here, since a shoot's short camera clips would bury it; the full list
    is one click away. Then choose move vs copy.
 3. **Cameras** — every loaded clip with length, codec, resolution and
-   last-modified time, and the cam it goes to. **Import camera cards** pulls
-   clips straight off mounted cards, pre-assigned by card letter;
-   **Auto-suggest by camera** splits loose clips by resolution, frame rate and
-   codec. Then **Mirror** to apply the same assignment to the other drive.
+   last-modified time, and the cam it goes to. **Import camera cards** refreshes
+   the list from the cards mounted right now, removing files from cards that were
+   ejected, and pre-assigns the current clips by card. **Auto-suggest by camera**
+   splits loose clips by resolution, frame rate and codec. The selected camera
+   clips are copied to both destination drives automatically.
    *Auto-suggest* groups by resolution + fps + codec as a starting point.
 
 4. **Copy** — the full plan is shown first: the folder rename, and every clip
@@ -160,25 +165,12 @@ remembers the choice.
    Progress shows throughput and ETA and can be cancelled mid-file.
 5. **Verify** — compares the session folders (and the SD card, if you add it).
 
-### How Mirror pairs the two drives
+### How the two destination drives stay aligned
 
-You assign clips to cams once, on the primary drive. **Mirror** finds each clip's
-twin on the other drive so the same assignment can be applied to both:
-
-1. **Filename stem**, case-insensitively, with any `Dt-`/`Dur-` tokens stripped.
-   Both bodies record the same reel id, so this settles almost everything.
-2. **Duration within 1.5s and last-modified within 15 minutes** for whatever is
-   left, closest in time winning.
-
-Each file on the second drive can only be claimed once, so two clips cannot pair
-to the same twin. Anything unmatched is reported by name and filed on the primary
-drive only — and if the *master* is what went unmatched, that is called out
-separately, because without it the second drive's folder gets no `Dur-` token.
-
-Both sides are matched from the footage actually in play — the clips you loaded,
-narrowed by the day filter — not from a raw scan of each drive. Pairing raw
-drives would happily match a clip from an unrelated shoot that happened to share
-a reel id.
+You assign each camera-card clip once. The same selected source clip is copied to
+both destination drives, while each drive uses its own selected master recording.
+Files on Skip, whole-drive scan results, recycle-bin contents, and selected master
+clips can never enter the camera-copy plan.
 
 ## Design decisions worth knowing
 
@@ -226,6 +218,18 @@ python3 scripts/build_python.py --with-ffmpeg /opt/homebrew/bin   # self-contain
 npm run dist:mac      # or dist:win
 ```
 
+On Windows (PowerShell), the equivalent self-contained build is:
+
+```powershell
+py -3 -m pip install pyinstaller xxhash
+npm install
+npm run bundle:python -- --with-ffmpeg C:\ffmpeg\bin
+npx electron-builder --win
+```
+
+The installer is written to `dist/`. Build the Windows installer on Windows:
+PyInstaller cannot create a Windows engine executable from macOS or Linux.
+
 Bundling ffmpeg makes the app work on a machine with nothing installed; check
 that FFmpeg's LGPL/GPL terms suit how you distribute it. Without `--with-ffmpeg`
 the target machine needs ffmpeg on `PATH`.
@@ -235,16 +239,18 @@ the target machine needs ffmpeg on `PATH`.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
+npm run test:renderer
 ```
 
-118 tests covering duration formatting, the "filenames are never changed"
+140 Python tests plus 4 renderer selection tests covering duration formatting,
+the camera-selection safety boundary, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
 rename-only-on-success guarantee, structure-template import (both zip layouts,
 plus path-escape refusal), per-source destinations, the same-day footage
-suggestion and its two refusal cases, camera-card discovery, mirror scoping,
+suggestion and its two refusal cases, camera-card discovery, stale-card refresh,
 master-clip naming and multi-clip totals, every `Dur-` token shape, exFAT
 case-insensitive de-duplication,
-cross-drive pairing, `.mov`/`.mp4` tolerance, comparison severity rules, and the
+legacy cross-drive pairing, `.mov`/`.mp4` tolerance, comparison severity rules, and the
 cancel-leaves-no-partial-file guarantee. Tests needing real media are skipped
 automatically when ffmpeg is absent.
 
@@ -262,7 +268,7 @@ responsive.
 | `python/vingest/naming.py` | Token construction, parsing, sanitising |
 | `python/vingest/probe.py` | ffprobe wrapper, codec-family classification, role assignment |
 | `python/vingest/sources.py` | Volume detection (mac/Win/Linux), zip handling, eject |
-| `python/vingest/ingest.py` | Cross-drive pairing, plan building, copy execution |
+| `python/vingest/ingest.py` | Safe selection checks, plan building, copy execution |
 | `python/vingest/compare.py` | Snapshots, fast comparison, checksum verification |
 | `python/vingest/hashing.py` | xxhash with a stdlib blake2b fallback |
 | `python/vingest/report.py` | Session manifests |
@@ -276,3 +282,5 @@ responsive.
 - Zip sources extract to a temp folder, so a large zip needs the free space.
 - One structure template applies to the whole job; per-drive templates are not
   supported (and have never been needed, since both drives hold the same shoot).
+#   B a c k u p  
+ 

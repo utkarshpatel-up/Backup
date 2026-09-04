@@ -123,8 +123,12 @@ def m_add_files(p, req_id):
     from pathlib import Path as _P
 
     paths: list = []
+    rejected: list[str] = []
     for raw in p.get("paths", []):
         item = _P(raw)
+        if probe.is_junk(item):
+            rejected.append(str(item))
+            continue
         if item.is_dir():
             paths.extend(probe.scan_videos(item))
         elif probe.is_video(item):
@@ -144,7 +148,8 @@ def m_add_files(p, req_id):
         emit({"stage": "scan", "done": n, "total": len(unique), "name": item.name})
         out.append(probe.probe(item).to_dict())
     out.sort(key=lambda f: (f.get("mtime") or 0))
-    return {"files": out, "count": len(out),
+    return {"files": out, "count": len(out), "rejected": rejected,
+            "rejected_count": len(rejected),
             "by_date": ingest.group_by_date(out, p.get("session_date"))}
 
 
@@ -188,9 +193,16 @@ def m_execute_plan(p, req_id):
     if p.get("write_manifest", True):
         for target in plan.get("targets", []):
             try:
+                rename = next((entry for entry in result.get("renames", [])
+                               if entry.get("role") == target.get("role")), None)
+                # A failed/cancelled in-place run still lives under staging_path.
+                # Never create its completed-looking final path just for a manifest.
+                manifest_root = (target.get("staging_path")
+                                 if rename and not rename.get("done")
+                                 else target["session_path"])
                 manifests.append(report.write_manifest(
-                    target["session_path"], plan, result, target))
-            except OSError as e:
+                    manifest_root, plan, result, target))
+            except (OSError, ValueError) as e:
                 result.setdefault("errors", []).append(f"Manifest failed: {e}")
     result["manifests"] = manifests
     return result

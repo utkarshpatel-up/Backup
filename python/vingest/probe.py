@@ -16,7 +16,8 @@ VIDEO_EXTS = {".mov", ".mp4", ".mxf", ".m4v", ".avi", ".mts", ".m2ts",
 # Sidecars and camera junk we copy or skip but never treat as clips.
 SIDECAR_EXTS = {".xml", ".cpi", ".bim", ".thm", ".lrf", ".sec", ".modd", ".moff"}
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini", ".spotlight-v100",
-              ".fseventsd", ".trashes", "system volume information"}
+              ".fseventsd", ".trashes", "$recycle.bin", "recycler",
+              "system volume information"}
 
 PRORES_CODECS = {"prores", "prores_ks", "prores_aw"}
 H265_CODECS = {"hevc", "h265"}
@@ -200,9 +201,18 @@ def is_video(path: Path) -> bool:
     return path.suffix.lower() in VIDEO_EXTS
 
 
+def _is_junk_name(name: str) -> bool:
+    """True for operating-system metadata and trash folder names."""
+    lowered = name.lower()
+    return (lowered in JUNK_NAMES or lowered.startswith("._")
+            or lowered.startswith(".trash-"))
+
+
 def is_junk(path: Path) -> bool:
-    name = path.name.lower()
-    return name in JUNK_NAMES or name.startswith("._")
+    # Check every component, not only the leaf. A video inside
+    # ``$RECYCLE.BIN/<sid>/`` is still junk even though its own filename looks
+    # exactly like genuine camera footage.
+    return any(_is_junk_name(part) for part in Path(path).parts)
 
 
 def scan_videos(root: str | Path, max_depth: int = 8) -> list[Path]:
@@ -216,8 +226,7 @@ def scan_videos(root: str | Path, max_depth: int = 8) -> list[Path]:
         d = Path(dirpath)
         if len(d.parts) - base_depth >= max_depth:
             dirnames[:] = []
-        dirnames[:] = [x for x in dirnames
-                       if x.lower() not in JUNK_NAMES and not x.startswith("._")]
+        dirnames[:] = [x for x in dirnames if not _is_junk_name(x)]
         for f in filenames:
             p = d / f
             if is_video(p) and not is_junk(p):

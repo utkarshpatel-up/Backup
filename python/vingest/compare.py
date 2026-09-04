@@ -103,7 +103,14 @@ def compare(snapshots: list[dict], duration_tol: float = 1.0,
             size_tol_pct: float = 0.0) -> dict:
     """Compare two or more snapshots against the first one (the reference)."""
     if len(snapshots) < 2:
-        return {"error": "Need at least two sources to compare"}
+        return {"error": "Need at least two sources to compare", "pairs": [], "ok": False}
+
+    invalid = [{"root": snap.get("root"), "error": snap.get("error")}
+               for snap in snapshots if snap.get("error")]
+    if invalid:
+        detail = "; ".join(f"{item['root']}: {item['error']}" for item in invalid)
+        return {"error": f"One or more folders cannot be read: {detail}",
+                "snapshot_errors": invalid, "pairs": [], "ok": False}
 
     ref = snapshots[0]
     ref_files = ref.get("files", {})
@@ -179,6 +186,7 @@ def compare(snapshots: list[dict], duration_tol: float = 1.0,
                                        "issues": issues, "info_only": True})
 
         errors = [m for m in mismatched if not m.get("info_only")]
+        tree_equal = ref.get("dirs") == other.get("dirs")
         results.append({
             "reference": ref.get("root"),
             "other": other.get("root"),
@@ -186,8 +194,8 @@ def compare(snapshots: list[dict], duration_tol: float = 1.0,
             "missing_from_other": missing,
             "extra_in_other": extra,
             "mismatched": mismatched,
-            "ok": not missing and not extra and not errors,
-            "tree_equal": ref.get("dirs") == other.get("dirs"),
+            "ok": not missing and not extra and not errors and tree_equal,
+            "tree_equal": tree_equal,
         })
 
     return {

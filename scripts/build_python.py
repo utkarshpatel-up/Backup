@@ -33,7 +33,11 @@ def main() -> int:
         return 1
 
     sep = ";" if os.name == "nt" else ":"
-    cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--noconsole",
+    # Do not use PyInstaller's --noconsole/--windowed mode. On Windows that can
+    # set sys.stdin/sys.stdout to None, but those pipes ARE the Electron RPC
+    # transport. Electron starts the process with windowsHide, so no console
+    # window is shown to the operator anyway.
+    cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--console",
            "--name", "vingest-core",
            "--distpath", str(OUT),
            "--workpath", str(ROOT / "build" / "pyi"),

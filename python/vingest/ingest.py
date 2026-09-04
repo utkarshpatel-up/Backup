@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import naming
 from .hashing import file_digest
-from .probe import MediaInfo, VIDEO_EXTS, probe, scan_videos
+from .probe import MediaInfo, VIDEO_EXTS, is_junk, probe, scan_videos
 
 
 @dataclass
@@ -156,6 +156,15 @@ def build_plan(spec: dict, progress=None) -> dict:
     date_override = spec.get("date")
     targets_out: list[TargetPlan] = []
     probe_cache: dict[str, MediaInfo] = {}
+    # A master selected for either SSD is never valid camera footage on any
+    # target. Keeping this global also protects against a renderer accidentally
+    # sending the second drive's master in the shared camera map.
+    designated_masters = {
+        os.path.normcase(os.path.abspath(str(path)))
+        for target in spec.get("targets", [])
+        for path in (target.get("masters")
+                     or ([target["master"]] if target.get("master") else []))
+    }
 
     def get(path: str) -> MediaInfo:
         if path not in probe_cache:
@@ -193,7 +202,26 @@ def build_plan(spec: dict, progress=None) -> dict:
             from_template = True
         elif existing:
             existing_path = Path(existing)
-            if not masters:
+            rename_base = (t.get("session_rename") or "").strip()
+            if rename_base:
+                # The operator renamed the folder on the Folder step. Take their
+                # base name and keep the Dur-/Clips- tokens: recomputed from the
+                # master when we have one, else carried over from the old name so
+                # renaming while adding cameras never strips the duration.
+                base = naming.session_base(rename_base)
+                if masters:
+                    session_folder = naming.session_folder_name(
+                        base, duration, len(masters))
+                else:
+                    keep = []
+                    dur_tok = naming.DUR_TOKEN_RE.search(existing_path.name)
+                    if dur_tok:
+                        keep.append(dur_tok.group(0).strip())
+                    clips_tok = naming.CLIPS_TOKEN_RE.search(existing_path.name)
+                    if clips_tok:
+                        keep.append(clips_tok.group(0).strip())
+                    session_folder = naming.sanitize(" ".join([base, *keep]).strip())
+            elif not masters:
                 # Adding cameras to an already-filed folder: its name (and Dur-)
                 # is already correct, so leave it exactly as it is — recomputing
                 # with no master would wrongly strip the existing Dur- token.
@@ -302,7 +330,30 @@ def build_plan(spec: dict, progress=None) -> dict:
             cam_dir = clips_root / cam_folder_name(cam_index)
             final_cam_dir = final_clips_root / cam_folder_name(cam_index)
             cam_taken: set[str] = set()
+            # Clips already sitting in this cam folder from an earlier pass, by
+            # name -> size. A re-inserted (or already-filed) card whose clip
+            # matches one of these is already filed: skip it instead of copying a
+            # second "(2)" duplicate. A same-name clip of a DIFFERENT size is a
+            # genuine clash and still deduped.
+            on_disk: dict[str, int] = {}
+            if cam_dir.is_dir():
+                for f in cam_dir.iterdir():
+                    if f.is_file() and f.suffix.lower() in VIDEO_EXTS:
+                        try:
+                            on_disk[f.name.lower()] = f.stat().st_size
+                        except OSError:
+                            on_disk[f.name.lower()] = -1
             for p in paths:
+                candidate = Path(p)
+                if is_junk(candidate):
+                    plan.warnings.append(
+                        f"{candidate.name} is inside an operating-system trash folder — skipped.")
+                    continue
+                if os.path.normcase(os.path.abspath(str(candidate))) in designated_masters:
+                    plan.warnings.append(
+                        f"{candidate.name} is selected as a master clip — it cannot also be "
+                        f"filed into {cam_folder_name(cam_index)} and was skipped.")
+                    continue
                 if not Path(p).exists():
                     # A clip whose card was already ejected (its footage is filed
                     # from an earlier pass). Skip it rather than crashing the build.
@@ -311,7 +362,16 @@ def build_plan(spec: dict, progress=None) -> dict:
                         f"It was likely filed from an earlier card.")
                     continue
                 info = get(p)
-                name = naming.dedupe(Path(p).name, cam_taken)
+                base_name = Path(p).name
+                already = on_disk.get(base_name.lower())
+                if already is not None and already == info.size:
+                    # This exact clip is already in the folder — don't recopy it
+                    # (its own filed copy, or a re-inserted card). The existing_cams
+                    # tally below still reports it as filed and kept.
+                    continue
+                # Dedupe against both this pass's names and what is already on disk,
+                # so a truly different same-named clip lands as "(2)".
+                name = naming.dedupe(base_name, cam_taken | set(on_disk.keys()))
                 cam_taken.add(name)
                 plan.items.append(PlanItem(
                     src=p, dst=str(cam_dir / name),
@@ -613,9 +673,13 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
         renames.append(record)
 
     # Report the post-rename location, which is what the operator will look for.
-    for item in results:
-        if item.get("final_dst") and any(r["done"] for r in renames):
-            item["dst"] = item["final_dst"]
+    renamed_roles = {r["role"] for r in renames if r["done"]}
+    for target in plan.get("targets", []):
+        if target.get("role") not in renamed_roles:
+            continue
+        for item in target.get("items", []):
+            if item.get("final_dst"):
+                item["dst"] = item["final_dst"]
 
     ok = sum(1 for i in results if i["status"] == "done")
     return {

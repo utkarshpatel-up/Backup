@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-from vingest import compare, ingest, naming, probe, sources, structure  # noqa: E402
+from vingest import compare, ingest, naming, probe, server, sources, structure  # noqa: E402
 import zipfile  # noqa: E402
 
 HAVE_FFMPEG = shutil.which("ffmpeg") is not None and probe.configure().get("ffprobe")
@@ -109,6 +109,70 @@ class TestNaming:
         assert naming.cam_folder(12) == "Cam-12"
 
 
+class TestVideoScanning:
+    def test_windows_recycle_bin_is_never_scanned(self, tmp_path):
+        real = tmp_path / "CARD" / "real.MP4"
+        recycled = tmp_path / "$RECYCLE.BIN" / "S-1-5-21" / "$R123.MP4"
+        real.parent.mkdir()
+        recycled.parent.mkdir(parents=True)
+        real.write_bytes(b"video")
+        recycled.write_bytes(b"deleted video")
+
+        assert probe.scan_videos(tmp_path) == [real]
+        assert probe.is_junk(recycled)
+
+    def test_platform_trash_variants_are_never_scanned(self, tmp_path):
+        for folder in (".Trashes", ".Trash-1000", "RECYCLER"):
+            clip = tmp_path / folder / "old.mov"
+            clip.parent.mkdir(parents=True)
+            clip.write_bytes(b"deleted video")
+
+        assert probe.scan_videos(tmp_path) == []
+
+    def test_explicit_recycle_bin_file_is_refused_before_probe(self, tmp_path):
+        recycled = tmp_path / "$RECYCLE.BIN" / "S-1-5-21" / "$R123.MP4"
+        recycled.parent.mkdir(parents=True)
+        recycled.write_bytes(b"not media")
+
+        result = server.m_add_files({"paths": [str(recycled)]}, 123)
+
+        assert result["files"] == []
+        assert result["rejected"] == [str(recycled)]
+        assert result["rejected_count"] == 1
+
+
+class TestUnsafeCameraInputs:
+    @needs_ffmpeg
+    def test_master_can_never_be_planned_as_a_camera_clip(self, tmp_path):
+        drive = tmp_path / "SSD"
+        drive.mkdir()
+        master = make_clip(drive / "MASTER.MOV", 4)
+        plan = ingest.build_plan({"targets": [{
+            "role": "prores", "source_root": str(drive),
+            "dest_root": str(drive), "session_name": "Session",
+            "masters": [str(master)], "cams": {"3": [str(master)]},
+        }]})
+
+        items = plan["targets"][0]["items"]
+        assert [item["kind"] for item in items] == ["master"]
+        assert any("cannot also be filed" in warning for warning in plan["warnings"])
+
+    @needs_ffmpeg
+    def test_recycle_bin_clip_is_rejected_even_if_sent_in_a_plan(self, tmp_path):
+        drive = tmp_path / "SSD"
+        drive.mkdir()
+        master = make_clip(drive / "MASTER.MOV", 4)
+        deleted = make_clip(tmp_path / "$RECYCLE.BIN" / "S-1" / "$R1.MP4", 1)
+        plan = ingest.build_plan({"targets": [{
+            "role": "prores", "source_root": str(drive),
+            "dest_root": str(drive), "session_name": "Session",
+            "masters": [str(master)], "cams": {"5": [str(deleted)]},
+        }]})
+
+        assert not any(item["kind"] == "clip" for item in plan["targets"][0]["items"])
+        assert any("trash folder" in warning for warning in plan["warnings"])
+
+
 class TestPairing:
     def _f(self, path, duration, mtime):
         return {"path": path, "duration": duration, "mtime": mtime}
@@ -198,6 +262,20 @@ class TestCompare:
 
     def test_needs_two_sources(self):
         assert "error" in compare.compare([self._snap({})])
+
+    def test_a_different_folder_tree_is_not_a_match(self):
+        a = {**self._snap({}), "dirs": ["clips for insert/cam-01"]}
+        b = {**self._snap({}), "dirs": ["clips for insert/cam-05"]}
+        result = compare.compare([a, b])
+        assert not result["ok"]
+        assert not result["pairs"][0]["tree_equal"]
+
+    def test_unreadable_folders_are_not_reported_as_matching_empty_folders(self):
+        a = {"root": "missing-a", "error": "Path does not exist", "files": {}}
+        b = {"root": "missing-b", "error": "Path does not exist", "files": {}}
+        result = compare.compare([a, b])
+        assert not result["ok"]
+        assert "cannot be read" in result["error"]
 
 
 class TestPlan:
@@ -483,6 +561,40 @@ class TestInPlacePlan:
         assert not res["renames"][0]["done"]
         assert session.is_dir(), "a half-done run must not label the folder as finished"
 
+    def test_cancelled_rpc_writes_manifest_to_staging_not_the_final_name(self, tmp_path):
+        session = self._house(tmp_path, "Session Dt-16-Aug-26")
+        final = session.with_name("Session Dt-16-Aug-26 Dur-1m5s")
+        source = tmp_path / "clip.mov"
+        source.write_bytes(b"clip")
+        plan = {
+            "title": "Session", "mode": "copy", "verify": "size", "total_bytes": 4,
+            "targets": [{
+                "role": "prores", "session_path": str(final),
+                "staging_path": str(session), "rename_from": session.name,
+                "rename_to": final.name, "items": [{
+                    "src": str(source), "dst": str(session / "Clips for Insert" / "Cam-01" / "clip.mov"),
+                    "final_dst": str(final / "Clips for Insert" / "Cam-01" / "clip.mov"),
+                    "size": 4, "kind": "clip", "cam": 1, "original_name": "clip.mov",
+                    "status": "pending", "message": "",
+                }],
+            }],
+        }
+        request_id = 987654
+        server._CANCELLED.add(request_id)
+        try:
+            result = server.m_execute_plan({"plan": plan, "write_manifest": True}, request_id)
+        finally:
+            server._CANCELLED.discard(request_id)
+
+        assert result["cancelled"]
+        assert not final.exists(), "a manifest must not create the completed-looking folder"
+        assert (session / "_manifest").is_dir()
+
+        resumed = server.m_execute_plan({"plan": plan, "write_manifest": True}, request_id + 1)
+        assert not resumed["cancelled"] and not resumed["failed"]
+        assert final.is_dir() and not session.exists()
+        assert (final / "Clips for Insert" / "Cam-01" / "clip.mov").is_file()
+
     @needs_ffmpeg
     def test_a_clip_already_in_its_cam_folder_is_not_work(self, tmp_path):
         session = self._house(tmp_path, "S Dt-16-Aug-26")
@@ -570,6 +682,11 @@ class TestStructureTemplate:
         out = Path(sources.extract_zip(zpath, tmp_path / "out"))
         assert not (tmp_path / "escaped.txt").exists()
         assert (out / "fine" / "ok.txt").exists()
+
+    @pytest.mark.parametrize("name", [r"..\escaped.txt", r"C:\escaped.txt",
+                                       "/absolute/escaped.txt"])
+    def test_windows_and_posix_zip_escapes_are_refused(self, name):
+        assert sources._safe_member(name) is False
 
 
 class TestPlanFromTemplate:
@@ -948,6 +1065,17 @@ class TestCameraCards:
         (second / "extra.MP4").write_bytes(b"x")
         assert self._find(tmp_path, monkeypatch)["cards"][0]["file_count"] == 3
 
+    def test_volume_label_identifies_a_windows_drive_root(self, tmp_path, monkeypatch):
+        """A Windows root (E:\\) has no Path.name; its volume label names the card."""
+        root = self._mount(tmp_path, "drive-root", "0006")
+        monkeypatch.setattr(sources, "list_volumes", lambda: [
+            {"path": str(root), "label": "CanonA_0006"}
+        ])
+        result = sources.find_camera_cards()
+        assert result["card_count"] == 1
+        assert result["cards"][0]["label"] == "CanonA_0006"
+        assert result["cards"][0]["suggested_cam"] == 1
+
 
 class TestMasterClipNaming:
     """Masters are renamed after the folder; the folder's Dur- is their total."""
@@ -1095,7 +1223,7 @@ class TestCustomCamNames:
         t = plan["targets"][0]
         assert "Clips for Insert/Cam-02 Wide" in t["ensure_dirs"]
         clip = next(i for i in t["items"] if i["kind"] == "clip")
-        assert "/Cam-02 Wide/" in clip["final_dst"]
+        assert Path(clip["final_dst"]).parent.name == "Cam-02 Wide"
 
     @needs_ffmpeg
     def test_default_name_when_none_given(self, tmp_path):
@@ -1109,7 +1237,7 @@ class TestCustomCamNames:
             "masters": [str(drive / "M.MOV")],
             "cams": {"1": [str(card / "CLIP.MP4")]}}]})
         clip = next(i for i in plan["targets"][0]["items"] if i["kind"] == "clip")
-        assert "/Cam-01/" in clip["final_dst"]
+        assert Path(clip["final_dst"]).parent.name == "Cam-01"
 
 
 class TestPostCopyCardSwap:
@@ -1159,7 +1287,38 @@ class TestPostCopyCardSwap:
             "dest_root": str(tmp_path / "DEST"), "session_source": str(session),
             "masters": [], "cams": {"2": [str(tmp_path / "CARD_B" / "B1.MP4")]}}]})["targets"][0]
         clip = next(i for i in t["items"] if i["kind"] == "clip")
-        assert "/Cam-02/B1.MP4" in clip["final_dst"]
+        assert Path(clip["final_dst"]).parent.name == "Cam-02"
+        assert Path(clip["final_dst"]).name == "B1.MP4"
+
+    @needs_ffmpeg
+    def test_reinserted_card_clip_is_not_recopied_as_duplicate(self, tmp_path):
+        # A1.MP4 is already filed in Cam-01. Re-inserting the same card (or the
+        # folder's own clip being re-selected) must NOT copy a "A1 (2).MP4".
+        session = self._filed_session(tmp_path)
+        card_a1 = tmp_path / "CARD_A" / "A1.MP4"
+        card_a1.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(session / "Clips for Insert" / "Cam-01" / "A1.MP4", card_a1)
+        make_clip(tmp_path / "CARD_A" / "A2.MP4", 4)   # genuinely new clip on the card
+        t = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(tmp_path / "SSD"),
+            "dest_root": str(tmp_path / "DEST"), "session_source": str(session),
+            "masters": [], "cams": {"1": [str(card_a1), str(tmp_path / "CARD_A" / "A2.MP4")]}}]})["targets"][0]
+        names = sorted(Path(i["final_dst"]).name for i in t["items"] if i["kind"] == "clip")
+        assert names == ["A2.MP4"], "only the new clip is planned; the filed one is kept as-is"
+        assert not any("(2)" in n for n in names)
+
+    @needs_ffmpeg
+    def test_operator_rename_renames_the_folder_and_keeps_dur(self, tmp_path):
+        session = self._filed_session(tmp_path)
+        make_clip(tmp_path / "CARD_B" / "B1.MP4", 6)
+        t = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(tmp_path / "SSD"),
+            "dest_root": str(tmp_path / "DEST"), "session_source": str(session),
+            "session_rename": "Renamed Session Dt-20-Aug-26",
+            "masters": [], "cams": {"2": [str(tmp_path / "CARD_B" / "B1.MP4")]}}]})["targets"][0]
+        assert t["session_folder"] == "Renamed Session Dt-20-Aug-26 Dur-1m0s"
+        assert t["rename_from"] == "S Dt-20-Aug-26 Dur-1m0s"
+        assert t["rename_to"] == "Renamed Session Dt-20-Aug-26 Dur-1m0s"
 
 
 class TestExistingCamsReported:

@@ -48,14 +48,17 @@ def write_manifest(session_path: str | Path, plan: dict, result: dict,
 
     rows = []
     for item in result.get("items", []):
-        if not str(item.get("dst", "")).startswith(str(session)):
+        item_path = Path(item.get("dst", ""))
+        try:
+            relative = item_path.relative_to(session)
+        except ValueError:
             continue
         rec = {
             "kind": item.get("kind"),
             "cam": item.get("cam"),
             "original_name": item.get("original_name"),
             "final_name": Path(item["dst"]).name,
-            "relative_path": str(Path(item["dst"]).relative_to(session)),
+            "relative_path": str(relative),
             "size": item.get("size"),
             "duration_seconds": item.get("duration"),
             "duration_label": naming.fmt_duration(item.get("duration")),

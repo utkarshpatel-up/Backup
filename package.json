@@ -5,7 +5,8 @@
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "bundle:python": "python3 scripts/build_python.py",
+    "test:renderer": "node --test tests/*.test.js",
+    "bundle:python": "node scripts/build-python.js",
     "dist": "npm run bundle:python && electron-builder",
     "dist:mac": "npm run bundle:python && electron-builder --mac",
     "dist:win": "npm run bundle:python && electron-builder --win"

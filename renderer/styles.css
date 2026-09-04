@@ -152,6 +152,8 @@ th {
 td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--panel-2); }
+tbody tr.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+tbody tr.sel:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .scroll { max-height: 460px; overflow-y: auto; margin: 0 -18px -16px;
           padding: 0 18px; border-radius: 0 0 var(--radius) var(--radius); }

@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass, asdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .probe import JUNK_NAMES, VIDEO_EXTS, is_junk
 
@@ -60,24 +60,28 @@ def _windows_volumes() -> list[Volume]:
     import ctypes
 
     out: list[Volume] = []
-    bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+    kernel32 = ctypes.windll.kernel32
+    bitmask = kernel32.GetLogicalDrives()
     DRIVE_REMOVABLE, DRIVE_FIXED = 2, 3
+    system_drive = os.environ.get("SystemDrive", "C:").rstrip("\\/").upper()
     for i, letter in enumerate(string.ascii_uppercase):
         if not bitmask & (1 << i):
             continue
         root = f"{letter}:\\"
-        dtype = ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root))
+        dtype = kernel32.GetDriveTypeW(ctypes.c_wchar_p(root))
         if dtype not in (DRIVE_REMOVABLE, DRIVE_FIXED):
             continue
-        if letter == "C":
+        if f"{letter}:" == system_drive:
             continue                      # system drive is not a card or SSD
         name_buf = ctypes.create_unicode_buffer(1024)
         try:
-            ctypes.windll.kernel32.GetVolumeInformationW(
-                ctypes.c_wchar_p(root), name_buf, ctypes.sizeof(name_buf),
+            ok = kernel32.GetVolumeInformationW(
+                ctypes.c_wchar_p(root), name_buf, len(name_buf),
                 None, None, None, None, 0)
+            if not ok:
+                name_buf.value = ""
         except OSError:
-            pass
+            name_buf.value = ""
         total, free = _usage(root)
         out.append(Volume(path=root, label=name_buf.value or root,
                           total_bytes=total, free_bytes=free,
@@ -196,9 +200,16 @@ def _zip_mtime(info: zipfile.ZipInfo) -> float:
 
 
 def _safe_member(name: str) -> bool:
-    """Reject absolute paths and ../ escapes before extracting anything."""
-    p = Path(name)
-    return not p.is_absolute() and ".." not in p.parts
+    """Reject absolute paths and ../ escapes before extracting anything.
+
+    Check both path dialects. A zip made on Unix can still contain a malicious
+    Windows path such as ``..\\file`` or ``C:\\file`` and vice versa.
+    """
+    posix = PurePosixPath(name)
+    windows = PureWindowsPath(name)
+    return (not posix.is_absolute() and ".." not in posix.parts
+            and not windows.is_absolute() and not windows.drive
+            and ".." not in windows.parts)
 
 
 def extract_zip(zip_path: str | Path, dest: str | Path | None = None,
@@ -342,7 +353,9 @@ def find_camera_cards(layouts: list[dict] | None = None) -> dict:
 
     for vol in list_volumes():
         vol_path = Path(vol["path"])
-        name = vol_path.name
+        # Path("E:\\").name is empty on Windows; the filesystem label carries
+        # the CanonA/CanonB identifier used to recognise and assign a card.
+        name = vol.get("label") or vol_path.name or vol["path"]
         for layout in layouts:
             if not name.lower().startswith(layout["volume_prefix"].lower()):
                 continue

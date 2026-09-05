@@ -86,15 +86,27 @@ def m_classify(p, req_id):
             "assignment": probe.assign_roles(reports)}
 
 
-def m_detect_structure(p, _id):
-    """Find the session folder a source already carries, and what it needs."""
-    d = structure.detect(p["root"]).to_dict()
+def _detected_payload(detected):
+    """Add GUI conveniences to one structure-detection result."""
+    d = detected.to_dict()
     master = structure.pick_master(d)
     d["suggested_master"] = master
     d["rename"] = structure.planned_rename(
         d, master.get("duration") if master else None)
     d["unfiled"] = structure.unfiled_clips(d, master.get("path") if master else None)
     return d
+
+
+def m_detect_structure(p, _id):
+    """Find one session folder a source carries, and what it needs."""
+    return _detected_payload(structure.detect(
+        p["root"], preferred_session=p.get("session_path")))
+
+
+def m_detect_structures(p, _id):
+    """Return every selectable session in an imported structure."""
+    sessions = [_detected_payload(d) for d in structure.detect_all(p["root"])]
+    return {"root": p["root"], "count": len(sessions), "sessions": sessions}
 
 
 def m_scan(p, req_id):

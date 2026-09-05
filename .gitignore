@@ -1,8 +1,10 @@
 node_modules/
 .venv/
 .venv-win/
+.venv-mac/
 build/
 dist/
+dist-*/
 dist-python/
 __pycache__/
 *.pyc

@@ -4,6 +4,8 @@
 
 const state = {
   step: 0,
+  backupType: 'formal', // formal = mixer masters; informal = camera recordings only
+  informalDest: '',    // one explicit output; camera cards are imported later on Page 3
   engine: { ready: false, info: null, error: null },
   volumes: [],
   sources: [],          // {path, label, kind, role, report}
@@ -11,6 +13,7 @@ const state = {
   scans: {},            // sourcePath -> {files, suggestion}
   detected: {},         // sourcePath -> the session folder found on it
   template: null,       // structure + name imported from a zip/folder of empty folders
+  templates: [],        // every session offered by the imported structure
   extraFiles: {},       // sourcePath -> files the operator picked by hand
   byDate: null,         // last-modified breakdown of the loaded footage
   activeDay: null,      // the day last bulk-selected, for highlighting only
@@ -26,6 +29,11 @@ const state = {
   camCount: 3,
   selection: [],        // paths ticked for a batch assign (shift/ctrl on the Cameras page)
   lastPicked: null,     // anchor path for a shift-click range select
+  cameraFilterQuery: '',
+  cameraFilterCam: 'all',
+  cameraFilterIdentity: 'all',
+  cameraSort: 'camera-time',
+  skipExistingBySize: true,
   renameBase: null,     // operator's replacement for the session folder's base name
   jobNameOverride: null,// operator's replacement for an imported template's job folder
   plan: null,
@@ -41,7 +49,7 @@ const STEPS = [
   { key: 'sources', label: 'Sources', title: 'Sources',
     hint: 'Import the structure zip, then add the drives holding the footage and set where each one writes.' },
   { key: 'session', label: 'Folder', title: 'Session folder',
-    hint: 'Edit the job, session and camera-folder structure, then select each drive\'s master.' },
+    hint: 'Edit the job and session folder names, then select each drive\'s master.' },
   { key: 'cameras', label: 'Cameras', title: 'Camera assignment',
     hint: 'Choose which clip belongs to which cam. Selected clips are copied to both SSDs.' },
   { key: 'copy', label: 'Copy', title: 'Review and copy',
@@ -56,6 +64,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const selectionRules = window.VIngestSelection;
+const isInformal = () => state.backupType === 'informal';
 
 /** Filesystem identity for selection purposes (Windows paths are case-insensitive). */
 const pathKey = (path) => selectionRules.pathKey(path, window.api.platform);
@@ -154,9 +163,15 @@ async function call(method, params = {}, opts = {}) {
 function stepReady(i) {
   switch (i) {
     case 0: return true;
-    case 1: return footageSources().length > 0;
-    case 2: return !!detection() && chosenMasters().length > 0;
-    case 3: return chosenMasters().length > 0;
+    case 1: return isInformal()
+      ? selectionRules.informalSetupReady(state.template, state.informalDest)
+      : footageSources().length > 0;
+    case 2: return isInformal()
+      ? selectionRules.informalSetupReady(state.template, state.informalDest)
+      : !!detection() && chosenMasters().length > 0;
+    case 3: return isInformal()
+      ? selected(primarySource()).length > 0
+      : chosenMasters().length > 0;
     case 4: return true;
     default: return false;
   }
@@ -168,6 +183,14 @@ function footageSources() {
 }
 
 function primarySource() {
+  if (isInformal()) {
+    if (!state.informalDest) return null;
+    // Informal footage is brought in from mounted cards on Page 3. This logical
+    // source gives that shared card pool a stable state key and plan destination
+    // without making the operator select each SD card on Page 1.
+    return { path: state.informalDest, dest: state.informalDest,
+             label: 'Mounted camera cards', kind: 'cards', role: 'informal' };
+  }
   const f = footageSources();
   // Cams are assigned once and copied to both destinations. Prefer the
   // drive the operator marked, then one that has masters picked, then by codec.
@@ -219,8 +242,32 @@ function filePool(src) {
  * clips enter this pool only through Import card, Add files, or Add folder.
  */
 function cameraFiles(src) {
+  const pool = isInformal()
+    ? filePool(src).map((file) => ({ ...file, manual: true }))
+    : filePool(src);
+  const filed = new Set();
+  const detected = src && state.detected[src.path];
+  if (isInformal() && detected) {
+    Object.values(detected.cams || {}).flat().forEach((path) => filed.add(pathKey(path)));
+  }
+  // A whole-drive informal scan may see an earlier copy of this same imported
+  // session. Never offer anything already inside the destination we are about
+  // to create/complete as fresh camera footage.
+  let informalOutput = '';
+  if (isInformal() && src && state.template) {
+    const t = state.template;
+    const job = state.jobNameOverride != null ? state.jobNameOverride : (t.job_name || '');
+    const session = stripClipsToken(state.renameBase || t.session_name || '')
+      .replace(/\s*\bDur-(?=\d)(?:\d+h)?(?:\d+m)?(?:\d+s)?\b/i, '').trim();
+    informalOutput = pathKey([destOf(src), job, session].filter(Boolean).join('/'));
+  }
   return selectionRules.cameraFiles(
-    filePool(src), [...masterPaths()], window.api.platform);
+    pool, [...masterPaths()], window.api.platform)
+    .filter((file) => {
+      const key = pathKey(file.path);
+      return !filed.has(key) && (!informalOutput
+        || (key !== informalOutput && !key.startsWith(`${informalOutput}/`)));
+    });
 }
 
 /** Clips loaded but not selected for this session. */
@@ -282,13 +329,7 @@ function filedCams() {
  */
 function nextFreeCams(count = 1, alsoUsed = []) {
   const filled = new Set([...filedCams(), ...alsoUsed]);
-  const available = [];
-  let n = 1;
-  while (available.length < count) {
-    if (!filled.has(n)) available.push(n);
-    n += 1;
-  }
-  return available;
+  return selectionRules.lowestAvailableCams(count, [...filled]);
 }
 
 /** The lowest cam number that is not already filled from an earlier pass. */
@@ -298,7 +339,8 @@ function firstEmptyCam() {
 
 /** Every path that is visibly assignable on the Cameras page. */
 function livePaths() {
-  return new Set(footageSources().flatMap((f) => cameraFiles(f)).map((f) => pathKey(f.path)));
+  const sources = isInformal() ? [primarySource()].filter(Boolean) : footageSources();
+  return new Set(sources.flatMap((f) => cameraFiles(f)).map((f) => pathKey(f.path)));
 }
 
 /**
@@ -425,7 +467,9 @@ function nameStatesOtherDate(file, day) {
 
 /** Pre-select each drive's root/date masters, leaving manual picks alone. */
 function suggestMasters() {
-  if (state.mastersFiled) return;    // the master is already filed; do not re-detect
+  // Several same-day sessions cannot be distinguished safely by date/length.
+  // In that case the operator explicitly chooses each selected session's master.
+  if (isInformal() || state.mastersFiled || state.templates.length > 1) return;
   for (const f of footageSources()) {
     const already = state.masters[f.path];
     if (Array.isArray(already) && already.length) continue;   // operator has chosen
@@ -455,6 +499,7 @@ function masterTotalFor(src) {
  * cams are assigned against; the fallback keeps an auto-detected master working.
  */
 function chosenMasters() {
+  if (isInformal()) return [];
   const primary = mastersFor(primarySource());
   if (primary.length) return primary;
   const d = detection();
@@ -472,6 +517,7 @@ function isMasterPath(path) {
 
 /** Paths of every master, for excluding them from the cam clip list. */
 function masterPaths() {
+  if (isInformal()) return new Set();
   return new Set(footageSources().flatMap((src) => mastersFor(src).map((f) => f.path)));
 }
 
@@ -482,6 +528,7 @@ function masterTotalSeconds() {
 }
 
 function secondarySource() {
+  if (isInformal()) return null;
   const p = primarySource();
   return footageSources().find((s) => s !== p && (s.role === 'prores' || s.role === 'h265'));
 }
@@ -491,11 +538,69 @@ function secondarySource() {
 function renderSources() {
   const c = [];
 
+  c.push(`<div class="card">
+    <h3>Backup type</h3>
+    <p class="hint">Choose this first. Formal keeps the video-mixer master workflow;
+      Informal is for camera-only recordings and renames every filed camera clip.</p>
+    <div class="grid2">
+      <button class="source-card ${!isInformal() ? 'selected' : ''}" data-backup-type="formal">
+        <div class="icon">🎛️</div><div class="body" style="text-align:left">
+          <div class="name">Formal</div>
+          <div class="hint" style="margin:4px 0 0">Mixer master plus supporting cameras · ProRes/H.265 roles</div>
+        </div>
+      </button>
+      <button class="source-card ${isInformal() ? 'selected' : ''}" data-backup-type="informal">
+        <div class="icon">🎥</div><div class="body" style="text-align:left">
+          <div class="name">Informal</div>
+          <div class="hint" style="margin:4px 0 0">Individual cameras only · no master or codec roles · clips renamed</div>
+        </div>
+      </button>
+    </div>
+  </div>`);
+
   if (state.engine.error) {
     c.push(`<div class="note err"><b>Engine problem.</b> ${esc(state.engine.error)}</div>`);
   } else if (state.engine.info && !state.engine.info.ffprobe) {
     c.push(`<div class="note err"><b>ffprobe not found.</b> Durations and codec detection
       need it. Install ffmpeg, then press “Locate ffprobe”.</div>`);
+  }
+
+  if (isInformal()) {
+    const structure = state.sources.find((source) => source.role === 'template');
+    c.push(`<div class="card">
+      <h3>Informal backup setup</h3>
+      <p class="hint">Import the folder structure and choose where the finished session is
+        written. Camera SD cards are detected and assigned on the Cameras page.</p>
+      <div class="row" style="margin-bottom:12px">
+        <button class="sm ${state.template ? '' : 'primary'}" id="btnAddZip">
+          ${state.template ? 'Replace structure zip…' : 'Import structure zip…'}</button>
+        ${structure ? '<button class="sm ghost" id="btnRemoveTemplate">Remove structure</button>' : ''}
+      </div>
+      ${structure ? `<div class="source-card selected">
+        <div class="icon">🗜️</div>
+        <div class="body"><div class="name">${esc(structure.label)}</div>
+          <div class="path">${esc(structure.path)}</div>
+          <div class="hint" style="margin:4px 0 0">${state.templates.length} session${
+            state.templates.length === 1 ? '' : 's'} available on the Folder page</div>
+        </div><span class="badge">Structure</span>
+      </div>` : `<div class="empty" style="margin-bottom:14px">
+        <div class="big">🗜️</div><div>No structure ZIP imported.</div>
+      </div>`}
+      <div class="field" style="margin-top:14px">
+        <span>Output directory</span>
+        <div class="row">
+          <span class="mono" style="flex:1;overflow:hidden;text-overflow:ellipsis;
+            white-space:nowrap;color:${state.informalDest ? 'var(--text)' : 'var(--muted)'}">
+            ${state.informalDest ? esc(state.informalDest) : 'Choose where the arranged session will be written'}</span>
+          <button class="sm ${state.informalDest ? '' : 'primary'}" id="btnInformalDest">Choose…</button>
+          ${state.informalDest ? '<button class="sm ghost" id="btnInformalDestClear">Reset</button>' : ''}
+        </div>
+      </div>
+      ${state.template && state.informalDest
+        ? '<div class="note ok" style="margin-top:14px"><b>Ready.</b> Continue to choose the session; import the SD cards on Page 3.</div>'
+        : ''}
+    </div>`);
+    return c.join('');
   }
 
   c.push(`<div class="card">
@@ -508,7 +613,7 @@ function renderSources() {
         ${state.template ? 'Replace structure zip…' : 'Import structure zip…'}</button>
       <div class="spacer"></div>
       <button class="sm primary" id="btnClassify"
-        ${state.sources.length ? '' : 'disabled'}>Probe codecs &amp; assign roles</button>
+          ${state.sources.length ? '' : 'disabled'}>Probe codecs &amp; assign roles</button>
     </div>`);
 
   if (!state.volumes.length && !state.sources.length) {
@@ -569,10 +674,10 @@ function renderSources() {
       </div>
       ${s.role === 'template' ? '' : `
       <div class="row" style="margin:-4px 0 10px 48px">
-        <span class="hint" style="margin:0">Destination</span>
+        <span class="hint" style="margin:0">Output destination</span>
         <span class="mono" style="flex:1;overflow:hidden;text-overflow:ellipsis;
           white-space:nowrap;color:${s.dest ? 'var(--text)' : 'var(--muted)'}">
-          ${esc(s.dest || s.path)}${s.dest ? '' : '  (the source drive itself)'}</span>
+          ${esc(s.dest || s.path)}${s.dest ? '' : '  (same as source; optional)'}</span>
         <button class="sm" data-dest="${esc(s.path)}">Choose…</button>
         ${s.dest ? `<button class="sm ghost" data-dest-clear="${esc(s.path)}">Reset</button>` : ''}
       </div>`}`);
@@ -589,6 +694,29 @@ function renderSources() {
 }
 
 function wireSources() {
+  document.querySelectorAll('[data-backup-type]').forEach((button) =>
+    button.addEventListener('click', () => {
+      const next = button.dataset.backupType;
+      if (next === state.backupType) return;
+      state.backupType = next;
+      state.assignment = null;
+      state.masters = {};
+      state.masterSource = null;
+      state.mastersFiled = false;
+      state.filedSessions = {};
+      state.completedCams = new Set();
+      state.assign = {};
+      state.selection = [];
+      state.cardCams = {};
+      state.plan = null;
+      state.runResult = null;
+      if (isInformal()) {
+        state.sources.forEach((source) => {
+          if (source.role !== 'template') source.role = 'other';
+        });
+      }
+      render();
+    }));
   $('btnRescan')?.addEventListener('click', rescanVolumes);
   $('btnAddFolder')?.addEventListener('click', async () => {
     const p = await window.api.pickFolder('Choose a footage folder');
@@ -596,12 +724,36 @@ function wireSources() {
   });
   $('btnAddZip')?.addEventListener('click', addZipSource);
   $('btnClassify')?.addEventListener('click', classifySources);
+  $('btnInformalDest')?.addEventListener('click', async () => {
+    const chosen = await window.api.pickFolder('Choose the informal backup output directory');
+    if (!chosen) return;
+    state.informalDest = chosen;
+    state.plan = null;
+    state.runResult = null;
+    render();
+  });
+  $('btnInformalDestClear')?.addEventListener('click', () => {
+    state.informalDest = '';
+    state.plan = null;
+    state.runResult = null;
+    render();
+  });
+  $('btnRemoveTemplate')?.addEventListener('click', () => {
+    state.sources = state.sources.filter((source) => source.role !== 'template');
+    state.template = null;
+    state.templates = [];
+    state.plan = null;
+    render();
+  });
 
   document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
     // The button toggles: "Use as source" adds it, "Added" takes it back off.
     const existing = state.sources.find((s) => s.path === b.dataset.add);
     if (existing) {
-      if (existing.role === 'template') state.template = null;
+      if (existing.role === 'template') {
+        state.template = null;
+        state.templates = [];
+      }
       state.sources = state.sources.filter((s) => s.path !== b.dataset.add);
       state.plan = null;
       render();
@@ -611,7 +763,10 @@ function wireSources() {
   }));
   document.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', () => {
     const gone = state.sources.find((s) => s.path === b.dataset.remove);
-    if (gone && gone.role === 'template') state.template = null;
+    if (gone && gone.role === 'template') {
+      state.template = null;
+      state.templates = [];
+    }
     state.sources = state.sources.filter((s) => s.path !== b.dataset.remove);
     state.plan = null;
     render();
@@ -638,7 +793,11 @@ function wireSources() {
     s.role = b.dataset.role;
     state.plan = null;
     if (s.role === 'template') loadTemplate(s);
-    else if (was === 'template') { state.template = null; render(); }
+    else if (was === 'template') {
+      state.template = null;
+      state.templates = [];
+      render();
+    }
     else render();
   }));
 }
@@ -675,6 +834,11 @@ async function addZipSource() {
     if (!ok) return;
     const r = await call('extract_zip', { path: zip },
       { label: `Extracting ${info.label}` });
+    // “Replace” means exactly one active structure source. Keep footage drives,
+    // but remove the prior extracted template before registering the new one.
+    state.sources = state.sources.filter((source) => source.role !== 'template');
+    state.template = null;
+    state.templates = [];
     // A structure zip is always the template, whether or not anything is in it.
     addSource(r.path, info.label, 'zip');
     const added = state.sources.find((x) => x.path === r.path);
@@ -688,26 +852,64 @@ async function addZipSource() {
 /** Read the session folder name and cam layout out of a structure source. */
 async function loadTemplate(src) {
   try {
-    const d = await call('detect_structure', { root: src.path },
+    const found = await call('detect_structures', { root: src.path },
       { label: `Reading ${src.label}` });
-    if (!d.session_path) {
-      toast(`No session folder found in ${src.label}: ${d.reason}`, 'err');
+    if (!found.sessions.length) {
+      toast(`No session folder found in ${src.label}.`, 'err');
       src.role = 'other';
       state.template = null;
+      state.templates = [];
     } else {
-      state.template = d;
-      state.renameBase = null;
-      state.jobNameOverride = null;
-      state.camNames = {};
-      state.camCount = importedCamCount(d);
-      toast(`Structure: ${d.session_name.slice(0, 40)}…`, 'ok');
+      state.templates = found.sessions;
+      await activateTemplateSession(0, false);
+      toast(found.sessions.length > 1
+        ? `${found.sessions.length} sessions found — choose one on the Folder page.`
+        : `Structure: ${found.sessions[0].session_name.slice(0, 40)}…`, 'ok');
     }
     state.plan = null;
     render();
   } catch (e) { toast(e.message, 'err'); }
 }
 
+/** Make one imported session the sole target and discard state from the prior one. */
+async function activateTemplateSession(index, announce = true) {
+  const next = state.templates[Number(index)];
+  if (!next) return;
+  state.template = next;
+  state.renameBase = null;
+  state.jobNameOverride = null;
+  state.camNames = {};
+  state.camCount = selectionRules.importedCamCount(next);
+  state.masters = {};
+  state.masterSource = null;
+  state.mastersFiled = false;
+  state.filedSessions = {};
+  state.completedCams = new Set();
+  state.assign = {};
+  state.selection = [];
+  state.lastPicked = null;
+  state.cameraFilterQuery = '';
+  state.cameraFilterCam = 'all';
+  state.cameraFilterIdentity = 'all';
+  state.cameraSort = 'camera-time';
+  state.skipExistingBySize = true;
+  state.cardCams = {};
+  state.activeDay = null;
+  state.byDate = null;
+  state.plan = null;
+  state.runResult = null;
+  state.pairVerify = null;
+  const src = primarySource();
+  if (src && allFiles(src).length) {
+    await applyDateSuggestion(src);
+    ensureDefaultAssignments();
+  }
+  if (announce) toast(`Selected session: ${next.session_name}`, 'ok');
+  render();
+}
+
 async function classifySources() {
+  if (isInformal()) return;
   try {
     const r = await call('classify', { roots: footageSources().map((s) => s.path) },
       { label: 'Probing codecs' });
@@ -769,15 +971,16 @@ function renderSession() {
 
   return `
   <div class="card">
-    <h3>Edit folder structure</h3>
+    <h3>Edit session folder</h3>
     <p class="hint">${esc(d.reason)} The current name is read from disk; edit the field
       below if the session folder should be renamed.</p>
     <div class="preview-name">
       ${d.job_name ? `📁 ${esc(d.job_name)}<br>` : ''}
       <span class="${d.job_name ? 'indent1' : ''}" style="display:inline-block">📁
-        ${esc(base)} <b>Dur-${esc(durLabel)}</b></span>
-      <div class="indent2" style="color:var(--muted)">📁 Clips for Insert</div>
-      ${cams.map((n) => `<div class="indent3" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
+        ${esc(base)}${isInformal() ? '' : ` <b>Dur-${esc(durLabel)}</b>`}</span>
+      ${isInformal() ? ''
+        : '<div class="indent2" style="color:var(--muted)">📁 Clips for Insert</div>'}
+      ${cams.map((n) => `<div class="${isInformal() ? 'indent2' : 'indent3'}" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
     </div>
     <div class="row" style="margin:10px 0 0;align-items:center;gap:8px">
       <label class="field" style="flex:1;max-width:520px;margin:0"><span>Edit session folder name${
@@ -786,28 +989,13 @@ function renderSession() {
           placeholder="${esc(diskBase)}" /></label>
       ${renamed ? '<button class="sm ghost" id="btnRenameReset">Reset to disk name</button>' : ''}
     </div>
-    <div style="margin-top:14px">
-      <b>Camera folders</b>
-      <p class="hint" style="margin:3px 0 8px">Rename, add, or remove folders here. These are
-        the exact names that will be created below “Clips for Insert”.</p>
-      <div class="row" style="align-items:flex-end">
-        ${cams.map((n) => `<label class="field" style="max-width:190px;margin:0">
-          <span>Camera ${n} folder</span>
-          <input type="text" data-structure-camname="${n}" value="${esc(camLabel(n))}" />
-        </label>`).join('')}
-      </div>
-      <div class="row" style="margin-top:10px">
-        <button class="sm primary" id="btnStructureAddCam">Add camera folder</button>
-        <button class="sm" id="btnStructureRemoveCam" ${state.camCount <= 1 ? 'disabled' : ''}>
-          Remove ${esc(camLabel(state.camCount))}</button>
-      </div>
-    </div>
-    <p class="hint" style="margin:8px 0 0">
-      The bold <b>Dur-${esc(durLabel)}</b> is the only part the app adds. Edit the name above
+    <p class="hint" style="margin:8px 0 0">${isInformal()
+      ? 'No mixer master or Dur- calculation is used. Every camera clip is renamed from this event name after assignment.'
+      : `The bold <b>Dur-${esc(durLabel)}</b> is the only part the app adds. Edit the name above
       to rename the folder${renamed ? ` — it is renamed from <span class="mono">${esc(diskBase)}</span> on copy`
-        : '; leave it to keep the folder\'s existing name'}. The Dur-/Clips- tokens are kept for you.
-      Camera-folder names are edited above and can also be adjusted on the Cameras step.</p>
-    ${already ? `<div class="note ${unchanged ? 'ok' : 'warn'}" style="margin-top:10px">
+        : '; leave it to keep the folder\'s existing name'}. The Dur-/Clips- tokens are kept for you.`}
+      Camera folders are managed on the Cameras step.</p>
+    ${!isInformal() && already ? `<div class="note ${unchanged ? 'ok' : 'warn'}" style="margin-top:10px">
       ${unchanged
         ? `This folder already reads <b>Dur-${esc(fmtDurLike(d.current_dur, d.session_name))}</b> and matches the
            master, so its name will not change.`
@@ -820,7 +1008,7 @@ function renderSession() {
     </div>
   </div>
 
-  <div class="card">
+  ${isInformal() ? '' : `<div class="card">
     <h3>Master clip${masters.length > 1 ? 's' : ''}</h3>
     <p class="hint">The Dur- token is read from ${masters.length > 1 ? 'these files' : 'this file'}.
       Tick more than one if the session was recorded in several — the folder's Dur- becomes
@@ -844,22 +1032,26 @@ function renderSession() {
       : `<div class="note err">No video file sits directly in the session folder, so
          there is nothing to read a duration from. Put the program recording there,
          or choose a different folder.</div>`}
-  </div>
+  </div>`}
 
   <div class="card">
     <h3>Filing the clips</h3>
-    <p class="hint">The master is <b>moved</b> into the folder — it is already on this drive,
-      so it just relocates. Camera clips are <b>copied</b> to both SSDs. Nothing is ever
-      deleted; clear the camera cards yourself when you are ready.</p>
+    <p class="hint">${isInformal()
+      ? `There is no mixer master. Assigned clips are arranged into their camera folders and renamed
+         <b>Cam-NN Event Name Clip-001.ext</b> in modified-time order. On the same drive they are
+         relocated; to another drive they are copied.`
+      : `The master is <b>moved</b> into the folder — it is already on this drive,
+         so it just relocates. Camera clips are <b>copied</b> to both SSDs. Nothing is ever
+         deleted; clear the camera cards yourself when you are ready.`}</p>
     <label class="field" style="max-width:340px"><span>Verification</span>
       <select id="fVerify">
         <option value="size">Size check (fast)</option>
         <option value="hash">Checksum every file (bit-exact, slower)</option>
         <option value="none">None</option>
       </select></label>
-    <p class="hint" style="margin:0">Moving is the usual choice when the clips are already
+    ${isInformal() ? '' : `<p class="hint" style="margin:0">Moving is the usual choice when the clips are already
       on the right drive and only need filing — copying leaves a second copy behind at the
-      folder's top level.</p>
+      folder's top level.</p>`}
   </div>`;
 }
 
@@ -870,23 +1062,9 @@ function renderSession() {
  * — one camera, all clips to Cam-01 — needs a click per clip for no reason.
  * Skip stays available, it is just no longer the default.
  */
-/**
- * Split clips into likely cameras by their recording signature.
- *
- * Two bodies rarely agree on resolution, frame rate and codec all at once, so
- * that triple separates them. Everything matching lands in one group — which is
- * the right answer for a single-camera shoot.
- */
+/** Split clips by camera/card identity, with recording format as a fallback. */
 function camGroupsFromPool(files) {
-  const groups = new Map();
-  for (const f of files) {
-    const key = `${f.width}x${f.height}@${f.fps}/${f.video_codec}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(f);
-  }
-  return [...groups.values()]
-    .sort((a, b) => b.length - a.length)
-    .map((g) => g.sort((x, y) => (x.mtime || 0) - (y.mtime || 0)));
+  return selectionRules.cameraGroups(files, window.api.platform);
 }
 
 /** A cam's folder name: the custom name if set, else "Cam-NN". */
@@ -1026,33 +1204,41 @@ function renderDriveColumn(f) {
   </div>`;
 }
 
-function importedCamCount(template = state.template) {
-  return Math.max(3, ...((template && template.tree) || []).map((entry) => {
-    const match = /(?:^|\/)Cam-(\d+)(?:\/|$)/.exec(entry);
-    return match ? Number(match[1]) : 0;
-  }));
-}
-
 /** Preserve the imported tree while applying camera folders added/removed here. */
 function editedTemplateDirs(template) {
-  const dirs = (template.tree || []).filter((entry) => {
-    const match = /(?:^|\/)Cam-(\d+)(?:\/|$)/.exec(entry);
-    return !match || Number(match[1]) <= state.camCount;
-  });
-  const present = new Set(dirs.map((entry) => {
-    const match = /(?:^|\/)Cam-(\d+)$/.exec(entry);
-    return match ? Number(match[1]) : null;
-  }).filter((n) => n != null));
-  for (let n = 1; n <= state.camCount; n += 1) {
-    if (!present.has(n)) dirs.push(`Clips for Insert/Cam-${String(n).padStart(2, '0')}`);
-  }
-  return dirs;
+  return selectionRules.normalizedTemplateDirs(template, state.camCount, isInformal());
 }
 
 /** The editable camera-folder skeleton when completing an existing folder. */
 function cameraStructureDirs() {
   return Array.from({ length: state.camCount }, (_, index) =>
-    `Clips for Insert/Cam-${String(index + 1).padStart(2, '0')}`);
+    `${isInformal() ? '' : 'Clips for Insert/'}Cam-${String(index + 1).padStart(2, '0')}`);
+}
+
+/** All sessions carried by the structure ZIP; exactly one is active per plan. */
+function renderTemplateSessionChoices() {
+  const choices = state.templates.length ? state.templates : [state.template].filter(Boolean);
+  const current = pathKey((state.template && state.template.session_path) || '');
+  return `<div class="card">
+    <h3>Choose session from structure</h3>
+    <p class="hint">The structure contains ${choices.length} session${choices.length === 1 ? '' : 's'}.
+      Select the event that belongs to the footage you are backing up now. You can return and
+      choose another event later—the backup order does not matter.</p>
+    ${choices.map((choice, index) => {
+      const selected = pathKey(choice.session_path) === current;
+      const count = selectionRules.importedCamCount(choice, 0);
+      return `<label class="source-card ${selected ? 'selected' : ''}" style="cursor:pointer">
+        <input type="radio" name="template-session" data-template-session="${index}"
+          ${selected ? 'checked' : ''} style="width:auto;margin-top:3px" />
+        <div class="body">
+          <div class="name">${esc(choice.session_name)}</div>
+          <div class="path">${esc(choice.job_name || 'No job folder')}</div>
+          <div class="hint" style="margin:4px 0 0">${count} camera folder${count === 1 ? '' : 's'}
+            ${choice.session_date ? ` · ${esc(fmtDay(choice.session_date))}` : ''}</div>
+        </div>
+      </label>`;
+    }).join('')}
+  </div>`;
 }
 
 function renderTemplateFolder(src) {
@@ -1069,16 +1255,18 @@ function renderTemplateFolder(src) {
   const cams = Array.from({ length: state.camCount }, (_, index) => index + 1);
 
   return `
+  ${renderTemplateSessionChoices()}
   <div class="card">
-    <h3>Edit folder structure</h3>
-    <p class="hint">Edit the imported structure here before copying. The preview updates
+    <h3>Edit job and session folders</h3>
+    <p class="hint">Edit the imported job and session names here before copying. The preview updates
       after you press Enter or leave a field.</p>
     <div class="preview-name">
       ${jobName ? `📁 ${esc(jobName)}<br>` : ''}
       <span class="${jobName ? 'indent1' : ''}" style="display:inline-block">📁
-        ${esc(base)} <b>Dur-${esc(durLabel)}</b></span>
-      <div class="indent2" style="color:var(--muted)">📁 Clips for Insert</div>
-      ${cams.map((n) => `<div class="indent3" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
+        ${esc(base)}${isInformal() ? '' : ` <b>Dur-${esc(durLabel)}</b>`}</span>
+      ${isInformal() ? ''
+        : '<div class="indent2" style="color:var(--muted)">📁 Clips for Insert</div>'}
+      ${cams.map((n) => `<div class="${isInformal() ? 'indent2' : 'indent3'}" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
     </div>
     <div class="grid2" style="margin-top:12px">
       <label class="field"><span>Edit job folder${
@@ -1090,32 +1278,27 @@ function renderTemplateFolder(src) {
         <input type="text" id="fRename" value="${esc(base)}"
           placeholder="${esc(templateBase)}" /></label>
     </div>
-    <div class="row" style="margin-top:4px;align-items:flex-end">
-      ${cams.map((n) => `<label class="field" style="max-width:190px;margin:0"><span>Camera ${n} folder</span>
-          <input type="text" data-structure-camname="${n}" value="${esc(camLabel(n))}" /></label>`).join('')}
-    </div>
     <div class="row" style="margin-top:10px">
-      <button class="sm primary" id="btnStructureAddCam">Add camera folder</button>
-      <button class="sm" id="btnStructureRemoveCam" ${state.camCount <= 1 ? 'disabled' : ''}>
-        Remove ${esc(camLabel(state.camCount))}</button>
-      ${(renamed || jobRenamed || Object.keys(state.camNames).length
-          || state.camCount !== importedCamCount(t))
-        ? '<button class="sm ghost" id="btnStructureReset">Reset imported structure</button>' : ''}
+      ${(renamed || jobRenamed)
+        ? '<button class="sm ghost" id="btnFolderNamesReset">Reset folder names</button>' : ''}
     </div>
-    <p class="hint" style="margin:8px 0 0">The bold <b>Dur-${esc(durLabel)}</b> is the only
-      part the app adds${t.has_dur && dur != null
+    <p class="hint" style="margin:8px 0 0">${isInformal()
+      ? 'No mixer master or codec role is required. Camera clips will be renamed from the event name shown above.'
+      : `The bold <b>Dur-${esc(durLabel)}</b> is the only part the app adds${t.has_dur && dur != null
         ? (fmtDurLike(t.current_dur, t.session_name) === durLabel
             ? `, and it already matches what the structure came with`
             : `, replacing the <b>Dur-${esc(fmtDurLike(t.current_dur, t.session_name))}</b>
                placeholder the structure came with`)
-        : ''}. Empty camera folders are recreated with the names shown above.</p>
+        : ''}.`} Empty camera folders are recreated with the names shown above.</p>
     <div class="row" style="margin-top:12px">
-      ${footageSources().map((f) => `<span class="badge ${f.role}">${esc(f.label)}
-        → ${esc(destOf(f).split(/[\\/]/).pop() || destOf(f))}</span>`).join('')}
+      ${isInformal()
+        ? `<span class="badge informal">Output → ${esc(state.informalDest)}</span>`
+        : footageSources().map((f) => `<span class="badge ${f.role}">${esc(f.label)}
+          → ${esc(destOf(f).split(/[\\/]/).pop() || destOf(f))}</span>`).join('')}
     </div>
   </div>
 
-  <div class="card">
+  ${isInformal() ? '' : `<div class="card">
     <h3>Footage &amp; master clip</h3>
     <p class="hint">The structure carries no footage, so load it from each drive. The master is
       the program recording at the drive's root, dated ${esc(fmtDay(sessionDate()) || 'the session day')};
@@ -1125,13 +1308,17 @@ function renderTemplateFolder(src) {
       ${footageSources().map((f) => renderDriveColumn(f)).join('')}
     </div>
     ${dateSuggestion()}
-  </div>
+  </div>`}
 
   <div class="card">
     <h3>Filing the clips</h3>
-    <p class="hint">The master is <b>moved</b> into the folder — it is already on this drive,
-      so it just relocates. Camera clips are <b>copied</b> to both SSDs. Nothing is ever
-      deleted; clear the camera cards yourself when you are ready.</p>
+    <p class="hint">${isInformal()
+      ? `There is no mixer master. Assigned camera clips are arranged into their camera folders and renamed
+         <b>Cam-NN Event Name Clip-001.ext</b> in modified-time order. Clips are imported from
+         the mounted SD cards into the output directory.`
+      : `The master is <b>moved</b> into the folder — it is already on this drive,
+         so it just relocates. Camera clips are <b>copied</b> to both SSDs. Nothing is ever
+         deleted; clear the camera cards yourself when you are ready.`}</p>
     <label class="field" style="max-width:340px"><span>Verification</span>
       <select id="fVerify">
         <option value="size">Size check (fast)</option>
@@ -1170,7 +1357,7 @@ function sessionPreview() {
     `<span class="${jobLine ? 'indent1' : ''}" style="display:inline-block">📁 ` +
     `${esc(typed.replace(/\s*\bDur-(?:\d+h)?(?:\d+m)?\d+s\b/i, ''))}` +
     `${date && !hasOwnDate ? ` <b>Dt-${esc(formatDateToken(date))}</b>` : ''}` +
-    ` <b>Dur-${esc(durLabel)}</b></span>`;
+    `${isInformal() ? '' : ` <b>Dur-${esc(durLabel)}</b>`}</span>`;
 }
 
 /** Drop a 'Clips-02' token — the count is recomputed from the chosen masters. */
@@ -1204,6 +1391,10 @@ function formatDateToken(iso) {
 }
 
 function wireSession() {
+  document.querySelectorAll('[data-template-session]').forEach((radio) =>
+    radio.addEventListener('change', () => {
+      if (radio.checked) activateTemplateSession(Number(radio.dataset.templateSession));
+    }));
   $('btnDetect')?.addEventListener('click', () => detectStructure(primarySource()));
   $('btnRedetect')?.addEventListener('click', () => detectStructure(primarySource(), true));
   $('btnCreateMode')?.addEventListener('click', () => {
@@ -1246,38 +1437,9 @@ function wireSession() {
     });
   }
 
-  document.querySelectorAll('[data-structure-camname]').forEach((inp) => {
-    inp.addEventListener('change', () => {
-      const n = Number(inp.dataset.structureCamname);
-      const value = inp.value.trim();
-      if (value && value !== `Cam-${String(n).padStart(2, '0')}`) state.camNames[n] = value;
-      else delete state.camNames[n];
-      state.plan = null;
-      render();
-    });
-  });
-
-  $('btnStructureAddCam')?.addEventListener('click', () => {
-    state.camCount += 1;
-    state.plan = null;
-    render();
-  });
-  $('btnStructureRemoveCam')?.addEventListener('click', () => {
-    if (state.camCount <= 1) return;
-    const removed = state.camCount;
-    delete state.camNames[removed];
-    for (const path of Object.keys(state.assign)) {
-      if (state.assign[path] === removed) state.assign[path] = 'skip';
-    }
-    state.camCount -= 1;
-    state.plan = null;
-    render();
-  });
-  $('btnStructureReset')?.addEventListener('click', () => {
+  $('btnFolderNamesReset')?.addEventListener('click', () => {
     state.renameBase = null;
     state.jobNameOverride = null;
-    state.camNames = {};
-    state.camCount = importedCamCount();
     state.plan = null;
     render();
   });
@@ -1354,9 +1516,15 @@ async function importCameraCards() {
 
     // A card that is no longer mounted must not keep reserving a camera number.
     // Completed cameras remain protected independently by completedCams.
-    const mountedLabels = new Set((r.cards || []).map((card) => card.label));
-    for (const label of Object.keys(state.cardCams)) {
-      if (!mountedLabels.has(label)) delete state.cardCams[label];
+    const cardKey = (card) => selectionRules.cameraGroupKey({
+      name: (card.files && card.files[0]) || '',
+      path: (card.files && card.files[0]) || '',
+      card_volume: card.volume,
+      card_label: card.label,
+    }, window.api.platform);
+    const mountedKeys = new Set((r.cards || []).map(cardKey));
+    for (const key of Object.keys(state.cardCams)) {
+      if (!mountedKeys.has(key)) delete state.cardCams[key];
     }
 
     if (!r.card_count) {
@@ -1377,12 +1545,13 @@ async function importCameraCards() {
       return nextFreeCams(1, Object.values(state.cardCams))[0];
     };
     for (const c of r.cards) {
-      if (state.cardCams[c.label] == null) state.cardCams[c.label] = nextFreeCam();
+      const key = cardKey(c);
+      if (state.cardCams[key] == null) state.cardCams[key] = nextFreeCam();
     }
     const camByPath = new Map();
     const paths = [];
     for (const c of r.cards) {
-      const cam = state.cardCams[c.label];
+      const cam = state.cardCams[cardKey(c)];
       for (const f of c.files) { paths.push(f); camByPath.set(pathKey(f), cam); }
     }
     if (!paths.length) {
@@ -1415,7 +1584,7 @@ async function importCameraCards() {
     state.plan = null;
 
     toast(`Refreshed ${probed.count} clip(s) from ${r.card_count} mounted card(s) — `
-      + r.cards.map((c) => `${c.label} → ${camLabel(state.cardCams[c.label])}`)
+      + r.cards.map((c) => `${c.label} (${c.volume}) → ${camLabel(state.cardCams[cardKey(c)])}`)
           .join(', '), 'ok');
     render();
   } catch (e) { toast(e.message, 'err'); }
@@ -1467,7 +1636,8 @@ async function addFootage(kind, target = null) {
 async function applyDateSuggestion(_src) {
   // The breakdown spans every footage drive, so loading one drive does not
   // discard what another already contributed.
-  const all = footageSources().flatMap((f) => allFiles(f));
+  const sources = isInformal() ? [primarySource()].filter(Boolean) : footageSources();
+  const all = sources.flatMap((f) => allFiles(f));
   if (!all.length) { state.byDate = null; return; }
   try {
     state.byDate = await call('group_dates',
@@ -1537,18 +1707,21 @@ async function detectStructure(src, force = false, overrideRoot = null) {
     const d = await call('detect_structure', { root: overrideRoot || src.path },
       { label: `Reading ${src.label}` });
     state.detected[src.path] = d;
-    if (d.suggested_master && !state.masters[src.path]) {
+    if (!isInformal() && d.suggested_master && !state.masters[src.path]) {
       state.masters[src.path] = [d.suggested_master.path];
       state.masterSource = state.masterSource || src.path;
     }
-    // A rename is tied to the specific folder it was typed for; a different
-    // folder starts from its own name.
-    state.renameBase = null;
-    state.camNames = {};
-    // Existing cam clips stay on disk and are used only to find the next free
-    // camera number. They must never be re-added to the copy plan.
-    state.assign = {};
-    state.camCount = Math.max(3, ...Object.keys(d.cams || {}).map(Number), 0);
+    if (!state.template) {
+      // A rename is tied to the specific folder it was typed for; a different
+      // folder starts from its own name.
+      state.renameBase = null;
+      state.camNames = {};
+      // Existing cam clips stay on disk and are used only to find the next free
+      // camera number. They must never be re-added to the copy plan.
+      state.assign = {};
+    }
+    state.camCount = selectionRules.cameraCountAfterDetection(
+      state.template, state.camCount, d);
     state.plan = null;
     if (!d.session_path) toast(d.reason, 'err');
     render();
@@ -1567,7 +1740,7 @@ function renderCameras() {
 
   const pool = filePool(src);
   const scan = state.scans[src.path] || (pool.length ? { files: pool, suggestion: null } : null);
-  if (!scan) {
+  if (!scan && !isInformal()) {
     return `<div class="card">
       <h3>Read the footage</h3>
       <p class="hint">Every video on <span class="mono">${esc(src.label)}</span> is probed for
@@ -1583,6 +1756,27 @@ function renderCameras() {
   // Add a folder. The drive scan is only for finding the master, so scanned
   // clips never appear here; that keeps stray root files out of the cam list.
   const files = cameraFiles(src);
+  const identityOptions = new Map();
+  for (const file of files) {
+    const key = selectionRules.cameraGroupKey(file, window.api.platform);
+    if (identityOptions.has(key)) continue;
+    const prefix = selectionRules.cameraFilenamePrefix(file);
+    const rootMatch = /^[a-z]:[\\/]/i.exec(file.path || '');
+    const source = file.card_volume || (rootMatch ? rootMatch[0] : '');
+    identityOptions.set(key, prefix
+      ? `${prefix}${source ? ` · ${source}` : ''}`
+      : (file.card_label || source || key.replace(/^[^:]+:/, '')));
+  }
+  if (state.cameraFilterIdentity !== 'all'
+      && !identityOptions.has(state.cameraFilterIdentity)) {
+    state.cameraFilterIdentity = 'all';
+  }
+  const shownFiles = selectionRules.filterCameraFiles(files, state.assign, {
+    query: state.cameraFilterQuery,
+    cam: state.cameraFilterCam,
+    identity: state.cameraFilterIdentity,
+    sort: state.cameraSort,
+  }, window.api.platform);
   const counts = {};
   cams.forEach((n) => { counts[n] = 0; });
   let skipped = 0;
@@ -1598,11 +1792,11 @@ function renderCameras() {
 
   // Drop selections for clips no longer in the list, so the batch bar's count
   // never counts ghosts.
-  const visible = new Set(files.map((f) => f.path));
+  const visible = new Set(shownFiles.map((f) => f.path));
   state.selection = state.selection.filter((p) => visible.has(p));
   const picked = new Set(state.selection);
 
-  const rows = files.map((f) => {
+  const rows = shownFiles.map((f) => {
     const a = state.assign[f.path] ?? 'skip';
     return `<tr class="${picked.has(f.path) ? 'sel' : ''}" data-path="${esc(f.path)}">
       <td style="width:1%"><input type="checkbox" class="rowsel" data-path="${esc(f.path)}"
@@ -1640,7 +1834,8 @@ function renderCameras() {
     <h3>Assign clips to cameras</h3>
     <p class="hint">Each clip goes to the numbered Cam folder you pick. Skipped clips stay
       where they are. Existing cam folders are counted for the next suggestion, but their
-      filed clips are never selected again.</p>
+      filed clips are never selected again.${isInformal()
+        ? ' The Copy page previews the new modified-time sequence names before anything moves.' : ''}</p>
     ${masters.length ? `<div class="note info">
       Master${masters.length > 1 ? 's' : ''}:
       ${masters.map((m) => `<b>${esc(m.name)}</b> (${esc(fmtDurAuto(m.duration))})`).join(', ')}
@@ -1653,11 +1848,11 @@ function renderCameras() {
       <button class="sm" id="btnAddFiles">Add files…</button>
       <button class="sm" id="btnAddFolder2">Add a folder…</button>
       <button class="sm" id="btnAutoGroup">Auto-suggest by camera</button>
-      <button class="sm" id="btnAddCam">Add cam (${state.camCount})</button>
-      <button class="sm" id="btnRemoveCam" ${state.camCount <= 1 ? 'disabled' : ''}>Remove cam</button>
+      <button class="sm" id="btnAddCam">Add ${esc(camLabel(state.camCount + 1))}</button>
+      <button class="sm" id="btnRemoveCam" ${state.camCount <= 1 ? 'disabled' : ''}>Remove ${esc(camLabel(state.camCount))}</button>
       <button class="sm" id="btnClearAssign">Clear all</button>
       <div class="spacer"></div>
-      <button class="sm ghost" id="btnRescanFiles">Re-scan</button>
+      <button class="sm ghost" id="btnRescanFiles">${isInformal() ? 'Re-scan cards' : 'Re-scan'}</button>
     </div>
     <div class="row" style="margin-bottom:6px">
       ${cams.map((n) => `<span class="badge" style="gap:4px">
@@ -1672,12 +1867,41 @@ function renderCameras() {
     ${noClips ? `<div class="empty"><div class="big">🎥</div>
       <div>No cam clips yet.</div>
       <div style="margin-top:4px">Press <b>Import camera cards</b>, or add clips with
-        <b>Add files…</b> / <b>Add a folder…</b>. The drive scan is only used to find the
-        master, so it does not fill this list.</div></div>` : ''}
-    ${noClips ? '' : `<div class="row" id="batchBar" style="margin-bottom:8px;align-items:center">
+        <b>Add files…</b> / <b>Add a folder…</b>.${isInformal()
+          ? ' Re-scan cards refreshes what is currently mounted and removes stale card entries.'
+          : ' The drive scan is only used to find the master, so it does not fill this list.'}</div></div>` : ''}
+    ${noClips ? '' : `<div class="row" style="margin:10px 0 8px;align-items:flex-end">
+      <label class="field" style="flex:1;min-width:220px;margin:0"><span>Filter files</span>
+        <input id="fCameraFilter" type="search" value="${esc(state.cameraFilterQuery)}"
+          placeholder="Filename, A_0003, card or drive…" /></label>
+      <label class="field" style="width:170px;margin:0"><span>Assignment</span>
+        <select id="fCameraFilterCam">
+          <option value="all">All cameras</option>
+          ${cams.map((n) => `<option value="${n}" ${state.cameraFilterCam === String(n) ? 'selected' : ''}>${esc(camLabel(n))}</option>`).join('')}
+          <option value="skip" ${state.cameraFilterCam === 'skip' ? 'selected' : ''}>Skipped</option>
+        </select></label>
+      <label class="field" style="width:210px;margin:0"><span>Source / camera</span>
+        <select id="fCameraFilterIdentity">
+          <option value="all">All sources</option>
+          ${[...identityOptions.entries()].map(([key, label]) => `<option value="${esc(key)}"
+            ${state.cameraFilterIdentity === key ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+        </select></label>
+      <label class="field" style="width:180px;margin:0"><span>Sort</span>
+        <select id="fCameraSort">
+          <option value="camera-time" ${state.cameraSort === 'camera-time' ? 'selected' : ''}>Camera, then time</option>
+          <option value="time" ${state.cameraSort === 'time' ? 'selected' : ''}>Time, oldest first</option>
+          <option value="name" ${state.cameraSort === 'name' ? 'selected' : ''}>Filename A–Z</option>
+          <option value="size" ${state.cameraSort === 'size' ? 'selected' : ''}>Largest first</option>
+        </select></label>
+      <span class="badge">${shownFiles.length} of ${files.length} shown</span>
+      <button class="sm ghost" id="btnClearFilters" ${
+        state.cameraFilterQuery || state.cameraFilterCam !== 'all'
+          || state.cameraFilterIdentity !== 'all' ? '' : 'disabled'}>Clear filters</button>
+    </div>
+    <div class="row" id="batchBar" style="margin-bottom:8px;align-items:center">
       <label class="badge" style="gap:6px"><input type="checkbox" id="selAll" style="width:auto"
-        ${state.selection.length && state.selection.length === files.length ? 'checked' : ''} />
-        Select all</label>
+        ${shownFiles.length && state.selection.length === shownFiles.length ? 'checked' : ''} />
+        Select all shown</label>
       ${state.selection.length ? `<b>${state.selection.length} selected</b>
         <span class="hint" style="margin:0">→ assign to</span>
         ${cams.map((n) => `<button class="sm" data-batch="${n}">${esc(camLabel(n))}</button>`).join('')}
@@ -1685,7 +1909,8 @@ function renderCameras() {
         <button class="sm ghost" id="btnClearSel">Clear selection</button>`
         : '<span class="hint" style="margin:0">Tick clips to assign several at once — Shift-click for a range, Ctrl/Cmd-click to add one.</span>'}
     </div>`}
-    <div class="scroll" ${noClips ? 'style="display:none"' : ''}><table>
+    ${!noClips && !shownFiles.length ? '<div class="empty"><div>No files match these filters.</div></div>' : ''}
+    <div class="scroll" ${noClips || !shownFiles.length ? 'style="display:none"' : ''}><table>
       <thead><tr><th style="width:1%"></th><th>File</th><th class="num">Length</th>
         <th>Last modified</th>
         <th class="num">Size</th><th style="width:1%">Goes to</th></tr></thead>
@@ -1696,11 +1921,54 @@ function renderCameras() {
 
 function wireCameras() {
   $('btnScan')?.addEventListener('click', () => scanSource(primarySource()));
-  $('btnRescanFiles')?.addEventListener('click', () => scanSource(primarySource(), true));
+  $('btnRescanFiles')?.addEventListener('click', () => {
+    if (isInformal()) importCameraCards();
+    else scanSource(primarySource(), true);
+  });
   $('btnAddFiles')?.addEventListener('click', () => addFootage('files'));
   $('btnAddFolder2')?.addEventListener('click', () => addFootage('folder'));
   $('btnCards')?.addEventListener('click', importCameraCards);
   wireDayButtons();
+
+  const resetCameraListScroll = () => {
+    const list = document.querySelector('.scroll');
+    if (list) list.scrollTop = 0;
+  };
+  $('fCameraFilter')?.addEventListener('input', (event) => {
+    state.cameraFilterQuery = event.target.value;
+    resetCameraListScroll();
+    render();
+    const field = $('fCameraFilter');
+    if (field) {
+      field.focus();
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
+  });
+  $('fCameraFilterCam')?.addEventListener('change', (event) => {
+    state.cameraFilterCam = event.target.value;
+    state.selection = [];
+    resetCameraListScroll();
+    render();
+  });
+  $('fCameraFilterIdentity')?.addEventListener('change', (event) => {
+    state.cameraFilterIdentity = event.target.value;
+    state.selection = [];
+    resetCameraListScroll();
+    render();
+  });
+  $('fCameraSort')?.addEventListener('change', (event) => {
+    state.cameraSort = event.target.value;
+    resetCameraListScroll();
+    render();
+  });
+  $('btnClearFilters')?.addEventListener('click', () => {
+    state.cameraFilterQuery = '';
+    state.cameraFilterCam = 'all';
+    state.cameraFilterIdentity = 'all';
+    state.selection = [];
+    resetCameraListScroll();
+    render();
+  });
 
   document.querySelectorAll('[data-assign]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.assign;
@@ -1765,28 +2033,39 @@ function wireCameras() {
     state.assign = {}; state.plan = null; render();
   });
 
-  $('btnAutoGroup')?.addEventListener('click', () => {
+  $('btnAutoGroup')?.addEventListener('click', async () => {
     const src = primarySource();
     // Group exactly the clips shown on this page. Whole-drive scan results,
     // existing filed clips and master files are deliberately excluded.
     const clips = cameraFiles(src);
     if (!clips.length) return toast('No clips to group.', 'err');
 
-    const groups = camGroupsFromPool(clips);
-    // Existing folders can be present but empty, so reserve only the cameras
-    // that actually contain clips. Each suggested group then takes the next
-    // free slot instead of starting over at Cam-01.
-    const suggestedCams = nextFreeCams(groups.length);
-    groups.forEach((files, i) => {
-      for (const f of files) state.assign[f.path] = suggestedCams[i];
-    });
-    state.camCount = Math.max(state.camCount, ...suggestedCams);
-    state.plan = null;
-    toast(groups.length === 1
-      ? `All ${clips.length} clip(s) look like one camera — assigned to ${camLabel(suggestedCams[0])}.`
-      : `Grouped ${clips.length} clip(s) into ${groups.length} free cams (${suggestedCams.map(camLabel).join(', ')}) by resolution, `
-        + `frame rate and codec. Check before copying.`);
-    render();
+    try {
+      // Ask the planner for the exact destination session paths, but send no new
+      // camera clips. Its existing_cams report counts only folders containing
+      // footage; an empty Cam-01/Cam-02/Cam-03 therefore remains available.
+      const checkSpec = buildSpec();
+      checkSpec.targets = checkSpec.targets.map((target) => ({ ...target, cams: {} }));
+      const destinationPlan = await call('build_plan', checkSpec,
+        { label: 'Checking existing camera folders' });
+      const occupied = selectionRules.occupiedCamNumbers(destinationPlan, state.camNames);
+      const groups = camGroupsFromPool(clips);
+      const previousCount = state.camCount;
+      const suggestedCams = nextFreeCams(groups.length, occupied);
+      groups.forEach((files, i) => {
+        for (const f of files) state.assign[f.path] = suggestedCams[i];
+      });
+      state.camCount = Math.max(state.camCount, ...suggestedCams);
+      state.plan = null;
+      const added = suggestedCams.filter((cam) => cam > previousCount);
+      const placement = added.length
+        ? ` Existing empty folders were exhausted, so ${added.map(camLabel).join(', ')} was added.`
+        : ` Lowest empty: ${suggestedCams.map(camLabel).join(', ')}.`;
+      toast(groups.length === 1
+        ? `All ${clips.length} clip(s) look like one camera — assigned to ${camLabel(suggestedCams[0])}.${placement}`
+        : `Grouped ${clips.length} clip(s) into ${groups.length} available cameras by card/source and Canon filename identity.${placement}`);
+      render();
+    } catch (e) { toast(`Could not check existing camera folders: ${e.message}`, 'err'); }
   });
 
 }
@@ -1822,14 +2101,18 @@ function buildSpec() {
     // A completed or partially completed run can have the master already filed
     // on one destination but not the other. Treat each target independently so
     // resuming never moves that master again or invents a second session folder.
-    const filed = state.filedSessions[src.role];
+    const role = isInformal() ? 'informal' : src.role;
+    const filed = state.filedSessions[role];
     const masterAlreadyFiled = state.mastersFiled || Boolean(filed);
     const masters = masterAlreadyFiled ? [] : masterList;
     // An operator-typed replacement for the session folder's base name, applied
     // when completing a folder already on the drive.
     const rename = state.renameBase ? { session_rename: state.renameBase } : {};
-    const base = { role: src.role, source_root: src.path, dest_root: destOf(src),
-                   masters, cams, cam_names: state.camNames,
+    const base = { role, source_root: src.path, dest_root: destOf(src),
+                   masters: isInformal() ? [] : masters, cams, cam_names: state.camNames,
+                   allow_no_master: isInformal(), rename_camera_clips: isInformal(),
+                   direct_camera_folders: isInformal(),
+                   skip_existing_by_size: isInformal() && state.skipExistingBySize,
                    template_dirs: t ? editedTemplateDirs(t) : cameraStructureDirs() };
     // After the first copy, file additional cameras straight into the existing
     // session folder, so nothing about the master or the name is recomputed.
@@ -1848,8 +2131,8 @@ function buildSpec() {
   // — the imported card clips are copied to both drives identically. Only the
   // master differs, because it is that drive's own recording (ProRes vs H.265).
   const cams = camsFor((p) => p);
-  targets.push(targetFor(a, cams, mastersFor(a).map((f) => f.path)));
-  if (b) {
+  targets.push(targetFor(a, cams, isInformal() ? [] : mastersFor(a).map((f) => f.path)));
+  if (!isInformal() && b) {
     targets.push(targetFor(b, cams, mastersFor(b).map((f) => f.path)));
   }
 
@@ -1860,6 +2143,7 @@ function buildSpec() {
     add_date: state.session.addDate !== false,
     mode: 'copy',   // retained for the manifest; the engine relocates or copies automatically
     verify: state.session.verify || 'size',
+    backup_type: state.backupType,
     targets,
   };
 }
@@ -1869,7 +2153,8 @@ function renderCopy() {
     return `<div class="card">
       <h3>Build the plan</h3>
       <p class="hint">Every source file is probed and its destination name worked out.
-        Nothing is written to disk at this stage.</p>
+        Nothing is written to disk at this stage.${isInformal()
+          ? ' Every camera clip rename will be shown for approval.' : ''}</p>
       ${secondarySource() ? `<div class="note info">The camera selection will be copied to
         <b>both destination drives</b>. Each drive keeps its own selected master.</div>` : ''}
       <button class="primary" id="btnPlan">Build plan</button>
@@ -1877,6 +2162,7 @@ function renderCopy() {
   }
 
   const p = state.plan;
+  const existingMatches = p.targets.flatMap((target) => target.existing_matches || []);
   const trees = p.targets.map((t) => `
     <div class="card">
       <h3><span class="badge ${t.role}">${esc(t.role)}</span>
@@ -1894,10 +2180,10 @@ function renderCopy() {
       <div class="tree">
         ${t.job_folder ? `<div class="dir">📁 ${esc(t.job_folder)}</div>` : ''}
         <div class="dir ${t.job_folder ? 'indent1' : ''}">📁 ${esc(t.session_folder)}</div>
-        ${t.master_present && !t.items.some((i) => i.kind === 'master')
+        ${isInformal() ? '' : (t.master_present && !t.items.some((i) => i.kind === 'master')
           ? '<div class="ren indent2">🎬 <span style="color:var(--ok)">master already filed, kept</span></div>'
-          : masterRows(t)}
-        <div class="dir indent2">📁 Clips for Insert</div>
+          : masterRows(t))}
+        ${isInformal() ? '' : '<div class="dir indent2">📁 Clips for Insert</div>'}
         ${camGroups(t)}
       </div>
     </div>`).join('');
@@ -1940,21 +2226,32 @@ function renderCopy() {
               + `${fmtBytes(p.targets[0].total_bytes)} per drive`
             : `<b>${p.item_count} file(s) to file</b> · ${fmtBytes(p.total_bytes)}`;
         })()} ·
-          master moved · clips copied · verify <b>${esc(p.verify)}</b>
+          ${isInformal() ? 'camera clips arranged and renamed' : 'master moved · clips copied'} · verify <b>${esc(p.verify)}</b>
           ${(p.renames || []).length ? `· <b>${p.renames.length} folder rename(s)</b>` : ''}
           <br><span class="hint">Only the clips you assigned on the Cameras page are
-            included — anything on Skip is untouched, and no source files are deleted.</span></div>
+            included — anything on Skip is untouched.${isInformal()
+              ? ' Same-drive clips are moved into the structure; clips going to another drive are copied.'
+              : ' No source files are deleted.'}</span></div>
         <div class="spacer"></div>
         <button class="sm" id="btnCopyImportCard">📇 Import camera card</button>
         <button class="sm" id="btnReplan">Rebuild plan</button>
-        <button class="primary" id="btnRun" ${state.busy ? 'disabled' : ''}>
-          ${state.runResult ? 'Run again' : 'Start copy'}</button>
       </div>
       <div class="hint" style="margin-top:6px">
         Swapped a card? Press <b>Import camera card</b> — a new card is added to the next cam
         folder${state.runResult ? ' and filed straight into the folders already on disk' : ''},
         and the plan updates.</div>
     </div>
+    ${isInformal() && existingMatches.length ? `<div class="card">
+      <label class="row" style="align-items:flex-start;cursor:pointer">
+        <input type="checkbox" id="fSkipExistingBySize" style="width:auto;margin-top:3px"
+          ${state.skipExistingBySize ? 'checked' : ''} />
+        <span><b>Skip ${existingMatches.length} matching source clip${existingMatches.length === 1 ? '' : 's'} already filed.</b><br>
+          <span class="hint">Each match is one-to-one, inside its assigned Cam folder, using the exact byte size.
+          ${state.skipExistingBySize
+            ? ` Only ${p.item_count} unmatched clip${p.item_count === 1 ? '' : 's'} will be copied.`
+            : ' All assigned clips are currently included; check this option to skip the matches.'}</span></span>
+      </label>
+    </div>` : ''}
     ${status}
     ${emptyNotice}
     ${trees}`;
@@ -1987,8 +2284,9 @@ function definedCams(t) {
 
 /** Cam numbers that will be created with no clips in them. */
 function emptyCams(t) {
-  const filled = new Set(t.items.filter((i) => i.kind === 'clip').map((i) => i.cam));
-  return definedCams(t).filter((n) => !filled.has(n));
+  // A folder is empty only when it has neither a newly assigned clip nor clips
+  // already on disk. The tree directly below uses the same existing_cams data.
+  return selectionRules.emptyCamNumbers(definedCams(t), t, state.camNames);
 }
 
 function camGroups(t) {
@@ -1999,6 +2297,8 @@ function camGroups(t) {
   const names = t.cam_names || {};
   const fname = (n) => (names[n] || names[String(n)] || `Cam-${String(n).padStart(2, '0')}`);
   const existing = t.existing_cams || {};      // folder name -> clips already on disk
+  const folderIndent = t.direct_camera_folders ? 'indent2' : 'indent3';
+  const filePadding = t.direct_camera_folders ? 48 : 72;
 
   // Cam folders to show: those with new clips, those defined, and those already
   // on disk from an earlier pass — so a filed Cam-01 never looks like it vanished.
@@ -2015,13 +2315,14 @@ function camGroups(t) {
       ? ` <span style="color:var(--ok)">· ${info.existing} already filed, kept</span>` : '';
     const emptyTag = (!info.newItems.length && !info.existing)
       ? ' <span style="color:var(--warn)">· empty</span>' : '';
-    const head = `<div class="dir indent3">📁 ${esc(folder)}${already}${
+    const head = `<div class="dir ${folderIndent}">📁 ${esc(folder)}${already}${
       info.newItems.length ? ` <span style="color:var(--accent)">· +${info.newItems.length} new</span>` : ''}${emptyTag}</div>`;
-    return head + info.newItems.map((i) => `<div class="ren indent3" style="padding-left:72px">
+    return head + info.newItems.map((i) => `<div class="ren ${folderIndent}" style="padding-left:${filePadding}px">
       <b>${esc(i.original_name)}</b>
       <span style="color:var(--muted)">· ${fmtDur(i.duration)} · ${fmtBytes(i.size)}${
         i.original_name !== i.dst.split(/[\\/]/).pop()
-          ? ` · renamed to ${esc(i.dst.split(/[\\/]/).pop())} to avoid a clash` : ''}</span>
+          ? ` · renamed to ${esc(i.dst.split(/[\\/]/).pop())}${
+            isInformal() ? '' : ' to avoid a clash'}` : ''}</span>
       </div>`).join('');
   }).join('');
 }
@@ -2036,7 +2337,9 @@ function renderRunResult() {
       ${fmtBytes(r.bytes)} in ${r.seconds}s${
         r.copied_bytes && r.copy_seconds > 0
           ? ` · copied ${fmtBytes(r.copied_bytes)} at ${fmtBytes(r.rate_bps)}/s`
-          + ` (masters relocated instantly, not counted)`
+          + (isInformal()
+            ? ` (same-drive relocations are instant and not counted)`
+            : ` (masters relocated instantly, not counted)`)
           : ''}
     </div>
     ${r.cancelled || r.failed ? `<div class="note info">
@@ -2047,9 +2350,9 @@ function renderRunResult() {
                 : `Folder not renamed — ${esc(rn.message)}`}</div>`).join('')}
     ${r.errors.map((e) => `<div class="note err mono">${esc(e)}</div>`).join('')}
     <div class="row">
-      <button class="primary" id="btnOpenAll">📂 Open both Clips for Insert folders</button>
+      <button class="primary" id="btnOpenAll">📂 Open ${isInformal() ? 'session folder' : 'both Clips for Insert folders'}</button>
       <span class="hint" style="margin:0">${finderTargets().length} window(s):
-        each drive's Clips for Insert folder${cardFolders().length
+        ${isInformal() ? 'the session folder containing the Cam folders' : "each drive's Clips for Insert folder"}${cardFolders().length
           ? ` + ${cardFolders().length} camera card${cardFolders().length > 1 ? 's' : ''}` : ''}</span>
     </div>
     <div class="row" style="margin-top:8px">
@@ -2058,7 +2361,7 @@ function renderRunResult() {
       ${state.plan.targets.map((t) => `<button class="sm" data-reveal="${esc(t.session_path)}">
         Reveal ${esc(t.role)} folder</button>`).join('')}
       <div class="spacer"></div>
-      <button class="sm primary" id="btnGoVerify">Compare the copies →</button>
+      <button class="sm primary" id="btnGoVerify">${isInformal() ? 'Verify the filed clips' : 'Compare the copies'} →</button>
     </div>
   </div>`;
 }
@@ -2076,7 +2379,9 @@ function childFolder(parent, child) {
 
 /** The comparison-friendly folder on each SSD, one level below the session. */
 function clipsForInsertFolders() {
-  return destFolders().map((folder) => childFolder(folder, 'Clips for Insert'));
+  return isInformal()
+    ? destFolders()
+    : destFolders().map((folder) => childFolder(folder, 'Clips for Insert'));
 }
 
 /** The volume a path lives on (/Volumes/NAME on macOS, a drive letter on Windows). */
@@ -2136,7 +2441,10 @@ function wireCopy() {
     addClipsToCam(Number(b.dataset.addcam))));
   $('btnLeaveEmpty')?.addEventListener('click', () =>
     toast('Empty cam folders will still be created.', 'ok'));
-  $('btnRun')?.addEventListener('click', doRun);
+  $('fSkipExistingBySize')?.addEventListener('change', async (event) => {
+    state.skipExistingBySize = event.target.checked;
+    await doPlan();
+  });
   $('btnGoVerify')?.addEventListener('click', () => {
     state.compareRoots = state.plan.targets.map((t) => t.session_path);
     state.pairVerify = null;
@@ -2221,7 +2529,8 @@ async function reconcileRunState(plan, result) {
       for (const [cam, paths] of Object.entries(detected.cams || {})) {
         if ((paths || []).length) state.completedCams.add(Number(cam));
       }
-      if ((detected.master_candidates || []).length && detected.session_path) {
+      if (detected.session_path && (isInformal()
+          || (detected.master_candidates || []).length)) {
         state.filedSessions[target.role] = detected.session_path;
       }
     } catch {
@@ -2240,11 +2549,15 @@ async function doRun() {
   const renames = (p.renames || []).map((r) => `\n  ${r.from}\n    ↳ ${r.to}`).join('');
   const ok = await window.api.confirm({
     message: p.item_count
-      ? `File ${p.item_count} clip(s) and rename the session folder?`
+      ? (isInformal()
+          ? `Arrange and rename ${p.item_count} camera clip(s)?`
+          : `File ${p.item_count} clip(s) and rename the session folder?`)
       : 'Rename the session folder?',
-    detail:
-      'The master moves into the folder on its own drive. Camera clips are copied to '
-      + 'both SSDs. Nothing is deleted — clear the cards yourself afterwards.\n' +
+    detail: (isInformal()
+      ? 'There is no master. Clips are placed into their assigned camera folders and renamed '
+        + 'in modified-time order. Same-drive files are relocated; files from a card or another drive are copied.\n'
+      : 'The master moves into the folder on its own drive. Camera clips are copied to '
+        + 'both SSDs. Nothing is deleted — clear the cards yourself afterwards.\n') +
       (renames ? `\nFolder rename:${renames}\n` : '') +
       '\nThe folder is renamed only after every file lands successfully.',
     confirmLabel: 'Go ahead',
@@ -2266,6 +2579,9 @@ async function doRun() {
       const filed = new Set((r.items || [])
         .filter((i) => i.kind === 'clip' && (i.status === 'done' || i.status === 'skipped'))
         .map((i) => i.src));
+      for (const target of p.targets || []) {
+        for (const match of target.existing_matches || []) filed.add(match.src);
+      }
       for (const path of filed) delete state.assign[path];
       for (const key of Object.keys(state.extraFiles)) {
         state.extraFiles[key] = state.extraFiles[key].filter((f) => !filed.has(f.path));
@@ -2333,10 +2649,13 @@ function renderVerify() {
   return `
   <div class="card">
     <h3>Verify the copied clips against the camera card${cards.length > 1 ? 's' : ''}</h3>
-    <p class="hint">Checks every clip copied from the camera card${cards.length > 1 ? 's' : ''}
-      against the original still on the card — on ${esc(drives.join(' and '))}. If both copies
-      match the card, the copy is faithful and the two SSDs are identical. Masters relocated in
-      place and are not part of this.</p>
+    <p class="hint">${isInformal()
+      ? `Checks each filed clip against its original when that original is still available.
+         Same-drive clips are relocated, so they can instead be checked with the folder comparison below.`
+      : `Checks every clip copied from the camera card${cards.length > 1 ? 's' : ''}
+         against the original still on the card — on ${esc(drives.join(' and '))}. If both copies
+         match the card, the copy is faithful and the two SSDs are identical. Masters relocated in
+         place and are not part of this.`}</p>
     ${canVerify ? `<div class="note info">
         <b>${checks.length} copy check(s)</b> — ${esc(cards.join(', ') || 'card clips')} →
         ${esc(drives.join(' + '))}. The cards must stay connected for this:</div>
@@ -2390,8 +2709,9 @@ function renderPairVerify() {
         <th class="num">Card</th><th class="num">Copy</th><th>Result</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-    ${v.ok ? `<p class="hint" style="margin:10px 0 0">Each copied clip is identical to its
-      camera-card original, so both SSDs are faithful, matching backups.</p>` : ''}
+    ${v.ok ? `<p class="hint" style="margin:10px 0 0">${isInformal()
+      ? 'Each checked file is identical to its available original.'
+      : 'Each copied clip is identical to its camera-card original, so both SSDs are faithful, matching backups.'}</p>` : ''}
   </div>`;
 }
 
@@ -2491,7 +2811,9 @@ function wireVerify() {
   $('btnDeep')?.addEventListener('click', async () => {
     const ok = await window.api.confirm({
       message: 'Checksum every matching file?',
-      detail: 'Both copies are read end to end. On large ProRes files over USB this can take '
+      detail: isInformal()
+        ? 'Both folders are read end to end. Large recordings over USB can take a long time.'
+        : 'Both copies are read end to end. On large ProRes files over USB this can take '
             + 'a long time.\n\nOnly files with the same codec on both sides can match — a ProRes '
             + 'file and its H.265 twin are different encodings and will always differ.',
       confirmLabel: 'Verify',
@@ -2529,8 +2851,11 @@ function goStep(i) {
   }
   state.step = i;
   render();
-  if (i === 1) detectStructure(primarySource());
-  if (i === 2) scanSource(primarySource());
+  // In template mode the ZIP already supplied the structure. Scanning a footage
+  // drive here used to race with it and could replace a three-camera ZIP with
+  // Cam-04 (or whatever old structure happened to exist on that drive).
+  if (i === 1 && !state.template) detectStructure(primarySource());
+  if (i === 2 && !isInformal()) scanSource(primarySource());
 }
 
 function render() {
@@ -2542,7 +2867,15 @@ function render() {
     li.addEventListener('click', () => goStep(Number(li.dataset.step))));
 
   $('stepTitle').textContent = STEPS[state.step].title;
-  $('stepHint').textContent = STEPS[state.step].hint;
+  $('stepHint').textContent = isInformal()
+    ? [
+        'Choose Informal, import the structure, and select the output directory.',
+        'Edit the job and session folder names. No mixer master is required.',
+        'Assign individual recordings to cameras; their new sequence names are previewed next.',
+        'Review every destination and renamed clip before starting.',
+        'Check the arranged camera folders and files.',
+      ][state.step]
+    : STEPS[state.step].hint;
 
   $('topActions').innerHTML = `
     ${state.engine.info && !state.engine.info.ffprobe
@@ -2586,16 +2919,24 @@ function renderFooter() {
     <button id="btnPrev" ${prev ? '' : 'disabled'}>← Back</button>
     <div class="spacer"></div>
     <span class="hint" style="margin:0">${esc(footerHint())}</span>
+    ${state.step === 3 && state.plan ? `<button class="primary" id="btnRun">
+      ${state.runResult ? 'Run again' : 'Start copy'}</button>` : ''}
     <button class="primary" id="btnNext" ${next ? '' : 'disabled'}>Next →</button>`;
+  $('btnRun')?.addEventListener('click', doRun);
   $('btnPrev').addEventListener('click', () => goStep(state.step - 1));
   $('btnNext').addEventListener('click', () => goStep(state.step + 1));
 }
 
 function footerHint() {
   switch (state.step) {
-    case 0: return state.sources.length ? `${state.sources.length} source(s) selected`
-                                        : 'Add at least one source to continue';
-    case 1: return chosenMasters().length
+    case 0: return isInformal()
+      ? (!state.template ? 'Import the structure ZIP to continue'
+        : !state.informalDest ? 'Choose an output directory to continue'
+          : 'Structure and output are ready')
+      : state.sources.length ? `${state.sources.length} source(s) selected`
+                             : 'Add at least one source to continue';
+    case 1: return isInformal() ? 'No master required · continue to camera assignment'
+      : chosenMasters().length
       ? `Folder Dur- will read ${fmtDurAuto(masterTotalSeconds())}`
         + (chosenMasters().length > 1 ? ` from ${chosenMasters().length} clips` : '')
       : 'Pick the master clip to continue';
@@ -2617,9 +2958,10 @@ window.api.onProgress(({ id, data }) => {
     b.percent = data.percent;
     b.detail = data.current || '';
     b.left = `${fmtBytes(data.bytes_done)} of ${fmtBytes(data.bytes_total)}`;
-    b.right = data.eta_seconds != null
-      ? `${fmtBytes(data.rate_bps)}/s · ${Math.floor(data.eta_seconds / 60)}m ${data.eta_seconds % 60}s left`
-      : '';
+    const speed = Number(data.rate_bps) > 0 ? `${fmtBytes(data.rate_bps)}/s` : '';
+    const eta = data.eta_seconds != null
+      ? `${Math.floor(data.eta_seconds / 60)}m ${data.eta_seconds % 60}s left` : '';
+    b.right = [speed, eta].filter(Boolean).join(' · ');
   } else if (data.total) {
     b.percent = Math.round((data.done / data.total) * 100);
     b.detail = data.name || data.root || '';

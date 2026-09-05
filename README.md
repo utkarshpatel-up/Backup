@@ -121,6 +121,9 @@ drive. Picking a folder pulls in every video beneath it.
 
 ## Running it
 
+For automatic macOS dependency installation, Finder launchers, and Apple Silicon
+or Intel DMG builds, see [the macOS setup guide](MACOS.md).
+
 ```bash
 npm install
 npm start
@@ -215,7 +218,7 @@ PyInstaller does not cross-compile — build on each OS you ship for.
 python3 -m pip install pyinstaller xxhash
 python3 scripts/build_python.py                      # engine only
 python3 scripts/build_python.py --with-ffmpeg /opt/homebrew/bin   # self-contained
-npm run dist:mac      # or dist:win
+npm run dist:mac      # macOS setup + tests + self-contained DMG; see MACOS.md
 ```
 
 On Windows (PowerShell), the equivalent self-contained build is:

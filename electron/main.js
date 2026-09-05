@@ -122,6 +122,7 @@ ipcMain.handle('dialog:pickVideoFiles', async () => {
 ipcMain.handle('dialog:pickZip', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose a zip archive',
+    defaultPath: app.getPath('downloads'),
     filters: [{ name: 'Zip archives', extensions: ['zip'] }],
     properties: ['openFile'],
   });

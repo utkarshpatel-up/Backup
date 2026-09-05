@@ -212,12 +212,16 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   padding: 14px 26px; border-top: 1px solid var(--line); background: var(--panel);
 }
 
-.toast-wrap { position: fixed; bottom: 18px; right: 18px; display: flex;
-              flex-direction: column; gap: 8px; z-index: 50; }
+.toast-wrap {
+  position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  width: min(560px, calc(100vw - 260px)); z-index: 50;
+  pointer-events: none; /* notifications can never block Back/Next/Cancel */
+}
 .toast {
   background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
   border-radius: 8px; padding: 10px 14px; box-shadow: 0 8px 26px rgba(0,0,0,.16);
-  max-width: 380px; font-size: 12px;
+  max-width: 520px; font-size: 12px;
 }
 .toast.err { border-left-color: var(--err); }
 .toast.ok { border-left-color: var(--ok); }

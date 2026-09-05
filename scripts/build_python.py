@@ -8,6 +8,7 @@ lands in dist-python/ and is copied into the app's Resources by the packager.
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -75,9 +76,21 @@ def main() -> int:
     print("Smoke-testing the frozen binary…")
     proc = subprocess.run([str(produced)], input='{"id":1,"method":"ping"}\n',
                           capture_output=True, text=True, timeout=60)
-    if '"ok": true' not in proc.stdout:
+    replies = []
+    for line in proc.stdout.splitlines():
+        try:
+            replies.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    ping = next((r for r in replies if r.get("id") == 1), {})
+    if proc.returncode != 0 or not ping.get("ok"):
         print("Smoke test FAILED:\n" + proc.stdout + proc.stderr, file=sys.stderr)
         return 1
+    if args.with_ffmpeg:
+        result = ping.get("result", {})
+        if not all(result.get(tool) for tool in ("ffmpeg", "ffprobe")):
+            print("Smoke test FAILED: bundled media tools were not found.", file=sys.stderr)
+            return 1
     print("Smoke test passed.")
     return 0
 

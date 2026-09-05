@@ -8,7 +8,8 @@
     "test:renderer": "node --test tests/*.test.js",
     "bundle:python": "node scripts/build-python.js",
     "dist": "npm run bundle:python && electron-builder",
-    "dist:mac": "npm run bundle:python && electron-builder --mac",
+    "dist:mac": "bash scripts/macos.sh build",
+    "setup:mac": "bash scripts/macos.sh setup",
     "dist:win": "npm run bundle:python && electron-builder --win"
   },
   "devDependencies": {
@@ -20,8 +21,8 @@
     "productName": "Video Ingest",
     "files": ["electron/**/*", "renderer/**/*", "package.json"],
     "extraResources": [{ "from": "dist-python", "to": "python" }],
-    "mac": { "category": "public.app-category.video", "target": ["dmg", "zip"] },
-    "win": { "target": ["nsis"] },
+    "mac": { "category": "public.app-category.video", "target": ["dmg", "zip"], "artifactName": "${productName}-${version}-mac-${arch}.${ext}" },
+    "win": { "target": ["nsis"], "signAndEditExecutable": false },
     "linux": { "target": ["AppImage"] }
   }
 }

@@ -7,11 +7,10 @@ House convention (from the reference tree):
         <master file, name untouched>
         Clips for Insert/
           Cam-01/  Cam-02/  Cam-03/
-            <clips, names untouched>
+            <formal clips retain names; informal clips receive sequence names>
 
-Media files are NEVER renamed — they arrive already named correctly. The only
-name this module generates is the session folder's, and the only part of that
-which is derived from the media is the `Dur-` token.
+Formal media follows the existing duration-based house convention. Informal
+camera-only backups use ``Cam-NN Event Name Clip-NNN.ext`` names.
 """
 
 from __future__ import annotations
@@ -41,6 +40,7 @@ RESERVED = {"CON", "PRN", "AUX", "NUL",
             *(f"LPT{i}" for i in range(1, 10))}
 
 CAM_FOLDER_RE = re.compile(r"^Cam-(\d{2,})$")
+CAM_PREFIX_RE = re.compile(r"^(Cam-\d+)", re.IGNORECASE)
 CLIPS_DIRNAME = "Clips for Insert"
 
 # " Clips-02" on a session folder: how many master clips it holds.
@@ -50,6 +50,10 @@ CLIP_TOKEN_RE = re.compile(r"\s*\bClip-(\d+)\b", re.IGNORECASE)
 # The "02 " that numbers a session within the day. Kept on the folder, dropped
 # from the file names inside it.
 LEADING_INDEX_RE = re.compile(r"^\d+\s+")
+INFORMAL_DATE_RE = re.compile(
+    r"\s*\bDt-\d{1,2}(?:-\d{1,2}-\d{2,4}|-[A-Za-z]{3,9}-\d{2,4}"
+    r"|\s+[A-Za-z]{3,9}\s+\d{4})\b", re.IGNORECASE)
+INFORMAL_CLIP_RE = re.compile(r"\bClip-(\d{3,})\b", re.IGNORECASE)
 
 
 def fmt_duration(seconds: float | None, precision: str = "s") -> str:
@@ -147,6 +151,31 @@ def master_clip_name(folder_name: str, seconds: float | None,
     if ext and not ext.startswith("."):
         ext = "." + ext
     return sanitize(out) + ext        # the source's own extension case is kept
+
+
+def informal_event_name(folder_name: str) -> str:
+    """Derive the clean event portion used by camera-only clip names."""
+    name = CLIPS_TOKEN_RE.sub("", folder_name)
+    name = DUR_TOKEN_RE.sub("", name)
+    name = INFORMAL_DATE_RE.sub(" ", name)
+    name = LEADING_INDEX_RE.sub("", name)
+    return re.sub(r"\s+", " ", name).strip()
+
+
+def informal_clip_name(folder_name: str, camera_folder: str,
+                       index: int, ext: str = "") -> str:
+    """Build ``Cam-01 Event Name Clip-001.MP4`` for an informal backup."""
+    match = CAM_PREFIX_RE.match(camera_folder or "")
+    prefix = f"{match.group(1)} " if match else ""
+    suffix = ext if not ext or ext.startswith(".") else f".{ext}"
+    return sanitize(
+        f"{prefix}{informal_event_name(folder_name)} Clip-{int(index):03d}") + suffix
+
+
+def informal_clip_index(name: str) -> int | None:
+    """Return the sequence from an already-renamed informal clip."""
+    match = INFORMAL_CLIP_RE.search(name or "")
+    return int(match.group(1)) if match else None
 
 
 def parse_duration(text: str) -> int | None:

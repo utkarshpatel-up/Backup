@@ -108,6 +108,20 @@ class TestNaming:
         assert naming.cam_folder(1) == "Cam-01"
         assert naming.cam_folder(12) == "Cam-12"
 
+    @pytest.mark.parametrize("folder", [
+        "01 Allentown Hotel Venue Dt-12-06-25 Clips-04",
+        "01 Allentown Hotel Venue Dt-12-Jun-25 Dur-1h2m Clips-04",
+        "01 Allentown Hotel Venue Dt-12 June 2025 Clips-04",
+    ])
+    def test_informal_event_name_ports_the_rename_script_rules(self, folder):
+        assert naming.informal_event_name(folder) == "Allentown Hotel Venue"
+
+    def test_informal_clip_name_keeps_only_the_camera_prefix_and_extension_case(self):
+        assert naming.informal_clip_name(
+            "01 Allentown Hotel Venue Dt-12-06-25 Clips-04",
+            "Cam-02 (Drone)", 7, ".MP4") == \
+            "Cam-02 Allentown Hotel Venue Clip-007.MP4"
+
 
 class TestVideoScanning:
     def test_windows_recycle_bin_is_never_scanned(self, tmp_path):
@@ -385,6 +399,113 @@ class TestPlan:
             assert parts[-2] == naming.cam_folder(item["cam"])
             assert parts[-3] == naming.CLIPS_DIRNAME
 
+    def test_informal_clips_are_renamed_in_modified_time_order(self, tmp_path):
+        import os
+
+        src = tmp_path / "RAW"
+        src.mkdir()
+        late = src / "random-b.MP4"
+        early = src / "random-a.mov"
+        late.write_bytes(b"late")
+        early.write_bytes(b"early")
+        os.utime(early, (100, 100))
+        os.utime(late, (200, 200))
+
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "informal", "source_root": str(src),
+            "dest_root": str(tmp_path / "DEST"),
+            "session_name": "01 Allentown Hotel Venue Dt-12-06-25 Clips-04",
+            "masters": [], "allow_no_master": True,
+            "rename_camera_clips": True,
+            "cams": {"1": [str(late), str(early)]},
+        }]})
+
+        target = plan["targets"][0]
+        assert not any("No master" in warning for warning in target["warnings"])
+        clips = [item for item in target["items"] if item["kind"] == "clip"]
+        assert [(item["original_name"], Path(item["dst"]).name) for item in clips] == [
+            ("random-a.mov", "Cam-01 Allentown Hotel Venue Clip-001.mov"),
+            ("random-b.MP4", "Cam-01 Allentown Hotel Venue Clip-002.MP4"),
+        ]
+        assert all(Path(item["dst"]).parent.name == "Cam-01" for item in clips)
+        assert all(naming.CLIPS_DIRNAME not in Path(item["dst"]).parts for item in clips)
+        assert target["direct_camera_folders"] is True
+        assert target["ensure_dirs"] == ["Cam-01"]
+
+        result = ingest.execute_plan(plan)
+        assert result["failed"] == 0
+        assert result["copied"] == 2
+        assert not early.exists() and not late.exists()
+        assert {Path(item["dst"]).name for item in result["items"]} == {
+            "Cam-01 Allentown Hotel Venue Clip-001.mov",
+            "Cam-01 Allentown Hotel Venue Clip-002.MP4",
+        }
+
+    def test_informal_sequence_continues_after_existing_clips(self, tmp_path):
+        raw = tmp_path / "RAW"
+        raw.mkdir()
+        fresh = raw / "new.MP4"
+        fresh.write_bytes(b"fresh")
+        destination = tmp_path / "DEST"
+        camera = (destination / "01 Allentown Hotel Venue Dt-12-06-25"
+                  / "Cam-01")
+        camera.mkdir(parents=True)
+        (camera / "Cam-01 Allentown Hotel Venue Clip-003.MP4").write_bytes(b"old")
+
+        plan = ingest.build_plan({"targets": [{
+            "role": "informal", "source_root": str(raw),
+            "dest_root": str(destination),
+            "session_name": "01 Allentown Hotel Venue Dt-12-06-25",
+            "allow_no_master": True, "rename_camera_clips": True,
+            "cams": {"1": [str(fresh)]},
+        }]})
+
+        item = next(item for item in plan["targets"][0]["items"]
+                    if item["kind"] == "clip")
+        assert Path(item["dst"]).parent == camera
+        assert Path(item["dst"]).name == \
+            "Cam-01 Allentown Hotel Venue Clip-004.MP4"
+
+    @needs_ffmpeg
+    def test_informal_retry_skips_exact_size_matches_and_plans_only_missing(self, tmp_path):
+        import os
+
+        raw = tmp_path / "RAW"
+        raw.mkdir()
+        sources_in_order = []
+        for number, seconds in enumerate((1, 2, 3), 1):
+            clip = raw / f"A_0003C{number:03d}.MP4"
+            make_clip(clip, seconds)
+            os.utime(clip, (number * 100, number * 100))
+            sources_in_order.append(clip)
+
+        destination = tmp_path / "DEST"
+        spec = {"targets": [{
+            "role": "informal", "source_root": str(raw),
+            "dest_root": str(destination),
+            "session_name": "01 Allentown Hotel Venue Dt-12-06-25",
+            "allow_no_master": True, "rename_camera_clips": True,
+            "cams": {"1": [str(path) for path in sources_in_order]},
+        }]}
+        initial = ingest.build_plan(spec)["targets"][0]
+        # Simulate an interruption after the first two renamed files landed.
+        for item in initial["items"][:2]:
+            target = Path(item["dst"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item["src"], target)
+
+        retry_spec = {"targets": [{**spec["targets"][0],
+                                    "skip_existing_by_size": True}]}
+        retry = ingest.build_plan(retry_spec)["targets"][0]
+        assert len(retry["existing_matches"]) == 2
+        assert [item["original_name"] for item in retry["items"]] == [
+            sources_in_order[2].name]
+        assert Path(retry["items"][0]["dst"]).name.endswith("Clip-003.MP4")
+
+        include_again = ingest.build_plan(spec)["targets"][0]
+        assert len(include_again["existing_matches"]) == 2
+        assert len(include_again["items"]) == 3
+
     def test_two_targets_sharing_a_destination_is_flagged(self, tmp_path):
         src = tmp_path / "SSD"; src.mkdir()
         (src / "M.mov").write_bytes(b"x")
@@ -422,6 +543,44 @@ class TestPlan:
         out = tmp_path / "out"
         leftovers = [p for p in out.rglob("*") if p.is_file()]
         assert not leftovers, f"cancel left files behind: {leftovers}"
+
+    def test_live_copy_progress_reports_transfer_speed(self, tmp_path, monkeypatch):
+        import time as _time
+
+        src = tmp_path / "CARD" / "clip.mov"
+        src.parent.mkdir()
+        src.write_bytes(b"abcdefgh")
+        dst = tmp_path / "DEST" / "Cam-01" / "clip.mov"
+        plan = {
+            "mode": "copy", "verify": "size", "total_bytes": 8,
+            "targets": [{
+                "role": "prores", "session_path": str(tmp_path / "DEST"),
+                "staging_path": str(tmp_path / "DEST"), "ensure_dirs": [],
+                "items": [{"src": str(src), "dst": str(dst), "final_dst": str(dst),
+                           "size": 8, "kind": "clip", "cam": 1,
+                           "duration": None, "codec": None,
+                           "original_name": src.name, "status": "pending", "message": ""}],
+            }],
+        }
+
+        def paced_copy(source, target, on_chunk, should_cancel):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+            _time.sleep(0.06)
+            on_chunk(8)
+            return 8
+
+        monkeypatch.setattr(ingest, "_copy_with_progress", paced_copy)
+        monkeypatch.setattr(ingest, "_same_volume", lambda *_: False)
+        monkeypatch.setattr(ingest, "CHUNK", 1)
+        events = []
+        result = ingest.execute_plan(plan, progress=events.append)
+
+        assert result["failed"] == 0
+        live = [event for event in events
+                if event.get("bytes_done") == 8 and event.get("rate_bps", 0) > 0]
+        assert live, "speed must be emitted while the file is still copying"
+        assert live[-1]["eta_seconds"] is not None
 
 
 class TestStructureDetection:
@@ -673,6 +832,39 @@ class TestStructureTemplate:
         assert d.session_name == self.REF
         assert d.tree == ["Clips for Insert", "Clips for Insert/Cam-01",
                           "Clips for Insert/Cam-02", "Clips for Insert/Cam-03"]
+
+    def test_every_session_in_one_structure_is_selectable(self, tmp_path):
+        root = tmp_path / "structure"
+        job = root / "2601 Dt-04 Sep 2026"
+        first = job / "01 Morning Message Dt-04-Sep-26 Clips-02"
+        second = job / "02 Janmashtami Informal Dt-04-Sep-26 Clips-109"
+        for session, cams in ((first, 3),):
+            for number in range(1, cams + 1):
+                (session / "Clips for Insert"
+                 / f"Cam-{number:02d}").mkdir(parents=True)
+        # Structures downloaded from the current service can place cameras
+        # directly below an event instead of using a Clips for Insert wrapper.
+        for number in range(1, 5):
+            (second / f"Cam-{number:02d}").mkdir(parents=True)
+
+        found = structure.detect_all(root)
+
+        assert [item.session_name for item in found] == [first.name, second.name]
+        assert [item.job_name for item in found] == [job.name, job.name]
+        assert sorted(found[0].cams) == ["1", "2", "3"]
+        assert sorted(found[1].cams) == ["1", "2", "3", "4"]
+        selected = structure.detect(root, preferred_session=second)
+        assert selected.session_path == str(second)
+        assert selected.session_name == second.name
+
+    def test_selected_session_cannot_escape_the_structure_root(self, tmp_path):
+        root = tmp_path / "structure"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        detected = structure.detect(root, preferred_session=outside)
+        assert detected.session_path is None
+        assert "outside" in detected.reason.lower()
 
     def test_a_zip_escape_attempt_is_refused(self, tmp_path):
         zpath = tmp_path / "evil.zip"
@@ -1328,6 +1520,7 @@ class TestExistingCamsReported:
     def test_existing_cam_folders_are_reported_and_untouched(self, tmp_path):
         session = tmp_path / "DEST" / "S Dt-20-Aug-26 Dur-1h0m"
         (session / "Clips for Insert" / "Cam-01").mkdir(parents=True)
+        (session / "Clips for Insert" / "Cam-02").mkdir()
         make_clip(session / "M Dur-1h0m.MOV", 3)
         make_clip(session / "Clips for Insert" / "Cam-01" / "A1.MP4", 2)
         make_clip(session / "Clips for Insert" / "Cam-01" / "A2.MP4", 2)
@@ -1338,7 +1531,7 @@ class TestExistingCamsReported:
             "dest_root": str(tmp_path / "DEST"), "session_source": str(session),
             "masters": [], "cams": {"2": [str(tmp_path / "CARD_B" / "B1.MP4")]}}]})
         t = plan["targets"][0]
-        assert t["existing_cams"] == {"Cam-01": 2}
+        assert t["existing_cams"] == {"Cam-01": 2}, "empty Cam-02 stays available"
         assert t["master_present"] is True
 
         res = ingest.execute_plan(plan)

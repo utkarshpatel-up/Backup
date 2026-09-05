@@ -62,6 +62,21 @@ def _clips_child(folder: Path) -> Path | None:
     return None
 
 
+def _camera_children(folder: Path) -> list[Path]:
+    """Camera folders directly inside ``folder``.
+
+    Some supplied structure archives omit the ``Clips for Insert`` wrapper and
+    put Cam-01, Cam-02, ... directly below each event.  That is still a strong
+    session signal. Informal filing preserves that direct layout; Formal filing
+    uses the ``Clips for Insert`` house layout.
+    """
+    try:
+        return [child for child in sorted(folder.iterdir())
+                if child.is_dir() and naming.CAM_FOLDER_RE.match(child.name)]
+    except OSError:
+        return []
+
+
 def _candidate_folders(root: Path, max_depth: int = 3):
     """`root` and its descendants, shallowest first, junk skipped."""
     yield root
@@ -78,8 +93,13 @@ def _candidate_folders(root: Path, max_depth: int = 3):
             yield d / name
 
 
-def detect(root: str | Path, probe_masters: bool = True) -> Detected:
-    """Find the session folder under `root` and report what it already contains."""
+def detect(root: str | Path, probe_masters: bool = True,
+           preferred_session: str | Path | None = None) -> Detected:
+    """Find one session folder under ``root`` and report what it contains.
+
+    ``preferred_session`` lets a caller select one folder after :func:`detect_all`
+    has presented every session in a structure archive.
+    """
     root = Path(root)
     out = Detected(root=str(root))
     if not root.is_dir():
@@ -89,14 +109,40 @@ def detect(root: str | Path, probe_masters: bool = True) -> Detected:
     session: Path | None = None
     clips: Path | None = None
 
-    # Strongest signal: the folder that actually holds "Clips for Insert".
-    for folder in _candidate_folders(root):
-        found = _clips_child(folder)
-        if found is not None:
-            session, clips = folder, found
-            out.confidence = "strong"
-            out.reason = f"Found “{found.name}” inside this folder."
-            break
+    if preferred_session is not None:
+        candidate = Path(preferred_session)
+        try:
+            root_resolved = root.resolve()
+            candidate_resolved = candidate.resolve()
+        except OSError:
+            root_resolved, candidate_resolved = root, candidate
+        if (candidate_resolved != root_resolved
+                and root_resolved not in candidate_resolved.parents):
+            out.reason = "Selected session is outside the structure source"
+            return out
+        if not candidate.is_dir():
+            out.reason = "Selected session folder no longer exists"
+            return out
+        session = candidate
+        clips = _clips_child(session)
+        has_camera_layout = clips is not None or bool(_camera_children(session))
+        out.confidence = "strong" if has_camera_layout else "weak"
+        out.reason = (f"Selected “{session.name}” from the imported structure."
+                      if has_camera_layout
+                      else f"Selected folder “{session.name}”.")
+
+    # Strongest signal: a Clips wrapper or direct camera folders.
+    if session is None:
+        for folder in _candidate_folders(root):
+            found = _clips_child(folder)
+            direct_cams = _camera_children(folder)
+            if found is not None or direct_cams:
+                session, clips = folder, found
+                out.confidence = "strong"
+                out.reason = (f"Found “{found.name}” inside this folder."
+                              if found is not None else
+                              "Found camera folders directly inside this folder.")
+                break
 
     # Next best: a folder already carrying a Dt- token.
     if session is None:
@@ -146,12 +192,15 @@ def detect(root: str | Path, probe_masters: bool = True) -> Detected:
 
     if clips is None:
         clips = _clips_child(session)
+    cam_root = clips if clips is not None else session
+    camera_children = _camera_children(cam_root)
     if clips is not None:
         out.clips_dir = str(clips)
+    if camera_children:
         try:
-            for child in sorted(clips.iterdir()):
+            for child in camera_children:
                 m = naming.CAM_FOLDER_RE.match(child.name)
-                if child.is_dir() and m:
+                if m:
                     out.cams[str(int(m.group(1)))] = [
                         str(p) for p in sorted(child.iterdir())
                         if p.is_file() and is_video(p)]
@@ -183,6 +232,31 @@ def detect(root: str | Path, probe_masters: bool = True) -> Detected:
         out.reason += (" It holds no video, so it will be used as a structure "
                        "template — pick the footage from another source.")
     return out
+
+
+def detect_all(root: str | Path, probe_masters: bool = True) -> list[Detected]:
+    """Return every session represented below a structure root.
+
+    A session containing ``Clips for Insert`` or direct ``Cam-NN`` folders is
+    authoritative. If no such folder exists, retain the legacy weak
+    single-folder detection as a fallback.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    sessions: list[Path] = []
+    seen: set[str] = set()
+    for folder in _candidate_folders(root):
+        if _clips_child(folder) is None and not _camera_children(folder):
+            continue
+        key = os.path.normcase(os.path.abspath(str(folder)))
+        if key not in seen:
+            seen.add(key)
+            sessions.append(folder)
+    if sessions:
+        return [detect(root, probe_masters, folder) for folder in sessions]
+    fallback = detect(root, probe_masters)
+    return [fallback] if fallback.session_path else []
 
 
 def folder_tree(session: str | Path, max_depth: int = 4) -> list[str]:

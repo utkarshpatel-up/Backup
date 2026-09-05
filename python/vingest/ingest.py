@@ -1,7 +1,7 @@
 """Planning and executing the copy: camera originals -> house folder structure.
 
-Media files keep the names they arrive with. The only name this module composes
-is the session folder's, whose `Dur-` token comes from the master's duration.
+Formal jobs retain camera names and derive master/session names from duration.
+Informal jobs have no master and sequence camera clips by modified time.
 
 The plan is always built and returned before anything touches the disk, so the
 GUI can show every destination path for approval first.
@@ -52,8 +52,11 @@ class TargetPlan:
     rename_to: str = ""       # same name plus the Dur- token
     in_place: bool = False    # True when completing a folder that already exists
     from_template: bool = False
+    direct_camera_folders: bool = False            # informal: Cam-NN lives at session root
     ensure_dirs: list = field(default_factory=list)   # folders to create even if empty
+    cam_names: dict = field(default_factory=dict)     # cam number -> displayed folder name
     existing_cams: dict = field(default_factory=dict) # cam folder -> clips already filed there
+    existing_matches: list = field(default_factory=list) # assigned sources matching filed sizes
     master_present: bool = False                      # a master already sits in the folder
     items: list[PlanItem] = field(default_factory=list)
     total_bytes: int = 0
@@ -248,6 +251,12 @@ def build_plan(spec: dict, progress=None) -> dict:
             in_place = False
 
         _names = t.get("cam_names") or {}
+        # Formal recordings use Session/Clips for Insert/Cam-NN.  Informal
+        # recordings are themselves the primary material, so their camera
+        # folders live directly below the session exactly as the structure ZIP
+        # defines them: Session/Cam-NN.
+        direct_camera_folders = bool(t.get(
+            "direct_camera_folders", t.get("role") == "informal"))
 
         def _apply_cam_name(rel: str) -> str:
             # Rewrite a "…/Cam-NN" folder to its custom name when one is set.
@@ -261,9 +270,11 @@ def build_plan(spec: dict, progress=None) -> dict:
         ensure = [_apply_cam_name(d) for d in (t.get("template_dirs") or []) if d]
         if not ensure:
             # No template: still create a cam folder for every cam in play.
-            ensure = [f"{naming.CLIPS_DIRNAME}/"
-                      f"{naming.sanitize(_names.get(str(c)) or naming.cam_folder(int(c)))}"
-                      for c in sorted((t.get("cams") or {}), key=int)]
+            ensure = [
+                ("" if direct_camera_folders else f"{naming.CLIPS_DIRNAME}/")
+                + naming.sanitize(_names.get(str(c)) or naming.cam_folder(int(c)))
+                for c in sorted((t.get("cams") or {}), key=int)
+            ]
 
         plan = TargetPlan(
             role=t.get("role", "other"),
@@ -277,7 +288,9 @@ def build_plan(spec: dict, progress=None) -> dict:
             rename_to=session_folder if existing else "",
             in_place=in_place,
             from_template=from_template,
+            direct_camera_folders=direct_camera_folders,
             ensure_dirs=ensure,
+            cam_names=_names,
         )
         if in_place and plan.rename_from == plan.rename_to:
             plan.rename_to = ""          # already complete; nothing to rename
@@ -307,7 +320,8 @@ def build_plan(spec: dict, progress=None) -> dict:
             elif master.error:
                 plan.warnings.append(f"Master probed with a warning: {master.error}")
 
-        if not masters and not (existing and not master_paths and Path(existing).exists()):
+        if (not t.get("allow_no_master") and not masters
+                and not (existing and not master_paths and Path(existing).exists())):
             # Warn about a missing master only on a first pass. Adding cameras to
             # an already-named folder legitimately has no master to file.
             if not existing:
@@ -315,10 +329,14 @@ def build_plan(spec: dict, progress=None) -> dict:
                     f"No master file for the {plan.role} target, so its folder gets no "
                     f"Dur- token. Check that drive's footage is loaded and mirrored.")
 
-        clips_root = staging_path / naming.CLIPS_DIRNAME
-        final_clips_root = session_path / naming.CLIPS_DIRNAME
+        clips_root = staging_path if direct_camera_folders \
+            else staging_path / naming.CLIPS_DIRNAME
+        final_clips_root = session_path if direct_camera_folders \
+            else session_path / naming.CLIPS_DIRNAME
         # A cam may carry a custom folder name; otherwise it is "Cam-NN".
         cam_names = t.get("cam_names") or {}
+        rename_camera_clips = bool(t.get("rename_camera_clips"))
+        skip_existing_by_size = bool(t.get("skip_existing_by_size"))
 
         def cam_folder_name(idx: int) -> str:
             custom = cam_names.get(str(idx)) or cam_names.get(idx)
@@ -330,6 +348,14 @@ def build_plan(spec: dict, progress=None) -> dict:
             cam_dir = clips_root / cam_folder_name(cam_index)
             final_cam_dir = final_clips_root / cam_folder_name(cam_index)
             cam_taken: set[str] = set()
+            ordered_paths = list(paths)
+            if rename_camera_clips:
+                def _shot_order(path):
+                    try:
+                        return (Path(path).stat().st_mtime, Path(path).name.lower())
+                    except OSError:
+                        return (float("inf"), Path(path).name.lower())
+                ordered_paths.sort(key=_shot_order)
             # Clips already sitting in this cam folder from an earlier pass, by
             # name -> size. A re-inserted (or already-filed) card whose clip
             # matches one of these is already filed: skip it instead of copying a
@@ -343,7 +369,21 @@ def build_plan(spec: dict, progress=None) -> dict:
                             on_disk[f.name.lower()] = f.stat().st_size
                         except OSError:
                             on_disk[f.name.lower()] = -1
-            for p in paths:
+            # Informal destination names no longer contain the source filename.
+            # Match one-to-one by exact byte size inside the operator-assigned
+            # camera folder, consuming each filed destination at most once. This
+            # lets a rebuilt plan resume after interruption even when the prior
+            # plan object is gone.
+            available_by_size: dict[int, list[Path]] = {}
+            if rename_camera_clips:
+                for filename, size in on_disk.items():
+                    if size >= 0:
+                        available_by_size.setdefault(size, []).append(cam_dir / filename)
+            existing_sequences = [naming.informal_clip_index(name)
+                                  for name in on_disk]
+            next_sequence = max((number for number in existing_sequences
+                                 if number is not None), default=0) + 1
+            for p in ordered_paths:
                 candidate = Path(p)
                 if is_junk(candidate):
                     plan.warnings.append(
@@ -362,7 +402,24 @@ def build_plan(spec: dict, progress=None) -> dict:
                         f"It was likely filed from an earlier card.")
                     continue
                 info = get(p)
+                matching_destinations = available_by_size.get(info.size, [])
+                if matching_destinations:
+                    matched_destination = matching_destinations.pop(0)
+                    plan.existing_matches.append({
+                        "src": p,
+                        "dst": str(matched_destination),
+                        "cam": cam_index,
+                        "size": info.size,
+                        "original_name": Path(p).name,
+                    })
+                    if skip_existing_by_size:
+                        continue
                 base_name = Path(p).name
+                if rename_camera_clips:
+                    base_name = naming.informal_clip_name(
+                        session_folder, cam_folder_name(cam_index),
+                        next_sequence, Path(p).suffix)
+                    next_sequence += 1
                 already = on_disk.get(base_name.lower())
                 if already is not None and already == info.size:
                     # This exact clip is already in the folder — don't recopy it
@@ -396,7 +453,8 @@ def build_plan(spec: dict, progress=None) -> dict:
 
         # Report what the folder already contains, so the plan shows the cams that
         # were filed on an earlier pass rather than looking like they vanished.
-        clips_dir = Path(staging_path) / naming.CLIPS_DIRNAME
+        clips_dir = (Path(staging_path) if direct_camera_folders
+                     else Path(staging_path) / naming.CLIPS_DIRNAME)
         if clips_dir.is_dir():
             for child in sorted(clips_dir.iterdir()):
                 if not child.is_dir():
@@ -450,6 +508,7 @@ def build_plan(spec: dict, progress=None) -> dict:
     return {
         "title": title,
         "job_number": job_number,
+        "backup_type": spec.get("backup_type", "formal"),
         "mode": spec.get("mode", "copy"),
         "verify": spec.get("verify", "size"),
         "targets": [t.to_dict() for t in targets_out],
@@ -522,6 +581,8 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
     done_bytes = 0
     copied_bytes = 0        # bytes that were actually COPIED (relocations excluded)
     copy_seconds = 0.0      # wall-clock spent copying, for a meaningful rate
+    active_copy_started: float | None = None
+    active_copy_bytes = 0
     started = time.time()
     results: list[dict] = []
     errors: list[str] = []
@@ -532,7 +593,11 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
             # Rate and ETA are based on copied bytes over the time spent copying:
             # relocations (same-drive renames) move their whole size instantly and
             # would otherwise report a wildly inflated, useless speed.
-            rate = copied_bytes / copy_seconds if copy_seconds > 0.05 else 0
+            live_bytes = copied_bytes + active_copy_bytes
+            live_seconds = copy_seconds
+            if active_copy_started is not None:
+                live_seconds += max(time.time() - active_copy_started, 0)
+            rate = live_bytes / live_seconds if live_seconds > 0.05 else 0
             remaining = max(total_bytes - done_bytes, 0)
             progress({
                 "stage": "copy",
@@ -599,8 +664,9 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                 chunk_acc = {"n": 0}
 
                 def on_chunk(n, _acc=chunk_acc):
-                    nonlocal done_bytes
+                    nonlocal done_bytes, active_copy_bytes
                     done_bytes += n
+                    active_copy_bytes += n
                     _acc["n"] += n
                     if _acc["n"] >= CHUNK * 4:
                         _acc["n"] = 0
@@ -619,8 +685,15 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                     problem = _verify_moved(dst, item["size"])
                 else:
                     _t0 = time.time()
-                    _copy_with_progress(src, dst, on_chunk, should_cancel)
-                    copy_seconds += time.time() - _t0
+                    active_copy_started = _t0
+                    active_copy_bytes = 0
+                    try:
+                        _copy_with_progress(src, dst, on_chunk, should_cancel)
+                    finally:
+                        _elapsed = time.time() - _t0
+                        active_copy_started = None
+                        active_copy_bytes = 0
+                    copy_seconds += _elapsed
                     copied_bytes += item["size"]
                     problem = _verify(src, dst, verify)
 

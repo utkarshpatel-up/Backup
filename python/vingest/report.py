@@ -5,13 +5,40 @@ from __future__ import annotations
 import csv
 import datetime as _dt
 import json
+import os
 import platform
+import sys
 from pathlib import Path
 
 from . import naming
 from .hashing import algorithm
 
 MANIFEST_DIR = "_manifest"
+
+
+def _hide(path: Path) -> None:
+    """Mark a folder hidden in the OS file browser, keeping its name intact.
+
+    The name stays `_manifest` (the folder comparison ignores it by name), so we
+    set an attribute rather than renaming: Windows' hidden bit, macOS' UF_HIDDEN
+    flag. Best-effort — a filesystem that lacks the concept (most Linux ones,
+    exFAT via os.chflags) simply keeps the folder visible.
+    """
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes
+
+            FILE_ATTRIBUTE_HIDDEN = 0x02
+            ok = ctypes.windll.kernel32.SetFileAttributesW(
+                str(path), FILE_ATTRIBUTE_HIDDEN)
+            if not ok:
+                raise ctypes.WinError()
+        elif sys.platform == "darwin":
+            # UF_HIDDEN = 0x8000; hasattr guards non-macOS builds.
+            flag = getattr(__import__("stat"), "UF_HIDDEN", 0x8000)
+            os.chflags(str(path), flag)  # type: ignore[attr-defined]
+    except (OSError, AttributeError, ValueError):
+        pass
 
 
 def write_manifest(session_path: str | Path, plan: dict, result: dict,
@@ -24,6 +51,7 @@ def write_manifest(session_path: str | Path, plan: dict, result: dict,
     session = Path(session_path)
     out_dir = session / MANIFEST_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
+    _hide(out_dir)
     stamp = _dt.datetime.now()
 
     payload = {

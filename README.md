@@ -1,4 +1,4 @@
-# Video Ingest
+# AV Backup
 
 Desktop app (macOS + Windows) that turns camera originals on the ProRes and
 H.265 SSDs into the house folder structure, names everything from the media
@@ -74,8 +74,8 @@ the only path where typing is involved.
 
 ### What gets copied
 
-**The Cameras page is the decision.** A clip with a cam number is filed; a clip
-on **Skip** is not. Nothing else — no hidden filter, no rule operating behind
+**The Cameras page is the decision.** Check each clip to include it and assign a
+camera number. Unchecked clips and clips on **Skip** are not copied. Nothing else — no hidden filter, no rule operating behind
 the page. Everything loaded stays visible and one click from being included.
 
 The shoot date only chooses each clip's **default**. The session folder states
@@ -118,6 +118,19 @@ if two sources would write into the same folder.
 Footage is selected manually: **Add files…** (multi-select) and **Add a
 folder…** are on both the Folder and Cameras steps, alongside a scan of the whole
 drive. Picking a folder pulls in every video beneath it.
+
+## Naming and copy controls
+
+The sidebar always identifies **Formal backup** or **Informal backup**. Folder
+and Cameras include filename previews, an optional shorter clip-name base, and
+individual output filename edits. Keep the original extension. Character counts
+turn red above 150; this is a warning threshold, not a filesystem limit. Windows
+copies preflight the full destination path (including temporary names) against
+260 characters and reject unsupported names before writing. Select a shorter
+output root or shorten the names if needed.
+
+**Start copy** is in the bottom bar on Copy. **Next** and the Verify step become
+available only after the current copy completes without failure or cancellation.
 
 ## Running it
 
@@ -245,7 +258,7 @@ python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 npm run test:renderer
 ```
 
-140 Python tests plus 4 renderer selection tests covering duration formatting,
+156 Python tests plus 19 renderer tests covering duration formatting,
 the camera-selection safety boundary, the "filenames are never changed"
 contract, session-folder detection, `Dur-` correction and idempotency, the
 rename-only-on-success guarantee, structure-template import (both zip layouts,
@@ -285,5 +298,3 @@ responsive.
 - Zip sources extract to a temp folder, so a large zip needs the free space.
 - One structure template applies to the whole job; per-drive templates are not
   supported (and have never been needed, since both drives hold the same shoot).
-#   B a c k u p  
- 

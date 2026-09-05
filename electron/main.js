@@ -3,6 +3,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require('ele
 const path = require('path');
 const fs = require('fs');
 const { PythonBridge } = require('./python-bridge');
+app.setName('AV Backup');
 
 let win = null;
 let bridge = null;
@@ -25,6 +26,8 @@ function send(channel, payload) {
 
 function createWindow() {
   win = new BrowserWindow({
+    title: 'AV Backup',
+    icon: path.join(__dirname, '..', 'renderer', 'assets', 'icon.png'),
     width: 1360,
     height: 900,
     minWidth: 1040,

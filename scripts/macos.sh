@@ -47,7 +47,7 @@ ffprobe -version
 # Always install on this OS: node_modules copied from Windows is not usable.
 npm ci
 case "$MODE" in
-  setup) echo 'Dependencies are ready. Use Start Video Ingest.command to launch.' ;;
+  setup) echo 'Dependencies are ready. Use Start AV Backup.command to launch.' ;;
   run) npm start ;;
   build)
     ARCH="$(node -p 'process.arch')"

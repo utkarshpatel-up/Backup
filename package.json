@@ -1,5 +1,5 @@
 {
-  "name": "video-ingest",
+  "name": "av-backup",
   "version": "1.0.0",
   "description": "Organise camera-original footage into the house folder structure",
   "main": "electron/main.js",
@@ -18,11 +18,38 @@
   },
   "build": {
     "appId": "com.house.videoingest",
-    "productName": "Video Ingest",
-    "files": ["electron/**/*", "renderer/**/*", "package.json"],
-    "extraResources": [{ "from": "dist-python", "to": "python" }],
-    "mac": { "category": "public.app-category.video", "target": ["dmg", "zip"], "artifactName": "${productName}-${version}-mac-${arch}.${ext}" },
-    "win": { "target": ["nsis"], "signAndEditExecutable": false },
-    "linux": { "target": ["AppImage"] }
+    "productName": "AV Backup",
+    "files": [
+      "electron/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-python",
+        "to": "python"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "icon": "renderer/assets/icon.icns"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": true,
+      "icon": "renderer/assets/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
   }
 }

@@ -17,10 +17,10 @@ packages are reused. Use `bash scripts/macos.sh setup` to install without launch
 For Finder launchers, enable their executable permissions once:
 
 ```bash
-chmod +x "Start Video Ingest.command" "Build macOS DMG.command"
+chmod +x "Start AV Backup.command" "Build macOS DMG.command"
 ```
 
-Then double-click **Start Video Ingest.command** or **Build macOS DMG.command**.
+Then double-click **Start AV Backup.command** or **Build macOS DMG.command**.
 The Terminal commands work even when a downloaded ZIP loses executable bits.
 The source launcher checks dependencies on every run and requires network access;
 the installed app from the DMG runs without this setup step.
@@ -36,15 +36,15 @@ engine with FFmpeg/ffprobe and their dependencies through PyInstaller, smoke-tes
 the engine, and builds a DMG and ZIP in `dist/`. `npm run dist:mac` uses the same
 flow once Node is installed. Each build targets the Mac's native architecture:
 
-- Apple Silicon: `Video Ingest-1.0.0-mac-arm64.dmg`
-- Intel: `Video Ingest-1.0.0-mac-x64.dmg`
+- Apple Silicon: `AV Backup-1.0.0-mac-arm64.dmg`
+- Intel: `AV Backup-1.0.0-mac-x64.dmg`
 
 Use a native Terminal on Apple Silicon (disable Open using Rosetta). Build each
 architecture on its matching Mac; these are separate installers, not a universal
 binary. Build-machine and dependency OS minimums apply; older macOS versions
 have not been validated.
 
-Open the matching DMG, drag **Video Ingest** to **Applications**, eject the image,
+Open the matching DMG, drag **AV Backup** to **Applications**, eject the image,
 and launch the installed app. Electron supplies its Node runtime, and the frozen
 engine supplies Python and the media tools. Recipients need no Homebrew, Python,
 Node, or FFmpeg installation.
@@ -54,7 +54,7 @@ Node, or FFmpeg installation.
 The workflow `.github/workflows/build-macos.yml` builds on native macOS 15 runners
 for Apple Silicon and Intel. After committing and pushing these files to GitHub,
 open **Actions → Build macOS → Run workflow**. Download the corresponding
-`Video-Ingest-mac-arm64` or `Video-Ingest-mac-x64` artifact from the completed run
+`AV-Backup-mac-arm64` or `AV-Backup-mac-x64` artifact from the completed run
 and extract its DMG. The workflow uploads build artifacts only; it does not
 publish a release. GitHub Actions usage limits and billing apply.
 

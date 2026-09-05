@@ -218,6 +218,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   width: min(560px, calc(100vw - 260px)); z-index: 50;
   pointer-events: none; /* notifications can never block Back/Next/Cancel */
 }
+
+.team-logo { width: 58px; height: 58px; object-fit: contain; border-radius: 10px; margin-bottom: 8px; }
+.backup-mode { margin-top: 10px; padding: 6px 10px; border-radius: 6px; background: var(--accent); color: white; font-weight: 700; }
+.name-count { display: inline-block; margin: 3px 8px; color: var(--muted); font: 12px system-ui; white-space: nowrap; }
+.name-count.over-limit { color: #d12a2a; font-weight: 800; }
+.name-preview-target { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+.naming-editor .path, .preview-name { overflow-wrap: anywhere; }
 .toast {
   background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
   border-radius: 8px; padding: 10px 14px; box-shadow: 0 8px 26px rgba(0,0,0,.16);

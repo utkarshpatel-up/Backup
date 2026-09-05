@@ -178,9 +178,12 @@ def build_plan(spec: dict, progress=None) -> dict:
 
     for t in spec.get("targets", []):
         # One session can hold several master clips; Clip-01 is the earliest.
-        master_paths = [mp for mp in (t.get("masters")
-                        or ([t["master"]] if t.get("master") else []))
-                        if Path(mp).exists()]
+        master_paths = list(t.get("masters")
+                            or ([t["master"]] if t.get("master") else []))
+        missing = [str(mp) for mp in master_paths if not Path(mp).is_file()]
+        if missing:
+            raise ValueError("Selected master is unavailable. Reconnect or reselect it: "
+                             + ", ".join(missing))
         masters = sorted((get(mp) for mp in master_paths),
                          key=lambda m: (m.mtime, m.name))
         timed = [m.duration for m in masters if m.duration is not None]
@@ -296,12 +299,23 @@ def build_plan(spec: dict, progress=None) -> dict:
             plan.rename_to = ""          # already complete; nothing to rename
 
         taken: set[str] = set()
+        def output_name(source, generated):
+            override = (t.get("clip_names") or {}).get(str(source))
+            if not override:
+                return generated
+            if override != naming.sanitize(override) or override in (".", ".."):
+                raise ValueError(f"Invalid output filename: {override}")
+            if Path(override).suffix.lower() != Path(source).suffix.lower():
+                raise ValueError("Keep the original file extension when renaming: " + override)
+            return override
+
         for index, master in enumerate(masters, 1):
             # Unlike the cam clips, a master is renamed after the folder it sits
             # in, carrying its own duration and its position in the session.
             name = naming.dedupe(
-                naming.master_clip_name(session_folder, master.duration, index,
-                                        len(masters), Path(master.path).suffix),
+                output_name(master.path, naming.master_clip_name(
+                    t.get("clip_title") or session_folder, master.duration, index,
+                    len(masters), Path(master.path).suffix)),
                 taken)
             taken.add(name)
             plan.items.append(PlanItem(
@@ -417,9 +431,10 @@ def build_plan(spec: dict, progress=None) -> dict:
                 base_name = Path(p).name
                 if rename_camera_clips:
                     base_name = naming.informal_clip_name(
-                        session_folder, cam_folder_name(cam_index),
+                        t.get("clip_title") or session_folder, cam_folder_name(cam_index),
                         next_sequence, Path(p).suffix)
                     next_sequence += 1
+                base_name = output_name(p, base_name)
                 already = on_disk.get(base_name.lower())
                 if already is not None and already == info.size:
                     # This exact clip is already in the folder — don't recopy it
@@ -503,12 +518,20 @@ def build_plan(spec: dict, progress=None) -> dict:
                 plan.warnings.append(
                     f"Destination collides with the {other.role} target. "
                     "Give each source its own destination drive.")
+        long_names = [name for name in [session_folder, job_folder,
+                      *(Path(i.final_dst or i.dst).name for i in plan.items)]
+                      if len(name) > 150]
+        if long_names:
+            plan.warnings.append(
+                f"{len(long_names)} folder/file name(s) exceed 150 characters. "
+                "Shorten them in Folder / Filename preview before copying.")
         targets_out.append(plan)
 
     return {
         "title": title,
         "job_number": job_number,
         "backup_type": spec.get("backup_type", "formal"),
+        "windows_compatible": bool(spec.get("windows_compatible")),
         "mode": spec.get("mode", "copy"),
         "verify": spec.get("verify", "size"),
         "targets": [t.to_dict() for t in targets_out],
@@ -571,9 +594,31 @@ def _copy_with_progress(src: Path, dst: Path, on_chunk, should_cancel) -> int:
     return copied
 
 
+def validate_destination_paths(plan: dict) -> None:
+    """Fail before any writes, including directories and temporary copy names."""
+    for target in plan.get("targets", []):
+        roots = [target.get("session_path"), target.get("staging_path")]
+        paths = [Path(root) for root in roots if root]
+        paths += [Path(root) / rel for root in roots if root
+                  for rel in target.get("ensure_dirs", [])]
+        for item in target.get("items", []):
+            for key in ("dst", "final_dst"):
+                if item.get(key):
+                    dest = Path(item[key])
+                    paths.extend([dest, dest.with_name(dest.name + ".vingest-part")])
+        for path in paths:
+            for part in path.parts[1:]:
+                if len(part.encode("utf-16-le")) // 2 > 255 or len(part.encode("utf-8")) > 255:
+                    raise ValueError(f"Destination name is too long. Shorten it before copying: {path}")
+            if plan.get("windows_compatible") and len(str(path.absolute()).encode("utf-16-le")) // 2 >= 260:
+                raise ValueError(f"Destination path is too long for Windows compatibility. "
+                                 f"Shorten the folder or filename, or choose a shorter output root: {path}")
+
+
 def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
     """Run a plan produced by build_plan. Safe to re-run: existing, verified
     destinations are skipped rather than recopied."""
+    validate_destination_paths(plan)
     should_cancel = should_cancel or (lambda: False)
     mode = plan.get("mode", "copy")
     verify = plan.get("verify", "size")

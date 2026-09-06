@@ -218,7 +218,12 @@ function sessionDate() {
 /** Everything loaded for a source, before the date suggestion is applied. */
 function allFiles(src) {
   if (!src) return [];
-  const scanned = (state.scans[src.path] || {}).files || [];
+  // The informal source is a logical "mounted cards" pool whose path is the
+  // OUTPUT drive. Its footage comes only from imported cards (extraFiles); a
+  // drive scan of that same path — e.g. left over from a formal run on the same
+  // disk — must never surface the output drive's own files (the master at its
+  // root, earlier sessions) as camera footage.
+  const scanned = (src.kind === 'cards') ? [] : ((state.scans[src.path] || {}).files || []);
   const extra = state.extraFiles[src.path] || [];
   const seen = new Set(scanned.map((f) => pathKey(f.path)));
   return scanned.concat(extra.filter((f) => !seen.has(pathKey(f.path))));
@@ -279,11 +284,17 @@ function skipped(src) {
   return cameraFiles(src).filter((f) => state.assign[f.path] === 'skip');
 }
 
-/** Clips that will actually be filed. */
+/** Clips that will actually be filed.
+ *
+ * A clip is eligible when it carries a camera number (not Skip). Ticking nothing
+ * means "I'm happy with everything shown" — every eligible clip is filed; ticking
+ * any clip narrows the backup to just the ticked ones. This holds for both formal
+ * and informal backups. */
 function selected(src) {
+  const eligible = cameraFiles(src).filter((f) => typeof state.assign[f.path] === 'number');
+  if (state.selection.length === 0) return eligible;
   const included = new Set(state.selection.map(pathKey));
-  return cameraFiles(src).filter((f) => included.has(pathKey(f.path))
-    && typeof state.assign[f.path] === 'number');
+  return eligible.filter((f) => included.has(pathKey(f.path)));
 }
 
 /**
@@ -1161,7 +1172,10 @@ function renderDriveColumn(f) {
         <div class="path">${esc(f.path)}</div>
       </div>
       <div class="row" style="gap:6px">
-        <button class="sm ${loaded ? '' : 'primary'}" data-scan="${esc(f.path)}">Scan</button>
+        <button class="sm ${loaded ? '' : 'primary'}" data-scan="${esc(f.path)}"
+          title="Reads only the drive root, where the master lives">Scan</button>
+        <button class="sm" data-deepscan="${esc(f.path)}"
+          title="Walks the whole drive for footage nested in card folders">Detailed scan</button>
         <button class="sm" data-addfiles="${esc(f.path)}">Add files…</button>
         <button class="sm" data-addfolder="${esc(f.path)}">Folder…</button>
       </div>
@@ -1455,6 +1469,8 @@ function wireSession() {
   const bySrc = (attr) => (b) => state.sources.find((x) => x.path === b.dataset[attr]);
   document.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', () =>
     scanSource(bySrc('scan')(b), true)));
+  document.querySelectorAll('[data-deepscan]').forEach((b) => b.addEventListener('click', () =>
+    scanSource(bySrc('deepscan')(b), true, true)));
   document.querySelectorAll('[data-addfiles]').forEach((b) => b.addEventListener('click', () =>
     addFootage('files', bySrc('addfiles')(b))));
   document.querySelectorAll('[data-addfolder]').forEach((b) => b.addEventListener('click', () =>
@@ -1843,8 +1859,9 @@ function renderCameras() {
   return `
   <div class="card">
     <h3>Assign clips to cameras</h3>
-    <p class="hint">Only checked clips with a camera assignment are copied. Unchecked and skipped clips stay
-      where they are. Existing cam folders are counted for the next suggestion, but their
+    <p class="hint">With nothing checked, every clip that has a camera (not Skip) is copied.
+      Check clips to limit the backup to just those; Skipped clips are never copied.
+      Existing cam folders are counted for the next suggestion, but their
       filed clips are never selected again.${isInformal()
         ? ' The Copy page previews the new modified-time sequence names before anything moves.' : ''}</p>
     ${masters.length ? `<div class="note info">
@@ -1918,7 +1935,7 @@ function renderCameras() {
         ${cams.map((n) => `<button class="sm" data-batch="${n}">${esc(camLabel(n))}</button>`).join('')}
         <button class="sm" data-batch="skip">Skip</button>
         <button class="sm ghost" id="btnClearSel">Clear selection</button>`
-        : '<span class="hint" style="margin:0">Tick clips to back up, then choose their camera. Unticked clips will not be copied.</span>'}
+        : '<span class="hint" style="margin:0">Nothing ticked means every shown clip is copied to its camera. Tick clips to back up only those.</span>'}
     </div>`}
     ${!noClips && !shownFiles.length ? '<div class="empty"><div>No files match these filters.</div></div>' : ''}
     <div class="scroll" ${noClips || !shownFiles.length ? 'style="display:none"' : ''}><table>
@@ -2082,11 +2099,14 @@ function wireCameras() {
 
 }
 
-async function scanSource(src, force = false) {
+async function scanSource(src, force = false, deep = false) {
   if (!src || (state.scans[src.path] && !force)) return;
   try {
-    const r = await call('scan', { root: src.path, session_date: sessionDate() },
-      { label: `Reading ${src.label}` });
+    // The quick Scan reads only the drive root, where the program master lives;
+    // Detailed scan walks the whole drive for footage nested in card folders.
+    const r = await call('scan',
+      { root: src.path, session_date: sessionDate(), max_depth: deep ? 8 : 0 },
+      { label: `Reading ${src.label}${deep ? ' — whole drive' : ''}` });
     state.scans[src.path] = r;
     if (!r.files.length) toast(`No video files found on ${src.label}.`, 'err');
     else { await applyDateSuggestion(src); pruneAssignments(); ensureDefaultAssignments(); }
@@ -2197,7 +2217,7 @@ function renderCopy() {
       ${t.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
       <div class="tree">
         ${t.job_folder ? `<div class="dir">📁 ${esc(t.job_folder)}</div>` : ''}
-        <div class="dir ${t.job_folder ? 'indent1' : ''}">📁 ${esc(t.session_folder)} ${nameCount(t.session_folder)}</div>
+        <div class="dir ${t.job_folder ? 'indent1' : ''}">📁 ${esc(t.session_folder)} ${pathCount(t.session_path)}</div>
         ${isInformal() ? '' : (t.master_present && !t.items.some((i) => i.kind === 'master')
           ? '<div class="ren indent2">🎬 <span style="color:var(--ok)">master already filed, kept</span></div>'
           : masterRows(t))}
@@ -2284,7 +2304,7 @@ function masterRows(t) {
   }
   return items.map((i) => `<div class="ren indent2">🎬
     <span style="color:var(--muted)">${esc(i.original_name)} →</span>
-    <b>${esc(i.dst.split(/[\\/]/).pop())}</b> ${nameCount(i.dst.split(/[\\/]/).pop())}
+    <b>${esc(i.dst.split(/[\\/]/).pop())}</b> ${pathCount(i.final_dst || i.dst)}
     <span style="color:var(--muted)">· ${fmtDurAuto(i.duration)}</span></div>`).join('');
 }
 
@@ -2336,7 +2356,7 @@ function camGroups(t) {
     const head = `<div class="dir ${folderIndent}">📁 ${esc(folder)}${already}${
       info.newItems.length ? ` <span style="color:var(--accent)">· +${info.newItems.length} new</span>` : ''}${emptyTag}</div>`;
     return head + info.newItems.map((i) => `<div class="ren ${folderIndent}" style="padding-left:${filePadding}px">
-      <b>${esc(i.original_name)}</b> ${nameCount(i.dst.split(/[\\/]/).pop())}
+      <b>${esc(i.original_name)}</b> ${pathCount(i.final_dst || i.dst)}
       <span style="color:var(--muted)">· ${fmtDur(i.duration)} · ${fmtBytes(i.size)}${
         i.original_name !== i.dst.split(/[\\/]/).pop()
           ? ` · renamed to ${esc(i.dst.split(/[\\/]/).pop())}${
@@ -2910,8 +2930,14 @@ function render() {
   // the top — jarring when you assign a clip halfway down the Cameras page. Keep
   // the scroll position of the clip list across the render.
   const priorScroll = document.querySelector('.scroll')?.scrollTop || 0;
+  // The naming editor belongs where clip names are actually decided: for formal
+  // that is the Folder step (the master takes the session name; camera clips keep
+  // their originals), for informal it is the Cameras step (every camera clip is
+  // renamed from the event name — the Folder step's own "Edit session folder"
+  // already covers the folder name there).
+  const namingStep = isInformal() ? state.step === 2 : state.step === 1;
   $('content').innerHTML = RENDERERS[state.step]()
-    + ([1, 2].includes(state.step) && primarySource() ? renderNamingEditor() : '');
+    + (namingStep && primarySource() ? renderNamingEditor() : '');
   WIRERS[state.step]();
   wireNamingEditor();
   const list = document.querySelector('.scroll');
@@ -2967,7 +2993,7 @@ function footerHint() {
       : 'Pick the master clip to continue';
     case 2: {
       const n = selected(primarySource()).length;
-      return n ? `${n} clip(s) included in backup` : 'Tick clips to include in backup';
+      return n ? `${n} clip(s) included in backup` : 'No clips to include yet — import or add clips';
     }
     case 3: return state.runResult ? 'Copy finished' : '';
     default: return '';

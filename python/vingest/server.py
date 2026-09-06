@@ -110,9 +110,14 @@ def m_detect_structures(p, _id):
 
 
 def m_scan(p, req_id):
-    """Probe every video under a root — the file list the GUI assigns to cams."""
+    """Probe every video under a root — the file list the GUI assigns to cams.
+
+    `max_depth` bounds how deep the walk goes: 0 is the drive root only (the
+    quick scan that just needs to find the program master), while a larger value
+    is the detailed whole-drive scan for footage nested inside card folders.
+    """
     emit = _progress(req_id)
-    paths = probe.scan_videos(p["root"])
+    paths = probe.scan_videos(p["root"], p.get("max_depth", 8))
     out = []
     for n, path in enumerate(paths, 1):
         if req_id in _CANCELLED:

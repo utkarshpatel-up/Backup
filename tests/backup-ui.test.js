@@ -18,7 +18,7 @@ function setup() {
   return (code) => vm.runInContext(code, context);
 }
 
-test('only checked camera clips reach an informal plan, regardless of filters', () => {
+test('informal plan follows ticked clips, or all of them when none are ticked, regardless of filters', () => {
   const run = setup();
   run(`state.backupType = 'informal'; state.informalDest = 'E:/';
     state.template = {session_name: 'Event', job_name: 'Job'};
@@ -26,9 +26,41 @@ test('only checked camera clips reach an informal plan, regardless of filters', 
       {path:'D:/b.MP4',name:'b.MP4',manual:true}];
     state.assign = {'D:/a.MP4':1, 'D:/b.MP4':2}; state.selection=['D:/a.MP4'];
     state.cameraFilterCam='2';`);
+  // Ticking one clip narrows the plan to just it — the camera filter is irrelevant.
   assert.equal(run('JSON.stringify(buildSpec().targets[0].cams)'), '{"1":["D:/a.MP4"]}');
+  // Ticking nothing files every eligible clip.
   run('state.selection=[]');
-  assert.equal(run('JSON.stringify(buildSpec().targets[0].cams)'), '{}');
+  assert.equal(run('JSON.stringify(buildSpec().targets[0].cams)'), '{"1":["D:/a.MP4"],"2":["D:/b.MP4"]}');
+});
+
+test('the informal card pool ignores a leftover scan of the output drive', () => {
+  const run = setup();
+  run(`state.backupType = 'informal'; state.informalDest = 'E:/';
+    state.template = {session_name: 'Event', job_name: 'Job'};
+    // A scan of E: (e.g. from an earlier formal run) sits in state.scans; its
+    // root master must never appear as informal camera footage.
+    state.scans['E:/'] = {files: [{path:'E:/MASTER.MOV',name:'MASTER.MOV'}]};
+    state.extraFiles['E:/'] = [{path:'D:/card.MP4',name:'card.MP4',manual:true}];
+    state.assign = {'D:/card.MP4':1};`);
+  const names = run("JSON.stringify(cameraFiles(primarySource()).map((f)=>f.name))");
+  assert.equal(names, '["card.MP4"]');
+});
+
+test('formal backup files every shown clip when nothing is ticked, only ticked ones otherwise', () => {
+  const run = setup();
+  run(`state.backupType = 'formal';
+    state.sources = [{path:'E:/', role:'h265', dest:'E:/'}]; state.masterSource = 'E:/';
+    state.extraFiles['E:/'] = [{path:'E:/a.MP4',name:'a.MP4',manual:true},
+      {path:'E:/b.MP4',name:'b.MP4',manual:true}];
+    state.assign = {'E:/a.MP4':1, 'E:/b.MP4':1}; state.selection = [];`);
+  // Nothing ticked → both eligible clips are filed.
+  assert.equal(run('selected(primarySource()).length'), 2);
+  // Ticking one narrows the backup to just that clip.
+  run("state.selection = ['E:/a.MP4']");
+  assert.equal(run('selected(primarySource()).length'), 1);
+  // A clip explicitly on Skip is never filed, even with nothing ticked.
+  run("state.selection = []; state.assign['E:/b.MP4'] = 'skip'");
+  assert.equal(run('selected(primarySource()).length'), 1);
 });
 
 test('Verify requires successful completion of the current plan', () => {
@@ -53,8 +85,8 @@ test('master lookup uses that source and the selected path survives incomplete s
   assert.match(run('masterRows({items:[],master_present:false})'), /No master selected/);
 });
 
-test('character counter becomes red only above 150', () => {
+test('character counter becomes red only above 225', () => {
   const run = setup();
-  assert.doesNotMatch(run("nameCount('a'.repeat(150))"), /over-limit/);
-  assert.match(run("nameCount('a'.repeat(151))"), /over-limit/);
+  assert.doesNotMatch(run("nameCount('a'.repeat(225))"), /over-limit/);
+  assert.match(run("nameCount('a'.repeat(226))"), /over-limit/);
 });

@@ -115,8 +115,18 @@ ipcMain.handle('dialog:pickFolder', async (_e, title) => {
 ipcMain.handle('dialog:pickVideoFiles', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose footage',
-    filters: [{ name: 'Video', extensions: ['mov', 'mp4', 'mxf', 'm4v', 'avi', 'mts',
-                                            'm2ts', 'mkv', 'braw', 'r3d', 'crm'] }],
+    // Media is the default, but audio recorders, images and text guideline
+    // files are all selectable — pick "All files" for anything else.
+    filters: [
+      { name: 'Media (video & audio)', extensions: [
+        'mov', 'mp4', 'mxf', 'm4v', 'avi', 'mts', 'm2ts', 'mkv', 'braw', 'r3d', 'crm',
+        'wav', 'mp3', 'aac', 'm4a', 'flac', 'ogg', 'opus', 'wma', 'aif', 'aiff'] },
+      { name: 'Video', extensions: ['mov', 'mp4', 'mxf', 'm4v', 'avi', 'mts',
+                                    'm2ts', 'mkv', 'braw', 'r3d', 'crm'] },
+      { name: 'Audio', extensions: ['wav', 'mp3', 'aac', 'm4a', 'flac', 'ogg',
+                                    'opus', 'wma', 'aif', 'aiff'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
     properties: ['openFile', 'multiSelections'],
   });
   return r.canceled ? [] : r.filePaths;

@@ -13,6 +13,11 @@ from pathlib import Path
 
 VIDEO_EXTS = {".mov", ".mp4", ".mxf", ".m4v", ".avi", ".mts", ".m2ts",
               ".mkv", ".braw", ".r3d", ".crm", ".insv", ".lrv"}
+# Audio recorders (e.g. a TASCAM) are filed as camera clips too.
+AUDIO_EXTS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus",
+              ".wma", ".aif", ".aiff"}
+# Video + audio: everything we treat as a clip that can be filed to a cam folder.
+MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
 # Sidecars and camera junk we copy or skip but never treat as clips.
 SIDECAR_EXTS = {".xml", ".cpi", ".bim", ".thm", ".lrf", ".sec", ".modd", ".moff"}
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini", ".spotlight-v100",
@@ -201,6 +206,19 @@ def is_video(path: Path) -> bool:
     return path.suffix.lower() in VIDEO_EXTS
 
 
+def is_media(path: Path) -> bool:
+    """Video or audio — anything we treat as a filable camera clip."""
+    return path.suffix.lower() in MEDIA_EXTS
+
+
+def light_info(path: str | Path) -> "MediaInfo":
+    """A metadata-free record for a file we file but do not probe (an image or
+    text guideline the operator picked, or media when ffprobe is unavailable)."""
+    p = Path(path)
+    st = p.stat()
+    return MediaInfo(path=str(p), name=p.name, size=st.st_size, mtime=st.st_mtime)
+
+
 def _is_junk_name(name: str) -> bool:
     """True for operating-system metadata and trash folder names."""
     lowered = name.lower()
@@ -217,6 +235,17 @@ def is_junk(path: Path) -> bool:
 
 def scan_videos(root: str | Path, max_depth: int = 8) -> list[Path]:
     """All video files under `root`, junk and hidden system dirs excluded."""
+    return _scan(root, max_depth, is_video)
+
+
+def scan_media(root: str | Path, max_depth: int = 8) -> list[Path]:
+    """All video AND audio files under `root` — the clips a cam folder can hold
+    (e.g. a TASCAM's .wav sit alongside a camera's .mov). Sidecars like .srt /
+    .lrf and camera junk are ignored."""
+    return _scan(root, max_depth, is_media)
+
+
+def _scan(root, max_depth, accept) -> list[Path]:
     root = Path(root)
     out: list[Path] = []
     if not root.exists():
@@ -229,7 +258,7 @@ def scan_videos(root: str | Path, max_depth: int = 8) -> list[Path]:
         dirnames[:] = [x for x in dirnames if not _is_junk_name(x)]
         for f in filenames:
             p = d / f
-            if is_video(p) and not is_junk(p):
+            if accept(p) and not is_junk(p):
                 out.append(p)
     out.sort(key=lambda p: str(p).lower())
     return out

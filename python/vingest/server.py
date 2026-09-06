@@ -148,8 +148,12 @@ def m_add_files(p, req_id):
             rejected.append(str(item))
             continue
         if item.is_dir():
-            paths.extend(probe.scan_videos(item))
-        elif probe.is_video(item):
+            # A folder is swept for video AND audio clips (a TASCAM's .wav, a
+            # drone's .mov), skipping sidecars like .srt / .lrf and junk.
+            paths.extend(probe.scan_media(item))
+        elif item.is_file():
+            # A file the operator picked by hand is taken as-is — video, audio,
+            # or an image / text guideline file they want filed alongside.
             paths.append(item)
 
     seen, unique = set(), []
@@ -164,7 +168,13 @@ def m_add_files(p, req_id):
         if req_id in _CANCELLED:
             return {"cancelled": True, "files": out}
         emit({"stage": "scan", "done": n, "total": len(unique), "name": item.name})
-        out.append(probe.probe(item).to_dict())
+        # Media is probed for duration/codec; a non-media guideline file (image,
+        # text) or media with no ffprobe available is recorded without a probe.
+        try:
+            info = probe.probe(item) if probe.is_media(item) else probe.light_info(item)
+        except RuntimeError:
+            info = probe.light_info(item)
+        out.append(info.to_dict())
     out.sort(key=lambda f: (f.get("mtime") or 0))
     return {"files": out, "count": len(out), "rejected": rejected,
             "rejected_count": len(rejected),

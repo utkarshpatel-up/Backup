@@ -64,6 +64,18 @@ else installed.
 > `.exe` engine has to be frozen on a Windows machine. Build once, then copy the
 > installer to any Windows PC.
 
+**First, in PowerShell (once per Windows user):** allow the npm/npx script shims
+to run. Without this, `npm install` / `npm run` fail with *"running scripts is
+disabled on this system"*. Open **Windows PowerShell** and run:
+
+```
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+Answer `Y` when prompted. This affects only your user account, not the machine.
+(`RemoteSigned` lets local scripts run; use `Bypass` instead if your policy is
+locked down further. To check the current setting: `Get-ExecutionPolicy -List`.)
+
 On a Windows build machine that has Node + Python:
 
 ```
@@ -134,6 +146,10 @@ Helper scripts for macOS live in `scripts/macos.sh` (`setup:mac`, `dist:mac`).
   PATH. Install Python 3 with **Add to PATH**, reopen the terminal, retry. You
   can also force a specific interpreter via the `VINGEST_PYTHON` environment
   variable (full path to `python.exe`).
+- **"running scripts is disabled on this system"** / `npm : File … .ps1 cannot
+  be loaded` (PowerShell): the execution policy blocks the npm/npx shims. Run
+  `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` once,
+  answer `Y`, then reopen PowerShell. (Affects your user only.)
 - **"Python 3 with PyInstaller was not found"** (building): run
   `python -m pip install pyinstaller xxhash`, then retry `npm run dist:win`.
 - **Durations/codecs show as blank**: ffmpeg/ffprobe isn't found. Install ffmpeg

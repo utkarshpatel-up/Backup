@@ -1812,3 +1812,53 @@ class TestFrappeSync:
     def test_rpc_methods_registered(self):
         assert "frappe_sync" in server.METHODS
         assert "frappe_scan" in server.METHODS
+
+
+class TestMediaAndFolderScan:
+    """Audio recorders and drone folders as clips; sidecars ignored."""
+
+    def test_scan_media_takes_audio_and_video_skips_sidecars(self, tmp_path):
+        (tmp_path / "SOUND").mkdir()
+        (tmp_path / "SOUND" / "260903_0071-1.wav").write_bytes(b"x")
+        (tmp_path / "SOUND" / "260903_0071.bin").write_bytes(b"x")
+        (tmp_path / "DJI_001").mkdir()
+        (tmp_path / "DJI_001" / "DJI_0001_D_AV.MOV").write_bytes(b"x")
+        (tmp_path / "DJI_001" / "DJI_0001_D_AV.SRT").write_bytes(b"x")
+        (tmp_path / "DJI_001" / "DJI_0002_D.MP4").write_bytes(b"x")
+        (tmp_path / "DJI_001" / "DJI_0002_D.LRF").write_bytes(b"x")
+        names = {p.name for p in probe.scan_media(tmp_path)}
+        assert names == {"260903_0071-1.wav", "DJI_0001_D_AV.MOV", "DJI_0002_D.MP4"}
+
+    def test_scan_videos_still_excludes_audio(self, tmp_path):
+        (tmp_path / "a.wav").write_bytes(b"x")
+        (tmp_path / "b.mp4").write_bytes(b"x")
+        assert {p.name for p in probe.scan_videos(tmp_path)} == {"b.mp4"}
+
+    def test_is_media(self):
+        assert probe.is_media(Path("x.wav")) and probe.is_media(Path("x.mov"))
+        assert not probe.is_media(Path("x.txt")) and not probe.is_media(Path("x.srt"))
+
+    def test_add_files_accepts_audio_and_hand_picked_nonmedia(self, tmp_path):
+        wav = tmp_path / "260903_0071-1.wav"; wav.write_bytes(b"x")
+        todo = tmp_path / "todo.txt"; todo.write_text("skip clip 3")
+        res = server.m_add_files({"paths": [str(wav), str(todo)]}, 1)
+        assert {f["name"] for f in res["files"]} == {"260903_0071-1.wav", "todo.txt"}
+
+    def test_existing_audio_cam_counts_as_occupied(self, tmp_path):
+        # An audio-only "Cam-05 (Audio)" must register as filled so a new camera
+        # is offered Cam-06, not Cam-05.
+        dest = tmp_path / "DEST"
+        session = dest / "2600 Dt-31 Aug 2026" / "Varanasi Dt-31-Aug-26 Clips-08"
+        for cam in ("Cam-01", "Cam-02", "Cam-03", "Cam-04"):
+            (session / cam).mkdir(parents=True)
+            (session / cam / "v.mp4").write_bytes(b"x")
+        (session / "Cam-05 (Audio)").mkdir(parents=True)
+        (session / "Cam-05 (Audio)" / "a.wav").write_bytes(b"x")
+        raw = tmp_path / "RAW"; raw.mkdir()
+        (raw / "new.mp4").write_bytes(b"x")
+        plan = ingest.build_plan({"targets": [{
+            "role": "informal", "source_root": str(raw), "dest_root": str(dest),
+            "session_source": str(session), "allow_no_master": True,
+            "rename_camera_clips": True, "cams": {}}]})
+        existing = plan["targets"][0]["existing_cams"]
+        assert existing.get("Cam-05 (Audio)") == 1, existing

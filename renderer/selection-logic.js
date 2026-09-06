@@ -185,7 +185,8 @@
       for (const [folder, count] of Object.entries(target.existing_cams || {})) {
         if (!(Number(count) > 0)) continue;
         const clean = String(folder || '').trim();
-        const match = /^Cam-(\d+)$/i.exec(clean);
+        // Match "Cam-05" and suffixed names like "Cam-05 (Audio)" / "Cam-08 (MM Drone)".
+        const match = /^Cam-(\d+)\b/i.exec(clean);
         const number = match ? Number(match[1]) : named.get(clean.toLowerCase());
         if (Number.isFinite(number)) occupied.add(number);
       }

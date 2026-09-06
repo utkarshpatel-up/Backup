@@ -181,3 +181,12 @@ test('the final safety check rejects a clip or camera not shown by the Cameras p
   ] }] };
   assert.equal(rules.unexpectedPlanClips(unsafe, assignments, files, 'win32').length, 3);
 });
+
+test('a suffixed camera folder like "Cam-05 (Audio)" counts as occupied', () => {
+  const plan = { targets: [{ existing_cams: {
+    'Cam-01': 6, 'Cam-02': 1, 'Cam-03': 1, 'Cam-04': 20, 'Cam-05 (Audio)': 2,
+  } }] };
+  const occupied = rules.occupiedCamNumbers(plan, {});
+  assert.deepEqual(occupied, [1, 2, 3, 4, 5]);
+  assert.deepEqual(rules.lowestAvailableCams(1, occupied), [6]);
+});

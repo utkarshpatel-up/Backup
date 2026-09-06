@@ -206,7 +206,17 @@ def build_plan(spec: dict, progress=None) -> dict:
         if path not in probe_cache:
             if progress:
                 progress({"stage": "probe", "name": Path(path).name})
-            probe_cache[path] = probe(path)
+            # Media is probed for duration/codec; a non-media guideline file
+            # (image, text) the operator chose to file is recorded from stat
+            # alone, and probing falls back to that if ffprobe is unavailable.
+            from .probe import is_media, light_info
+            if is_media(Path(path)):
+                try:
+                    probe_cache[path] = probe(path)
+                except RuntimeError:
+                    probe_cache[path] = light_info(path)
+            else:
+                probe_cache[path] = light_info(path)
         return probe_cache[path]
 
     for t in spec.get("targets", []):
@@ -508,8 +518,11 @@ def build_plan(spec: dict, progress=None) -> dict:
                 if not child.is_dir():
                     continue
                 try:
+                    # Count audio as well as video, so an audio-only camera
+                    # (e.g. "Cam-05 (Audio)") registers as filled and its number
+                    # is not offered to a new camera.
                     n = sum(1 for f in child.iterdir()
-                            if f.is_file() and f.suffix.lower() in VIDEO_EXTS)
+                            if f.is_file() and f.suffix.lower() in CLIP_COUNT_EXTS)
                 except OSError:
                     n = 0
                 if n:

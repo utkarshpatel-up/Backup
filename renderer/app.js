@@ -1276,6 +1276,55 @@ function camGroupsFromPool(files) {
   return selectionRules.cameraGroups(files, window.api.platform);
 }
 
+// What sort of source a clip is, used to auto-name its camera folder so the
+// preview reads e.g. "Cam-05 (Audio)" / "Cam-06 (Drone)" before the copy.
+const AUDIO_CLIP_EXTS = new Set(['wav', 'mp3', 'aac', 'm4a', 'flac', 'ogg',
+                                 'opus', 'wma', 'aif', 'aiff']);
+
+function clipKind(file) {
+  const name = String((file && (file.name || file.path)) || '').split(/[\\/]/).pop();
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if (AUDIO_CLIP_EXTS.has(ext)) return 'audio';
+  if (/^dji_/i.test(name)) {
+    const stem = name.replace(/\.[^.]+$/, '');
+    // DJI names the AV-mode files "..._D_AV"; the plain (motion-master) files
+    // have no AV token.
+    return /(^|_)av(?=_|$)/i.test(stem) ? 'drone_av' : 'drone_mm';
+  }
+  return 'camera';
+}
+
+function kindSuffix(kind) {
+  return kind === 'audio' ? ' (Audio)'
+    : kind === 'drone_av' ? ' (Drone)'
+      : kind === 'drone_mm' ? ' (MM Drone)' : '';
+}
+
+// Group clips for auto-suggest, keeping audio, AV-drone and motion-drone as
+// their own cameras rather than merging them by drive/format.
+function camGroupsWithKind(files) {
+  const byKind = {};
+  for (const f of files || []) (byKind[clipKind(f)] = byKind[clipKind(f)] || []).push(f);
+  const out = [];
+  for (const kind of ['camera', 'audio', 'drone_av', 'drone_mm']) {
+    for (const g of selectionRules.cameraGroups(byKind[kind] || [], window.api.platform)) {
+      out.push({ kind, files: g });
+    }
+  }
+  return out;
+}
+
+// Give a camera a "(Audio)" / "(Drone)" / "(MM Drone)" folder name from the
+// clips assigned to it — only when its clips are all one such kind and the
+// operator hasn't typed their own name for it.
+function applyKindCamName(cam, kind) {
+  const suffix = kindSuffix(kind);
+  if (!suffix) return;
+  const current = (state.camNames[cam] || '').trim();
+  const isDefault = !current || /^Cam-\d+(\s*\(.*\))?$/i.test(current);
+  if (isDefault) state.camNames[cam] = `Cam-${String(cam).padStart(2, '0')}${suffix}`;
+}
+
 /** A cam's folder name: the custom name if set, else "Cam-NN". */
 function camLabel(n) {
   return (state.camNames[n] || '').trim() || `Cam-${String(n).padStart(2, '0')}`;
@@ -1798,6 +1847,15 @@ async function importCameraCards() {
       const cam = camByPath.get(pathKey(f.path));
       if (cam) state.assign[f.path] = cam;
     }
+    // Name a card's cam folder by what it holds — an audio recorder becomes
+    // "(Audio)", a DJI card "(Drone)" / "(MM Drone)".
+    for (const c of r.cards) {
+      const cam = state.cardCams[cardKey(c)];
+      if (!cam) continue;
+      const kinds = new Set((c.files || []).map(
+        (p) => clipKind({ path: p, name: String(p).split(/[\\/]/).pop() })));
+      if (kinds.size === 1) applyKindCamName(cam, [...kinds][0]);
+    }
     state.camCount = Math.max(state.camCount, ...Object.values(state.cardCams));
     state.plan = null; state.namingPreview = null;
 
@@ -2271,11 +2329,13 @@ function wireCameras() {
       const destinationPlan = await call('build_plan', checkSpec,
         { label: 'Checking existing camera folders' });
       const occupied = selectionRules.occupiedCamNumbers(destinationPlan, state.camNames);
-      const groups = camGroupsFromPool(clips);
+      const groups = camGroupsWithKind(clips);
       const previousCount = state.camCount;
       const suggestedCams = nextFreeCams(groups.length, occupied);
-      groups.forEach((files, i) => {
-        for (const f of files) state.assign[f.path] = suggestedCams[i];
+      groups.forEach((grp, i) => {
+        const cam = suggestedCams[i];
+        for (const f of grp.files) state.assign[f.path] = cam;
+        applyKindCamName(cam, grp.kind);   // "(Audio)" / "(Drone)" / "(MM Drone)"
       });
       state.camCount = Math.max(state.camCount, ...suggestedCams);
       state.plan = null; state.namingPreview = null;

@@ -4,6 +4,7 @@
 """
 
 import datetime as dt
+import json
 import os
 import shutil
 import subprocess
@@ -14,8 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-from vingest import (compare, ingest, naming, organize, probe, server,  # noqa: E402
-                     sources, structure)
+from vingest import (compare, durations, frappe_sync, ingest, naming,  # noqa: E402
+                     organize, probe, server, sources, structure)
 import zipfile  # noqa: E402
 
 HAVE_FFMPEG = shutil.which("ffmpeg") is not None and probe.configure().get("ffprobe")
@@ -1714,3 +1715,100 @@ class TestOrganizeRenameTool:
     def test_the_rpc_methods_are_registered(self):
         assert "plan_rename" in server.METHODS
         assert "apply_rename" in server.METHODS
+
+
+class TestDurationsFormat:
+    def test_format_styles(self):
+        assert durations.format_duration(3723, "human") == "1h 2m 3s"
+        assert durations.format_duration(3723, "hms") == "01:02:03"
+        assert durations.format_duration(3723, "seconds") == "3723"
+        assert durations.format_duration(None, "human") == ""
+
+    def test_unknown_extension_returns_none(self, tmp_path):
+        p = tmp_path / "x.crm"
+        p.write_bytes(b"\x00\x01\x02")
+        assert durations.get_duration(p) is None
+
+
+class TestFrappeSync:
+    """Push informal session duration + clip count to Frappe (field lookup,
+    update-only, unmatched exported)."""
+
+    def _tree(self, tmp_path):
+        job = tmp_path / "2552 Dt-16 Apr 2026"
+        s1 = job / "01 Willingen Lunch Dt-16-Apr-26 Clips-05"
+        (s1 / "Cam-01").mkdir(parents=True)
+        (s1 / "Cam-02").mkdir(parents=True)
+        for i in range(3):
+            (s1 / "Cam-01" / f"a{i}.mp4").write_bytes(b"x")
+        for i in range(2):
+            (s1 / "Cam-02" / f"b{i}.mp4").write_bytes(b"x")
+        s2 = job / "02 Willingen Dinner Dt-16-Apr-26 Clips-04"
+        s2.mkdir(parents=True)
+        for i in range(4):
+            (s2 / f"c{i}.mov").write_bytes(b"x")
+        return job
+
+    def _config(self):
+        return {"url": "https://x", "api_key": "k", "api_secret": "s",
+                "doctype": "Informal Session", "project_field": "project_id",
+                "session_field": "session_no", "duration_field": "total_duration",
+                "clips_field": "no_of_clips", "duration_format": "human"}
+
+    def test_scan_finds_sessions_and_rolls_up_cameras(self, tmp_path):
+        self._tree(tmp_path)
+        sessions = frappe_sync.scan_sessions(str(tmp_path))
+        assert [(s["project"], s["session"], s["clips"]) for s in sessions] == [
+            ("2552", 1, 5), ("2552", 2, 4)]
+
+    def test_camera_folders_are_not_sessions(self, tmp_path):
+        self._tree(tmp_path)
+        sessions = frappe_sync.scan_sessions(str(tmp_path))
+        assert all(not s["folder"].lower().startswith("cam") for s in sessions)
+
+    def test_sync_updates_existing_and_flags_unmatched(self, tmp_path):
+        self._tree(tmp_path)
+        sessions = frappe_sync.scan_sessions(str(tmp_path))
+        seen = []
+
+        def fake(method, url, headers, body=None, timeout=30):
+            seen.append((method, body))
+            if method == "GET":
+                import urllib.parse as up
+                sess = json.loads(up.parse_qs(up.urlparse(url).query)["filters"][0])[1][2]
+                return (200, {"data": [{"name": "SESS-1"}]}) if sess == 1 else (200, {"data": []})
+            return 200, {"data": {"name": "SESS-1"}}
+
+        res = frappe_sync.sync(self._config(), sessions, requester=fake)
+        assert [u["session"] for u in res["updated"]] == [1]
+        assert [u["session"] for u in res["unmatched"]] == [2]
+        assert not res["errors"]
+        put = next(b for m, b in seen if m == "PUT")
+        assert put["no_of_clips"] == 5 and "total_duration" in put
+
+    def test_ambiguous_match_is_an_error_not_an_update(self, tmp_path):
+        self._tree(tmp_path)
+        sessions = frappe_sync.scan_sessions(str(tmp_path))
+
+        def fake(method, url, headers, body=None, timeout=30):
+            return 200, {"data": [{"name": "A"}, {"name": "B"}]}
+
+        res = frappe_sync.sync(self._config(), sessions, requester=fake)
+        assert not res["updated"]
+        assert len(res["errors"]) == 2
+
+    def test_config_problems_lists_missing_fields(self):
+        assert frappe_sync.config_problems({"url": "x"})
+        assert not frappe_sync.config_problems(self._config())
+
+    def test_write_unmatched_csv(self, tmp_path):
+        rows = [{"project": "2552", "session": 2, "folder": "02 Dinner",
+                 "clips": 4, "seconds": 65, "reason": "No matching record",
+                 "path": str(tmp_path)}]
+        out = frappe_sync.write_unmatched_csv(str(tmp_path / "u.csv"), rows)
+        text = Path(out).read_text(encoding="utf-8")
+        assert "No matching record" in text and "2552" in text
+
+    def test_rpc_methods_registered(self):
+        assert "frappe_sync" in server.METHODS
+        assert "frappe_scan" in server.METHODS

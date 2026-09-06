@@ -16,8 +16,8 @@ import threading
 import traceback
 from pathlib import Path
 
-from . import (__version__, compare, ingest, naming, organize, probe, report,
-               sources, structure)
+from . import (__version__, compare, frappe_sync, ingest, naming, organize,
+               probe, report, sources, structure)
 from .hashing import algorithm
 
 _LOCK = threading.Lock()
@@ -235,6 +235,45 @@ def m_plan_rename(p, _id):
 def m_apply_rename(p, _id):
     """Perform a rename plan produced by plan_rename."""
     return organize.apply_rename(p["plan"])
+
+
+def m_frappe_scan(p, _id):
+    """Preview the informal sessions under a folder — duration + clip count each,
+    read straight from headers. No network, nothing written."""
+    return {"sessions": frappe_sync.scan_sessions(p["root"])}
+
+
+def m_frappe_sync(p, req_id):
+    """Push each session's duration + clip count to its existing Frappe record.
+
+    Records that are not found are returned as `unmatched` and, together with any
+    errors, written to a CSV for the operator to fix in Frappe by hand.
+    """
+    import datetime as _dt
+    config = p["config"]
+    problems = frappe_sync.config_problems(config)
+    if problems:
+        raise ValueError("Frappe settings incomplete: " + ", ".join(problems))
+
+    emit = _progress(req_id)
+    emit({"stage": "frappe", "name": "Reading session durations…"})
+    sessions = frappe_sync.scan_sessions(p["root"])
+    result = frappe_sync.sync(config, sessions)
+
+    to_fix = result["unmatched"] + result["errors"]
+    csv_path = None
+    if to_fix and p.get("write_csv", True):
+        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = p.get("csv_path") or os.path.join(
+            os.path.abspath(p["root"]), f"frappe_unmatched_{stamp}.csv")
+        try:
+            csv_path = frappe_sync.write_unmatched_csv(target, to_fix)
+        except OSError:
+            import tempfile
+            csv_path = frappe_sync.write_unmatched_csv(
+                os.path.join(tempfile.gettempdir(), f"frappe_unmatched_{stamp}.csv"), to_fix)
+    result["csv_path"] = csv_path
+    return result
 
 
 def m_snapshot(p, req_id):

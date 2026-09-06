@@ -20,6 +20,39 @@ from . import naming
 from .hashing import file_digest
 from .probe import MediaInfo, VIDEO_EXTS, is_junk, probe, scan_videos
 
+# Extensions that count toward an informal session folder's "Clips-NN" tally:
+# every video format we file, plus the audio recorders that sit beside them.
+# Kept in step with scripts/renaming_informal_standalone.py so the app and that
+# standalone script agree on what a "clip" is.
+CLIP_COUNT_EXTS = VIDEO_EXTS | {".wav", ".mp3", ".aac", ".m4a", ".wma", ".flac"}
+
+
+def _count_clip_files(folder) -> int:
+    """Total media files (video + audio) anywhere beneath `folder`.
+
+    Counts recursively so clips filed under Cam-01, Cam-02, … all add up, and
+    ignores dot-files and non-media sidecars — exactly the standalone rename
+    script's rule.
+    """
+    total = 0
+    for _dirpath, _dirnames, filenames in os.walk(folder):
+        for f in filenames:
+            if f.startswith("."):
+                continue
+            if os.path.splitext(f)[1].lower() in CLIP_COUNT_EXTS:
+                total += 1
+    return total
+
+
+def _is_informal(target) -> bool:
+    """Informal targets file cameras directly under the session folder and
+    carry a 'Clips-NN' count on that folder rather than a 'Dur-' token."""
+    if hasattr(target, "get"):
+        return bool(target.get("direct_camera_folders")
+                    or target.get("role") == "informal")
+    return bool(getattr(target, "direct_camera_folders", False)
+                or getattr(target, "role", "") == "informal")
+
 
 @dataclass
 class PlanItem:
@@ -487,6 +520,31 @@ def build_plan(spec: dict, progress=None) -> dict:
                 for f in Path(staging_path).iterdir())
         except OSError:
             plan.master_present = False
+
+        # Informal session folders record how many clips they hold in their
+        # "Clips-NN" name. Predict that count for the preview — clips already on
+        # disk plus the new ones this run will add — while keeping the base name
+        # for staging so filing still matches an existing folder. The count is
+        # recomputed from disk at execute time (see execute_plan) so the folder
+        # that lands is always right, even if clips are skipped or added later.
+        if direct_camera_folders:
+            base_folder = naming.set_clips_count(Path(plan.session_path).name, None)
+            already = _count_clip_files(Path(plan.staging_path))
+            new_clips = sum(1 for i in plan.items if i.kind == "clip")
+            final_name = naming.set_clips_count(base_folder, already + new_clips)
+            final_path = Path(plan.session_path).with_name(final_name)
+            plan.session_folder = final_name
+            plan.session_path = str(final_path)
+            plan.rename_from = Path(plan.staging_path).name
+            plan.rename_to = ("" if final_name == Path(plan.staging_path).name
+                              else final_name)
+            # final_dst still points under the base-named staging folder; move it
+            # under the counted final folder so the preview shows the real path.
+            for i in plan.items:
+                rel = os.path.relpath(i.dst, plan.staging_path)
+                i.final_dst = str(final_path / rel)
+            session_path = final_path
+
         try:
             plan.free_bytes = shutil.disk_usage(dest_root).free
         except OSError:
@@ -759,6 +817,31 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                 item["message"] = str(e)
                 errors.append(f"{src.name}: {e}")
             results.append(item)
+
+    # Informal folders carry a "Clips-NN" tally of the clips they hold. Now that
+    # the copy has finished, count what actually landed on disk and set that
+    # exact count on the folder name — the authoritative version of the estimate
+    # build_plan showed, applying the same rule as the standalone rename script
+    # (scripts/renaming_informal_standalone.py). Only done on a clean run, so an
+    # interrupted copy never stamps a folder with a half-filed count.
+    if not cancelled and not errors:
+        for target in plan.get("targets", []):
+            if not _is_informal(target):
+                continue
+            staging = Path(target["staging_path"])
+            if not staging.is_dir():
+                continue
+            final_name = naming.set_clips_count(staging.name, _count_clip_files(staging))
+            final_path = staging.with_name(final_name)
+            target["rename_from"] = staging.name
+            target["rename_to"] = "" if final_name == staging.name else final_name
+            target["session_path"] = str(final_path)
+            for item in target.get("items", []):
+                try:
+                    rel = Path(item.get("dst", "")).relative_to(staging)
+                except ValueError:
+                    continue
+                item["final_dst"] = str(final_path / rel)
 
     # The folder rename happens last, and only if every file landed. Renaming
     # first would invalidate the source paths of anything living inside it, and

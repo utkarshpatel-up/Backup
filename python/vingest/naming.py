@@ -130,6 +130,28 @@ def session_folder_name(folder_name: str, total_seconds: float | None,
     return sanitize(out)
 
 
+def set_clips_count(name: str, count: int | None) -> str:
+    """Set (or clear) the 'Clips-NN' token on a session folder name.
+
+    An existing Clips- token is replaced; a `count` of None or below 1 removes
+    it. The number keeps at least two digits (the house 'Clips-02' form) and
+    widens for larger tallies ('Clips-109'). Any other tokens on the name are
+    left untouched, and the Clips- token is written last, as the reference
+    folders show it.
+
+    This is the app-side twin of the standalone rename script's folder-count
+    logic (scripts/renaming_informal_standalone.py): both write the actual
+    number of clips a session folder holds.
+    """
+    base = CLIPS_TOKEN_RE.sub("", name)
+    base = re.sub(r"\s{2,}", " ", base).strip()
+    if not count or int(count) < 1:
+        return sanitize(base)
+    count = int(count)
+    width = max(2, len(str(count)))
+    return sanitize(f"{base} Clips-{count:0{width}d}")
+
+
 def master_clip_name(folder_name: str, seconds: float | None,
                      index: int = 1, clip_count: int = 1, ext: str = "") -> str:
     """A master clip's name, built from the folder it sits in.

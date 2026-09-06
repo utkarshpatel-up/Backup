@@ -63,13 +63,16 @@ import sys
 
 DEFAULT_EXTENSIONS = {
     # video
-    "mp4", "mov", "mxf", "avi", "mkv", "m4v", "insv",
+    "mp4", "mov", "mxf", "avi", "mkv", "m4v", "insv", "mts",
     # audio
     "wav", "mp3", "aac", "m4a", "wma", "flac",
 }
 
 CAM_RE = re.compile(r"^(Cam-\d+)", re.IGNORECASE)
 CLIPS_COUNT_RE = re.compile(r"\s*Clips-\d+\s*$", re.IGNORECASE)
+# Matches a trailing "Clips-NN" so its number can be rewritten in place,
+# preserving the "Clips-" text (and its case) and any trailing whitespace.
+CLIPS_NUM_RE = re.compile(r"(Clips-)(\d+)(\s*)$", re.IGNORECASE)
 LEADING_NUM_RE = re.compile(r"^\d+\s+")
 # A "Dt-" date stamp in any of the shapes the folders use, so none of them
 # survive into the clip name:
@@ -148,6 +151,56 @@ def build_rename_plan(root: str, extensions):
     return plan
 
 
+def count_media_recursive(dirpath: str, extensions) -> int:
+    """Count all media files (matching extensions) anywhere beneath dirpath,
+    including inside Cam-NN and other sub-folders."""
+    total = 0
+    for _dp, _dirnames, filenames in os.walk(dirpath):
+        for f in filenames:
+            if f.startswith("."):
+                continue
+            if f.rsplit(".", 1)[-1].lower() in extensions:
+                total += 1
+    return total
+
+
+def build_folder_rename_plan(root: str, extensions):
+    """For every directory whose name ends in a 'Clips-NN' count, rewrite NN
+    to the actual number of media files found recursively inside it.
+
+    Returns a list of (old_path, new_path) for folders whose count differs
+    from what the name currently says.
+    """
+    plan = []
+    for dirpath, dirnames, _filenames in os.walk(root):
+        for d in dirnames:
+            m = CLIPS_NUM_RE.search(d)
+            if not m:
+                continue
+            folder_path = os.path.join(dirpath, d)
+            count = count_media_recursive(folder_path, extensions)
+            old_digits = m.group(2)
+            # Preserve zero-padding width of the original number.
+            width = max(len(old_digits), len(str(count)))
+            new_suffix = f"{m.group(1)}{count:0{width}d}{m.group(3)}"
+            new_name = d[: m.start()] + new_suffix
+            if new_name != d:
+                plan.append((folder_path, os.path.join(dirpath, new_name)))
+    return plan
+
+
+def apply_folder_plan(plan):
+    """Rename folders deepest-first so renaming a parent never invalidates a
+    child's path. Skips a rename if the target name already exists."""
+    for old_path, new_path in sorted(
+        plan, key=lambda pair: pair[0].count(os.sep), reverse=True
+    ):
+        if os.path.exists(new_path):
+            print(f"  SKIP (target exists): {new_path}", file=sys.stderr)
+            continue
+        os.rename(old_path, new_path)
+
+
 def apply_plan(plan):
     """Perform renames safely, using a temporary intermediate name for
     every file first so that renames never collide with each other or
@@ -180,6 +233,11 @@ def main():
         "--csv", metavar="PATH",
         help="Write the full rename plan (old path, new path) to a CSV file.",
     )
+    parser.add_argument(
+        "--no-folder-count", action="store_true",
+        help="Do not update the 'Clips-NN' count in folder names to match the "
+             "actual number of media files inside them.",
+    )
     args = parser.parse_args()
 
     root = os.path.abspath(args.root)
@@ -190,28 +248,43 @@ def main():
     extensions = {e.lower().lstrip(".") for e in args.ext} if args.ext else DEFAULT_EXTENSIONS
 
     plan = build_rename_plan(root, extensions)
+    folder_plan = [] if args.no_folder_count else build_folder_rename_plan(root, extensions)
 
-    if not plan:
+    if not plan and not folder_plan:
         print("No matching media files found.")
         return
 
     if args.csv:
         with open(args.csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["old_path", "new_path"])
+            writer.writerow(["kind", "old_path", "new_path"])
             for old_path, new_path in plan:
-                writer.writerow([old_path, new_path])
+                writer.writerow(["file", old_path, new_path])
+            for old_path, new_path in folder_plan:
+                writer.writerow(["folder", old_path, new_path])
         print(f"Wrote rename plan to {args.csv}")
 
     if args.apply:
+        # Rename files first (their paths reference the current folder names),
+        # then update the folder Clips-NN counts.
         apply_plan(plan)
-        print(f"Renamed {len(plan)} files.")
+        apply_folder_plan(folder_plan)
+        print(f"Renamed {len(plan)} files and {len(folder_plan)} folders.")
     else:
-        print(f"DRY RUN — {len(plan)} files would be renamed. Re-run with --apply to execute.\n")
+        print(
+            f"DRY RUN — {len(plan)} files and {len(folder_plan)} folders would be "
+            f"renamed. Re-run with --apply to execute.\n"
+        )
         for old_path, new_path in plan:
             rel_old = os.path.relpath(old_path, root)
             rel_new = os.path.relpath(new_path, root)
             print(f"  {rel_old}\n    -> {rel_new}")
+        if folder_plan:
+            print("\n  Folder Clips-NN count updates:")
+            for old_path, new_path in folder_plan:
+                rel_old = os.path.relpath(old_path, root)
+                rel_new = os.path.relpath(new_path, root)
+                print(f"  {rel_old}\n    -> {rel_new}")
 
 
 if __name__ == "__main__":

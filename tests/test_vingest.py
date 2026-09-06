@@ -122,6 +122,27 @@ class TestNaming:
             "Cam-02 (Drone)", 7, ".MP4") == \
             "Cam-02 Allentown Hotel Venue Clip-007.MP4"
 
+    def test_set_clips_count_replaces_an_existing_token(self):
+        assert naming.set_clips_count(
+            "01 Willingen Lunch Dt-16-Apr-26 Clips-18", 5) == \
+            "01 Willingen Lunch Dt-16-Apr-26 Clips-05"
+
+    def test_set_clips_count_widens_past_two_digits(self):
+        assert naming.set_clips_count(
+            "02 Janmashtami Informal Dt-04-Sep-26 Clips-18", 109) == \
+            "02 Janmashtami Informal Dt-04-Sep-26 Clips-109"
+
+    def test_set_clips_count_adds_a_token_when_none_is_present(self):
+        assert naming.set_clips_count(
+            "01 Willingen Lunch Dt-16-Apr-26", 3) == \
+            "01 Willingen Lunch Dt-16-Apr-26 Clips-03"
+
+    def test_set_clips_count_of_zero_or_none_removes_the_token(self):
+        assert naming.set_clips_count("01 Event Dt-16-Apr-26 Clips-04", 0) == \
+            "01 Event Dt-16-Apr-26"
+        assert naming.set_clips_count("01 Event Dt-16-Apr-26 Clips-04", None) == \
+            "01 Event Dt-16-Apr-26"
+
 
 class TestVideoScanning:
     def test_windows_recycle_bin_is_never_scanned(self, tmp_path):
@@ -465,6 +486,65 @@ class TestPlan:
         assert Path(item["dst"]).parent == camera
         assert Path(item["dst"]).name == \
             "Cam-01 Allentown Hotel Venue Clip-004.MP4"
+
+    def test_informal_folder_clips_count_matches_every_media_kind(self, tmp_path):
+        """The session folder's Clips-NN totals mp4/mov/mts/mp3/wav across cams,
+        both in the plan preview and on disk after the copy — the same rule the
+        standalone rename script applies."""
+        import os
+        raw = tmp_path / "RAW"
+        raw.mkdir()
+        files = []
+        for i, ext in enumerate((".MP4", ".mov", ".mts", ".mp3", ".wav"), 1):
+            p = raw / f"r{i}{ext}"
+            p.write_bytes(b"x")
+            os.utime(p, (100 + i, 100 + i))
+            files.append(str(p))
+        destination = tmp_path / "DEST"
+
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "informal", "source_root": str(raw),
+            "dest_root": str(destination),
+            "session_name": "01 Willingen Lunch Dt-16-Apr-26 Clips-18",
+            "masters": [], "allow_no_master": True, "rename_camera_clips": True,
+            "cams": {"1": files[:3], "2": files[3:]},
+        }]})
+
+        # Preview predicts the real count (5), not the template's stale 18.
+        assert plan["targets"][0]["session_folder"].endswith("Clips-05")
+
+        result = ingest.execute_plan(plan)
+        assert result["failed"] == 0
+        folders = [p.name for p in destination.rglob("*") if p.is_dir()]
+        assert any(f.endswith("Clips-05") for f in folders), folders
+        assert not any(f.endswith("Clips-18") for f in folders), folders
+
+    def test_informal_count_updates_when_clips_are_added_in_place(self, tmp_path):
+        """Filing more clips into an existing informal folder re-tallies its
+        Clips-NN to the new total."""
+        destination = tmp_path / "DEST"
+        folder = destination / "01 Allentown Hotel Venue Dt-12-06-25 Clips-02"
+        cam = folder / "Cam-01"
+        cam.mkdir(parents=True)
+        (cam / "Cam-01 Allentown Hotel Venue Clip-001.MP4").write_bytes(b"a")
+        (cam / "Cam-01 Allentown Hotel Venue Clip-002.MP4").write_bytes(b"b")
+        raw = tmp_path / "RAW"
+        raw.mkdir()
+        fresh = raw / "new.MP4"
+        fresh.write_bytes(b"fresh")
+
+        plan = ingest.build_plan({"targets": [{
+            "role": "informal", "source_root": str(raw),
+            "dest_root": str(destination),
+            "session_source": str(folder),
+            "allow_no_master": True, "rename_camera_clips": True,
+            "cams": {"1": [str(fresh)]},
+        }]})
+        result = ingest.execute_plan(plan)
+        assert result["failed"] == 0
+        folders = [p.name for p in destination.rglob("*") if p.is_dir()]
+        assert any(f.endswith("Clips-03") for f in folders), folders
+        assert not any(f.endswith("Clips-02") for f in folders), folders
 
     @needs_ffmpeg
     def test_informal_retry_skips_exact_size_matches_and_plans_only_missing(self, tmp_path):

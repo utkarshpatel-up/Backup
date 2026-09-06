@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass, asdict, field
@@ -513,10 +514,14 @@ def build_plan(spec: dict, progress=None) -> dict:
         # were filed on an earlier pass rather than looking like they vanished.
         clips_dir = (Path(staging_path) if direct_camera_folders
                      else Path(staging_path) / naming.CLIPS_DIRNAME)
+        existing_cam_names: dict[int, str] = {}  # cam number -> its folder on disk
         if clips_dir.is_dir():
             for child in sorted(clips_dir.iterdir()):
                 if not child.is_dir():
                     continue
+                m = re.match(r"Cam-(\d+)\b", child.name, re.IGNORECASE)
+                if m:
+                    existing_cam_names[int(m.group(1))] = child.name
                 try:
                     # Count audio as well as video, so an audio-only camera
                     # (e.g. "Cam-05 (Audio)") registers as filled and its number
@@ -527,6 +532,21 @@ def build_plan(spec: dict, progress=None) -> dict:
                     n = 0
                 if n:
                     plan.existing_cams[child.name] = n
+
+        # A camera number can already be held by a suffixed folder on disk
+        # ("Cam-05 (Drone)", "Cam-08 (MM Drone)", "Cam-05 (Audio)"). Don't ensure
+        # — or let the preview show — a bare "Cam-05" beside it: that would be a
+        # phantom empty folder for a number that is really in use.
+        def _cam_number(rel: str):
+            leaf = re.split(r"[\\/]", rel)[-1]
+            m = re.match(r"Cam-(\d+)\b", leaf, re.IGNORECASE)
+            return (int(m.group(1)), leaf) if m else (None, leaf)
+
+        plan.ensure_dirs = [
+            rel for rel in plan.ensure_dirs
+            if (lambda num, leaf: num is None or num not in existing_cam_names
+                or existing_cam_names[num] == leaf)(*_cam_number(rel))
+        ]
         try:
             plan.master_present = Path(staging_path).is_dir() and any(
                 f.is_file() and f.suffix.lower() in VIDEO_EXTS

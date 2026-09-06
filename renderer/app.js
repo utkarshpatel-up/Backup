@@ -48,6 +48,7 @@ const state = {
   busy: null,           // {label, id, percent, detail}
   rename: null,         // in-place rename/clip-count tool: {open, root, plan, scanning, applying, result}
   clipsOnly: false,     // "only camera clips": skip the master step, add clips into an existing session
+  camSeededKey: null,   // signature of the existing session(s) whose cam-folder names have been adopted
   frappe: null,         // Frappe connection/schema settings (loaded from disk)
   frappeUI: null,       // Frappe sync/settings modal: {open, view, busy, result, root}
 };
@@ -792,6 +793,7 @@ function wireSources() {
       state.mastersFiled = false;
       state.filedSessions = {};
       state.clipsOnly = false;
+      state.camSeededKey = null;
       state.completedCams = new Set();
       state.assign = {};
       state.selection = [];
@@ -971,6 +973,7 @@ async function activateTemplateSession(index, announce = true) {
   state.masterSource = null;
   state.mastersFiled = false;
   state.filedSessions = {};
+  state.camSeededKey = null;
   state.completedCams = new Set();
   state.assign = {};
   state.selection = [];
@@ -1109,14 +1112,78 @@ async function enterClipsOnly() {
   state.mastersFiled = true;              // reuse the in-place, no-master plan path
   state.masters = {}; state.masterSource = null;
   state.plan = null; state.namingPreview = null; state.runResult = null;
+  // Learn the real (possibly suffixed) names of the cameras already in the
+  // folder, so the Cameras page shows "Cam-05 (Drone)" and a clip assigned to
+  // cam 5 files into that folder instead of a new bare "Cam-05".
+  await ensureExistingCamNamesSeeded();
   toast('Clips-only mode on — assign the camera clips on the next page.', 'ok');
   goStep(2);
+}
+
+// The existing session folder(s) being completed, whichever flow we're in:
+// clips-only, an informal add, or a formal drive whose session was detected or
+// filed earlier. Empty when starting a fresh folder (nothing to adopt).
+function completingFolderPaths() {
+  const paths = [];
+  if (state.clipsOnly) {
+    for (const v of Object.values(state.filedSessions)) if (v) paths.push(v);
+  } else if (isInformal()) {
+    if (state.filedSessions.informal) paths.push(state.filedSessions.informal);
+  } else {
+    for (const s of footageSources()) {
+      const filed = state.filedSessions[s.role];
+      const det = state.detected[s.path] && state.detected[s.path].session_path;
+      if (filed) paths.push(filed);
+      else if (det) paths.push(det);
+    }
+  }
+  return paths.filter(Boolean);
+}
+
+// Adopt existing suffixed cam names once per session context, before the Cameras
+// page is used — covers clips-only AND the normal "add cameras to an existing
+// folder" flow (after a copy, or reopening a folder completed earlier).
+async function ensureExistingCamNamesSeeded() {
+  const key = completingFolderPaths().map((p) => pathKey(p)).sort().join('|');
+  if (!key || key === state.camSeededKey) return;
+  state.camSeededKey = key;
+  await seedExistingCamNames();
+  render();
+}
+
+// Read the destination's existing camera folders and adopt any suffixed names
+// (Cam-05 (Drone), Cam-08 (MM Drone), Cam-05 (Audio)) so the Cameras page shows
+// them and files into them, rather than creating a bare "Cam-NN" duplicate.
+async function seedExistingCamNames() {
+  try {
+    const spec = buildSpec();
+    spec.targets = (spec.targets || []).map((t) => ({ ...t, cams: {} }));
+    if (!spec.targets.length) return;
+    const plan = await call('build_plan', spec);   // silent: no footer takeover
+    for (const t of plan.targets || []) {
+      for (const folder of Object.keys(t.existing_cams || {})) {
+        const clean = String(folder).trim();
+        const m = /^Cam-(\d+)\b/i.exec(clean);
+        if (!m) continue;
+        const num = Number(m[1]);
+        const bare = `Cam-${String(num).padStart(2, '0')}`;
+        // Only adopt a suffixed name, and never overwrite one the operator typed.
+        if (clean !== bare && !(state.camNames[num] || '').trim()) {
+          state.camNames[num] = clean;
+          state.camCount = Math.max(state.camCount, num);
+        }
+      }
+    }
+  } catch (e) {
+    // Non-fatal: without seeding the chips just stay bare "Cam-NN".
+  }
 }
 
 function exitClipsOnly() {
   state.clipsOnly = false;
   state.mastersFiled = false;
   state.filedSessions = {};
+  state.camSeededKey = null;
   state.plan = null; state.namingPreview = null; state.runResult = null;
   goStep(0);
 }
@@ -3150,6 +3217,11 @@ function goStep(i) {
   // Cam-04 (or whatever old structure happened to exist on that drive).
   if (i === 1 && !state.template) detectStructure(primarySource());
   if (i === 2 && !isInformal()) scanSource(primarySource());
+  // Entering the Cameras page: adopt the real (suffixed) names of cameras that
+  // already exist in the folder being completed — after a copy, or when
+  // reopening a folder filed earlier — so a clip assigned to cam 5 goes into
+  // "Cam-05 (Drone)" instead of a new bare "Cam-05". Guarded to run once.
+  if (i === 2) ensureExistingCamNamesSeeded();
 }
 
 function render() {

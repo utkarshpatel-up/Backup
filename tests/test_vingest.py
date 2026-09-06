@@ -1862,3 +1862,30 @@ class TestMediaAndFolderScan:
             "rename_camera_clips": True, "cams": {}}]})
         existing = plan["targets"][0]["existing_cams"]
         assert existing.get("Cam-05 (Audio)") == 1, existing
+
+
+class TestSuffixedCamFolders:
+    """A camera number held by a suffixed folder (Drone/Audio) must not spawn a
+    phantom bare "Cam-NN" in the plan."""
+
+    def test_no_phantom_bare_cam_beside_suffixed_folder(self, tmp_path):
+        dest = tmp_path / "DEST"
+        session = dest / "3025 Dt-04 Sep 2026" / "Adalaj E. Dt-04-Sep-26 Dur-2h59m"
+        cfi = session / "Clips for Insert"
+        for cam in ("Cam-01", "Cam-05 (Drone)", "Cam-06", "Cam-08 (MM Drone)"):
+            (cfi / cam).mkdir(parents=True)
+            (cfi / cam / "v.mp4").write_bytes(b"x")
+        raw = tmp_path / "RAW"; raw.mkdir()
+        (raw / "new.mov").write_bytes(b"x")
+        ensure = [f"Clips for Insert/Cam-{i:02d}" for i in range(1, 10)]
+        plan = ingest.build_plan({"targets": [{
+            "role": "other", "source_root": str(raw), "dest_root": str(session.parent),
+            "session_source": str(session), "masters": [],
+            "cams": {"9": [str(raw / "new.mov")]}, "cam_names": {"9": "Cam-09 (Drone)"},
+            "template_dirs": ensure}]})
+        dirs = plan["targets"][0]["ensure_dirs"]
+        leaves = [d.split("/")[-1] for d in dirs]
+        assert "Cam-05" not in leaves, leaves      # Cam-05 (Drone) already holds 5
+        assert "Cam-08" not in leaves, leaves      # Cam-08 (MM Drone) already holds 8
+        assert "Cam-06" in leaves                  # no suffixed sibling -> kept
+        assert "Cam-09 (Drone)" in leaves          # new suffixed camera created

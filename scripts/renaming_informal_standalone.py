@@ -63,7 +63,7 @@ import sys
 
 DEFAULT_EXTENSIONS = {
     # video
-    "mp4", "mov", "mxf", "avi", "mkv", "m4v", "insv", "mts",
+    "mp4", "mov", "mxf", "avi", "mkv", "m4v", "insv", "mts", "crm",
     # audio
     "wav", "mp3", "aac", "m4a", "wma", "flac",
 }

@@ -14,7 +14,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-from vingest import compare, ingest, naming, probe, server, sources, structure  # noqa: E402
+from vingest import (compare, ingest, naming, organize, probe, server,  # noqa: E402
+                     sources, structure)
 import zipfile  # noqa: E402
 
 HAVE_FFMPEG = shutil.which("ffmpeg") is not None and probe.configure().get("ffprobe")
@@ -1620,3 +1621,96 @@ class TestExistingCamsReported:
         assert cam01.is_dir()
         assert sorted(f.name for f in cam01.iterdir()) == ["A1.MP4", "A2.MP4"]
         assert (session / "Clips for Insert" / "Cam-02" / "B1.MP4").exists()
+
+
+class TestOrganizeRenameTool:
+    """The in-place rename/clip-count tool (organize.py) that the Sources page
+    exposes — the app-side port of scripts/renaming_informal_standalone.py."""
+
+    def _make_session(self, tmp_path):
+        job = tmp_path / "2552 Dt-16 Apr 2026"
+        lunch = job / "01 Willingen Lunch Dt-16-Apr-26 Clips-18"
+        (lunch / "Cam-01").mkdir(parents=True)
+        (lunch / "Cam-02").mkdir(parents=True)
+        for i, ext in enumerate((".MP4", ".mov", ".mts"), 1):
+            p = lunch / "Cam-01" / f"RND_{i}{ext}"
+            p.write_bytes(b"x"); os.utime(p, (100 + i, 100 + i))
+        for i, ext in enumerate((".MP4", ".mp3"), 1):
+            p = lunch / "Cam-02" / f"ZZZ_{i}{ext}"
+            p.write_bytes(b"x"); os.utime(p, (200 + i, 200 + i))
+        dinner = job / "02 Willingen Dinner Dt-16-Apr-26 Clips-21"
+        dinner.mkdir(parents=True)
+        for i, ext in enumerate((".mp4", ".wav", ".MOV", ".mts"), 1):
+            p = dinner / f"AAA_{i}{ext}"
+            p.write_bytes(b"x"); os.utime(p, (300 + i, 300 + i))
+        return job, lunch, dinner
+
+    def test_plan_counts_every_media_kind_and_renames_clips(self, tmp_path):
+        job, lunch, dinner = self._make_session(tmp_path)
+        plan = organize.plan_rename(str(tmp_path))
+        assert plan["file_count"] == 9        # 3 + 2 + 4
+        assert plan["folder_count"] == 2
+        folder_targets = {os.path.basename(f["new_path"]) for f in plan["folders"]}
+        assert folder_targets == {
+            "01 Willingen Lunch Dt-16-Apr-26 Clips-05",
+            "02 Willingen Dinner Dt-16-Apr-26 Clips-04",
+        }
+        # The preview is ordered by shot time (oldest first), not os.walk order.
+        mtimes = [f["mtime"] for f in plan["files"]]
+        assert mtimes == sorted(mtimes)
+
+    def test_apply_renames_clips_and_fixes_counts(self, tmp_path):
+        job, lunch, dinner = self._make_session(tmp_path)
+        result = organize.apply_rename(organize.plan_rename(str(tmp_path)))
+        assert result["renamed_files"] == 9
+        assert result["renamed_folders"] == 2
+        assert result["errors"] == []
+
+        lunch_new = job / "01 Willingen Lunch Dt-16-Apr-26 Clips-05"
+        dinner_new = job / "02 Willingen Dinner Dt-16-Apr-26 Clips-04"
+        assert lunch_new.is_dir() and dinner_new.is_dir()
+        # Cam clips keep their camera prefix and sequence by shot time.
+        assert sorted(f.name for f in (lunch_new / "Cam-01").iterdir()) == [
+            "Cam-01 Willingen Lunch Clip-001.MP4",
+            "Cam-01 Willingen Lunch Clip-002.mov",
+            "Cam-01 Willingen Lunch Clip-003.mts",
+        ]
+        # Clips sitting directly in the event folder carry no camera prefix.
+        assert sorted(f.name for f in dinner_new.iterdir()) == [
+            "Willingen Dinner Clip-001.mp4",
+            "Willingen Dinner Clip-002.wav",
+            "Willingen Dinner Clip-003.MOV",
+            "Willingen Dinner Clip-004.mts",
+        ]
+
+    def test_plan_is_idempotent_after_apply(self, tmp_path):
+        self._make_session(tmp_path)
+        organize.apply_rename(organize.plan_rename(str(tmp_path)))
+        again = organize.plan_rename(str(tmp_path))
+        assert again["file_count"] == 0 and again["folder_count"] == 0
+
+    def test_a_folder_without_a_clips_token_is_left_alone(self, tmp_path):
+        folder = tmp_path / "01 Willingen Lunch Dt-16-Apr-26"    # no Clips-NN
+        folder.mkdir()
+        (folder / "a.mp4").write_bytes(b"x")
+        plan = organize.plan_rename(str(tmp_path))
+        assert plan["folder_count"] == 0
+
+    def test_canon_crm_clips_are_counted_and_renamed(self, tmp_path):
+        folder = tmp_path / "01 Adalaj Food Mela Dt-20-Feb-25 Clips-09"
+        folder.mkdir()
+        for i, ext in enumerate((".CRM", ".MP4", ".crm"), 1):
+            p = folder / f"A00{i}{ext}"
+            p.write_bytes(b"x"); os.utime(p, (100 + i, 100 + i))
+        assert ".crm" in ingest.CLIP_COUNT_EXTS
+        plan = organize.plan_rename(str(tmp_path))
+        assert plan["folder_count"] == 1
+        assert os.path.basename(plan["folders"][0]["new_path"]).endswith("Clips-03")
+        # All three, including both .CRM files, are renamed as clips.
+        assert plan["file_count"] == 3
+        assert {os.path.splitext(f["new_path"])[1].lower()
+                for f in plan["files"]} == {".crm", ".mp4"}
+
+    def test_the_rpc_methods_are_registered(self):
+        assert "plan_rename" in server.METHODS
+        assert "apply_rename" in server.METHODS

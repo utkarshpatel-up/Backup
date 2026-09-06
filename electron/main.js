@@ -116,7 +116,7 @@ ipcMain.handle('dialog:pickVideoFiles', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose footage',
     filters: [{ name: 'Video', extensions: ['mov', 'mp4', 'mxf', 'm4v', 'avi', 'mts',
-                                            'm2ts', 'mkv', 'braw', 'r3d'] }],
+                                            'm2ts', 'mkv', 'braw', 'r3d', 'crm'] }],
     properties: ['openFile', 'multiSelections'],
   });
   return r.canceled ? [] : r.filePaths;

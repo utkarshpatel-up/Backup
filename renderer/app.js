@@ -46,6 +46,8 @@ const state = {
   compareRoots: [],
   pairVerify: null,     // focused result: copied clips identical on both SSDs
   busy: null,           // {label, id, percent, detail}
+  rename: null,         // in-place rename/clip-count tool: {open, root, plan, scanning, applying, result}
+  clipsOnly: false,     // "only camera clips": skip the master step, add clips into an existing session
 };
 
 const STEPS = [
@@ -71,6 +73,13 @@ const isInformal = () => state.backupType === 'informal';
 
 /** Filesystem identity for selection purposes (Windows paths are case-insensitive). */
 const pathKey = (path) => selectionRules.pathKey(path, window.api.platform);
+
+/** The parent folder of a path, tolerating either separator. */
+function parentDir(p) {
+  const norm = String(p || '').replace(/[\\/]+$/, '');
+  const idx = Math.max(norm.lastIndexOf('/'), norm.lastIndexOf('\\'));
+  return idx > 0 ? norm.slice(0, idx) : norm;
+}
 
 function fmtBytes(n) {
   if (!n && n !== 0) return '—';
@@ -166,19 +175,33 @@ async function call(method, params = {}, opts = {}) {
 function stepReady(i) {
   switch (i) {
     case 0: return true;
-    case 1: return isInformal()
-      ? selectionRules.informalSetupReady(state.template, state.informalDest)
-      : footageSources().length > 0;
-    case 2: return isInformal()
-      ? selectionRules.informalSetupReady(state.template, state.informalDest)
-      : !!detection() && chosenMasters().length > 0;
-    case 3: return isInformal()
+    case 1: if (state.clipsOnly) return clipsOnlyReady();
+      return isInformal()
+        ? selectionRules.informalSetupReady(state.template, state.informalDest)
+        : footageSources().length > 0;
+    case 2: if (state.clipsOnly) return clipsOnlyReady();
+      return isInformal()
+        ? selectionRules.informalSetupReady(state.template, state.informalDest)
+        : !!detection() && chosenMasters().length > 0;
+    case 3: return (isInformal() || state.clipsOnly)
       ? selected(primarySource()).length > 0
       : chosenMasters().length > 0;
     case 4: return !!state.plan && !!state.runResult
       && !state.runResult.failed && !state.runResult.cancelled;
     default: return false;
   }
+}
+
+/** Clips-only mode is ready once every source in play has an existing session
+ *  folder chosen to file the late-arriving clips into. */
+function clipsOnlyReady() {
+  if (!state.clipsOnly) return false;
+  if (isInformal()) return !!state.filedSessions.informal;
+  const f = footageSources();
+  // No source drive added: the simple, informal-style path — one chosen session
+  // is enough, and the clips are brought in by hand on the Cameras page.
+  if (!f.length) return !!state.filedSessions.other;
+  return f.every((s) => state.filedSessions[s.role]);
 }
 
 /** Sources that carry footage — the template is a structure donor, not footage. */
@@ -194,6 +217,14 @@ function primarySource() {
     // without making the operator select each SD card on Page 1.
     return { path: state.informalDest, dest: state.informalDest,
              label: 'Mounted camera cards', kind: 'cards', role: 'informal' };
+  }
+  // Formal clips-only with no source drive added: a logical source rooted at the
+  // chosen session, so the flow behaves like informal — pick the folder, then add
+  // the late-arriving clips by hand on the Cameras page.
+  if (state.clipsOnly && !footageSources().length && state.filedSessions.other) {
+    const root = parentDir(state.filedSessions.other);
+    return { path: root, dest: root, label: 'Existing session',
+             kind: 'folder', role: 'other' };
   }
   const f = footageSources();
   // Cams are assigned once and copied to both destinations. Prefer the
@@ -617,6 +648,21 @@ function renderSources() {
         ? '<div class="note ok" style="margin-top:14px"><b>Ready.</b> Continue to choose the session; import the SD cards on Page 3.</div>'
         : ''}
     </div>`);
+
+    c.push(`<div class="card">
+      <h3>Rename &amp; fix clip counts</h3>
+      <p class="hint">A standalone cleanup for footage that is <b>already filed</b>. Point it at a
+        drive or folder holding informal sessions and it renames raw camera clips to
+        <span class="mono">Cam-NN Event Name Clip-001</span> and rewrites each folder's
+        <span class="mono">Clips-NN</span> count to match the real number of clips inside. You
+        preview every change before anything is written.</p>
+      <div class="row">
+        <button class="sm primary" id="btnRenameTool">Choose folder to rename…</button>
+        <span class="hint" style="margin:0">Works independently of the backup steps above.</span>
+      </div>
+    </div>`);
+
+    c.push(clipsOnlyCardHtml());
     return c.join('');
   }
 
@@ -707,6 +753,7 @@ function renderSources() {
     }
     c.push(`</div>`);
   }
+  c.push(clipsOnlyCardHtml());
   return c.join('');
 }
 
@@ -721,6 +768,7 @@ function wireSources() {
       state.masterSource = null;
       state.mastersFiled = false;
       state.filedSessions = {};
+      state.clipsOnly = false;
       state.completedCams = new Set();
       state.assign = {};
       state.selection = [];
@@ -762,6 +810,9 @@ function wireSources() {
     state.plan = null; state.namingPreview = null;
     render();
   });
+  $('btnRenameTool')?.addEventListener('click', () => openRenameTool());
+  $('btnClipsOnly')?.addEventListener('click', enterClipsOnly);
+  $('btnClipsOnlyExit')?.addEventListener('click', exitClipsOnly);
 
   document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
     // The button toggles: "Use as source" adds it, "Added" takes it back off.
@@ -839,16 +890,9 @@ async function addZipSource() {
   if (!zip) return;
   try {
     const info = await call('inspect_zip', { path: zip }, { label: 'Reading zip' });
-    const ok = await window.api.confirm({
-      message: `Use “${info.label}” as the folder structure?`,
-      detail: `${info.folder_count} folders, ${info.video_count} video files.\n\n`
-        + `It supplies the session folder name and the cam layout. `
-        + (info.video_count
-            ? `The ${info.video_count} clip(s) inside will be available as footage too.`
-            : `You pick the footage yourself from the source drive.`),
-      confirmLabel: 'Use as structure',
-    });
-    if (!ok) return;
+    // The zip the operator just picked is taken as the structure directly — no
+    // extra confirmation. It is always replaceable and never writes anything on
+    // its own, so a prompt here only adds a click.
     const r = await call('extract_zip', { path: zip },
       { label: `Extracting ${info.label}` });
     // “Replace” means exactly one active structure source. Keep footage drives,
@@ -946,7 +990,129 @@ async function classifySources() {
 
 /* ------------------------------------------------------------ step: session */
 
+/* ---------------------------------------------- clips-only ("add clips later") */
+
+// A shortcut for footage that arrives after the session was first backed up:
+// point at the existing session folder(s) and jump straight to camera assignment.
+// Clips are filed in place (no master, nothing renamed on the folder) — the same
+// path a normal run uses once its master has already been filed.
+
+function clipsOnlySessions() {
+  if (isInformal()) {
+    return state.filedSessions.informal ? [state.filedSessions.informal] : [];
+  }
+  const f = footageSources();
+  if (!f.length) {
+    return state.filedSessions.other ? [state.filedSessions.other] : [];
+  }
+  return f.map((s) => state.filedSessions[s.role]).filter(Boolean);
+}
+
+function clipsOnlyCardHtml() {
+  const chosen = clipsOnlySessions();
+  const status = state.clipsOnly && chosen.length
+    ? `<div class="note ok" style="margin-top:12px"><b>Clips-only mode.</b>
+        Adding clips into:${chosen.map((p) => `<div class="mono" style="margin-top:4px">${esc(p)}</div>`).join('')}
+        <div style="margin-top:6px">Continue to the Cameras page to select and file the clips.</div></div>`
+    : '';
+  return `<div class="card">
+    <h3>Only camera clips (add to an existing session)</h3>
+    <p class="hint">Already backed up the master or an earlier batch, and more camera clips arrived
+      later? Skip the master step: choose the existing session folder and jump straight to camera
+      assignment, then bring in the late clips with <b>Add files</b> / <b>Add a folder</b>. They are
+      filed into that folder in place and renamed as usual${isInformal() ? '' : '; the master is left untouched'}.
+      ${isInformal() ? '' : 'To update two SSD copies at once, add both drives as sources first, then use this.'}</p>
+    <div class="row">
+      <button class="sm primary" id="btnClipsOnly">${
+        state.clipsOnly ? 'Re-choose existing session…' : 'Only camera clips…'}</button>
+      ${state.clipsOnly ? '<button class="sm ghost" id="btnClipsOnlyExit">Exit clips-only</button>' : ''}
+      <span class="hint" style="margin:0">${isInformal()
+        ? 'No structure zip needed.'
+        : 'No source drive required — just pick the session folder.'}</span>
+    </div>
+    ${status}
+  </div>`;
+}
+
+async function enterClipsOnly() {
+  if (isInformal()) {
+    const folder = await window.api.pickFolder(
+      'Choose the existing session folder to add clips to');
+    if (!folder) return;
+    let d;
+    try {
+      d = await call('detect_structure', { root: folder }, { label: 'Reading session' });
+    } catch (e) { toast(e.message, 'err'); return; }
+    const sessionPath = d.session_path || folder;
+    state.informalDest = parentDir(sessionPath);
+    state.template = null; state.templates = [];
+    state.filedSessions = { informal: sessionPath };
+  } else {
+    const sources = footageSources();
+    if (!sources.length) {
+      // Simple path, just like informal: pick the existing session folder and go.
+      // The late clips are added by hand on the Cameras page (Add files / folder).
+      const folder = await window.api.pickFolder(
+        'Choose the existing session folder to add clips to');
+      if (!folder) return;
+      let d;
+      try {
+        d = await call('detect_structure', { root: folder }, { label: 'Reading session' });
+      } catch (e) { toast(e.message, 'err'); return; }
+      state.filedSessions = { other: d.session_path || folder };
+    } else {
+      // Source drive(s) already added: file into each drive's own session folder,
+      // so a two-SSD job updates both copies in one pass.
+      const filed = {};
+      for (const s of sources) {
+        const folder = await window.api.pickFolder(
+          `Choose the existing session folder for ${s.label}`);
+        if (!folder) return;               // cancelled — leave any prior state intact
+        let d;
+        try {
+          d = await call('detect_structure', { root: folder }, { label: 'Reading session' });
+        } catch (e) { toast(e.message, 'err'); return; }
+        const sessionPath = d.session_path || folder;
+        filed[s.role] = sessionPath;
+        s.dest = parentDir(sessionPath);
+        state.detected[s.path] = d;
+      }
+      state.filedSessions = filed;
+    }
+  }
+  state.clipsOnly = true;
+  state.mastersFiled = true;              // reuse the in-place, no-master plan path
+  state.masters = {}; state.masterSource = null;
+  state.plan = null; state.namingPreview = null; state.runResult = null;
+  toast('Clips-only mode on — assign the camera clips on the next page.', 'ok');
+  goStep(2);
+}
+
+function exitClipsOnly() {
+  state.clipsOnly = false;
+  state.mastersFiled = false;
+  state.filedSessions = {};
+  state.plan = null; state.namingPreview = null; state.runResult = null;
+  goStep(0);
+}
+
+function renderClipsOnlyFolder() {
+  const chosen = clipsOnlySessions();
+  const rows = chosen
+    .map((p) => `<div class="mono" style="margin-top:4px">${esc(p)}</div>`).join('');
+  return `<div class="card">
+    <h3>Clips-only — existing session</h3>
+    <p class="hint">Late-arriving camera clips will be filed straight into the folder(s) below and
+      renamed in the usual scheme. No master is needed and the folder name is left as it is.</p>
+    <div class="note ok">${rows || 'No session chosen yet — go back to Sources.'}</div>
+    <p class="hint" style="margin-top:12px">Continue to <b>Cameras</b> to select the clips with
+      <b>Add files</b> / <b>Add a folder</b>, then review and copy as normal.</p>
+  </div>`;
+}
+
 function renderSession() {
+  if (state.clipsOnly) return renderClipsOnlyFolder();
+
   const src = primarySource();
   if (!src) return `<div class="empty"><div class="big">📁</div>Add a source first.</div>`;
 
@@ -1767,7 +1933,9 @@ function renderCameras() {
 
   const pool = filePool(src);
   const scan = state.scans[src.path] || (pool.length ? { files: pool, suggestion: null } : null);
-  if (!scan && !isInformal()) {
+  // Clips-only skips the drive scan (that scan only exists to find a master, and
+  // there is none here): the late clips are added directly with Add files/folder.
+  if (!scan && !isInformal() && !state.clipsOnly) {
     return `<div class="card">
       <h3>Read the footage</h3>
       <p class="hint">Every video on <span class="mono">${esc(src.label)}</span> is probed for
@@ -2944,6 +3112,7 @@ function render() {
   if (list && priorScroll) list.scrollTop = priorScroll;
 
   renderFooter();
+  renderRenameModal();
 }
 
 function renderFooter() {
@@ -2998,6 +3167,159 @@ function footerHint() {
     case 3: return state.runResult ? 'Copy finished' : '';
     default: return '';
   }
+}
+
+/* ------------------------------------------ rename / clip-count tool (modal) */
+
+// A self-contained utility for footage that is ALREADY filed: pick a folder,
+// preview the clip renames and Clips-NN count fixes, then apply. It runs
+// outside the five-step backup wizard so it never touches that flow's state.
+
+async function openRenameTool() {
+  const root = await window.api.pickFolder(
+    'Choose a drive or folder holding informal sessions to rename');
+  if (!root) return;
+  state.rename = { open: true, root, plan: null, scanning: false,
+                   applying: false, result: null };
+  render();
+  await previewRename();
+}
+
+async function previewRename() {
+  const r = state.rename;
+  if (!r || !r.root) return;
+  r.scanning = true; r.result = null; r.plan = null;
+  render();
+  try {
+    r.plan = await call('plan_rename', { root: r.root });
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    r.scanning = false;
+    render();
+  }
+}
+
+async function chooseRenameFolder() {
+  const root = await window.api.pickFolder(
+    'Choose a drive or folder holding informal sessions to rename');
+  if (!root) return;
+  state.rename.root = root;
+  await previewRename();
+}
+
+async function applyRename() {
+  const r = state.rename;
+  if (!r || !r.plan) return;
+  const { file_count: files, folder_count: folders } = r.plan;
+  const ok = await window.api.confirm({
+    message: `Rename ${files} clip${files === 1 ? '' : 's'} and update ` +
+             `${folders} folder count${folders === 1 ? '' : 's'}?`,
+    detail: 'This renames files on disk in place. The names come from each ' +
+            'folder’s event name and the clip order by shot time.',
+    confirmLabel: 'Rename now',
+  });
+  if (!ok) return;
+  r.applying = true; render();
+  try {
+    r.result = await call('apply_rename', { plan: r.plan },
+                          { label: 'Renaming clips and folders' });
+    const errs = (r.result.errors || []).length;
+    toast(`Renamed ${r.result.renamed_files} file(s) and ` +
+          `${r.result.renamed_folders} folder(s)` +
+          (errs ? ` · ${errs} problem(s)` : ''), errs ? 'warn' : 'ok');
+    // Reflect the new state of disk: the just-applied plan is now stale.
+    r.plan = null;
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    r.applying = false; render();
+  }
+}
+
+function closeRenameTool() {
+  state.rename = null;
+  render();
+}
+
+function renameRowsHtml(rows, kind) {
+  const shown = rows.slice(0, 400);
+  const extra = rows.length - shown.length;
+  const body = shown.map((row) => `<tr>
+    <td class="mono old">${esc(row.rel_old)}</td>
+    <td class="arrow">→</td>
+    <td class="mono new">${esc(row.rel_new)}${
+      kind === 'folder' ? ` <span class="badge">${row.count} clip${
+        row.count === 1 ? '' : 's'}</span>` : ''}</td>
+  </tr>`).join('');
+  return `<table class="rename-table">${body}</table>${
+    extra ? `<p class="hint" style="margin:8px 0 0">…and ${extra} more not shown.</p>` : ''}`;
+}
+
+function renderRenameModal() {
+  const host = $('modal');
+  if (!host) return;
+  const r = state.rename;
+  if (!r || !r.open) { host.innerHTML = ''; host.classList.remove('show'); return; }
+  host.classList.add('show');
+
+  const plan = r.plan;
+  const nothing = plan && !plan.file_count && !plan.folder_count;
+  let bodyHtml;
+  if (r.scanning) {
+    bodyHtml = `<div class="empty"><div class="big">🔎</div>
+      <div>Scanning ${esc(r.root)}…</div></div>`;
+  } else if (r.result) {
+    const errs = r.result.errors || [];
+    bodyHtml = `<div class="note ok"><b>Done.</b> Renamed
+      ${r.result.renamed_files} file(s) and ${r.result.renamed_folders} folder(s).</div>
+      ${errs.length ? `<div class="note warn"><b>${errs.length} problem(s):</b>
+        <ul style="margin:6px 0 0 16px;padding:0">${errs.slice(0, 20)
+          .map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+      <p class="hint">You can preview again to confirm everything is now clean, or close.</p>`;
+  } else if (!plan) {
+    bodyHtml = `<div class="empty"><div class="big">📂</div>
+      <div>Choose a folder to preview the renames.</div></div>`;
+  } else if (nothing) {
+    bodyHtml = `<div class="note ok"><b>Nothing to change.</b> Every clip already
+      follows the naming scheme and every Clips-NN count is correct.</div>`;
+  } else {
+    bodyHtml = `<div class="note info">${plan.file_count} clip(s) will be renamed ·
+      ${plan.folder_count} folder count(s) will be updated.</div>
+      ${plan.folders.length ? `<h4 class="rename-h">Folder clip counts</h4>
+        ${renameRowsHtml(plan.folders, 'folder')}` : ''}
+      ${plan.files.length ? `<h4 class="rename-h">Clip renames</h4>
+        ${renameRowsHtml(plan.files, 'file')}` : ''}`;
+  }
+
+  const canApply = plan && !nothing && !r.scanning && !r.applying;
+  host.innerHTML = `<div class="modal-backdrop" data-close="1">
+    <div class="modal-panel" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div>
+          <h3 style="margin:0">Rename &amp; fix clip counts</h3>
+          <div class="path" style="margin-top:4px">${esc(r.root || '')}</div>
+        </div>
+        <button class="sm ghost" id="btnRenameClose">Close</button>
+      </div>
+      <div class="modal-body">${bodyHtml}</div>
+      <div class="modal-foot">
+        <button class="sm" id="btnRenameChoose" ${r.applying ? 'disabled' : ''}>Choose folder…</button>
+        <button class="sm ghost" id="btnRenamePreview" ${r.scanning || r.applying ? 'disabled' : ''}>Preview again</button>
+        <div class="spacer"></div>
+        <button class="primary" id="btnRenameApply" ${canApply ? '' : 'disabled'}>
+          ${r.applying ? 'Renaming…' : 'Apply renames'}</button>
+      </div>
+    </div>
+  </div>`;
+
+  host.querySelector('[data-close]')?.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeRenameTool();
+  });
+  $('btnRenameClose')?.addEventListener('click', closeRenameTool);
+  $('btnRenameChoose')?.addEventListener('click', chooseRenameFolder);
+  $('btnRenamePreview')?.addEventListener('click', previewRename);
+  $('btnRenameApply')?.addEventListener('click', applyRename);
 }
 
 /* ------------------------------------------------------------------- boot */

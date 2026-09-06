@@ -16,7 +16,8 @@ import threading
 import traceback
 from pathlib import Path
 
-from . import __version__, compare, ingest, naming, probe, report, sources, structure
+from . import (__version__, compare, ingest, naming, organize, probe, report,
+               sources, structure)
 from .hashing import algorithm
 
 _LOCK = threading.Lock()
@@ -223,6 +224,17 @@ def m_execute_plan(p, req_id):
                 result.setdefault("errors", []).append(f"Manifest failed: {e}")
     result["manifests"] = manifests
     return result
+
+
+def m_plan_rename(p, _id):
+    """Preview renaming an already-filed informal session: clip renames plus
+    Clips-NN folder-count fixes, nothing written yet."""
+    return organize.plan_rename(p["root"])
+
+
+def m_apply_rename(p, _id):
+    """Perform a rename plan produced by plan_rename."""
+    return organize.apply_rename(p["plan"])
 
 
 def m_snapshot(p, req_id):

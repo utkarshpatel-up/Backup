@@ -12,7 +12,7 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 VIDEO_EXTS = {".mov", ".mp4", ".mxf", ".m4v", ".avi", ".mts", ".m2ts",
-              ".mkv", ".braw", ".r3d", ".insv", ".lrv"}
+              ".mkv", ".braw", ".r3d", ".crm", ".insv", ".lrv"}
 # Sidecars and camera junk we copy or skip but never treat as clips.
 SIDECAR_EXTS = {".xml", ".cpi", ".bim", ".thm", ".lrf", ".sec", ".modd", ".moff"}
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini", ".spotlight-v100",

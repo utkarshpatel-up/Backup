@@ -1766,6 +1766,34 @@ class TestFrappeSync:
         sessions = frappe_sync.scan_sessions(str(tmp_path))
         assert all(not s["folder"].lower().startswith("cam") for s in sessions)
 
+    def test_unnumbered_single_session_is_session_one(self, tmp_path):
+        # A project with a lone session that carries no leading '01 ' index is
+        # session 1 — it must not be dropped (it maps to DD-...-<proj>-1).
+        job = tmp_path / "2456 Dt-03 Aug 2025"
+        s = job / "Adalaj Gurupurnima Darshan Dt-03-08-25 Clips-02"
+        s.mkdir(parents=True)
+        (s / "a.mp4").write_bytes(b"x")
+        (s / "b.mp4").write_bytes(b"x")
+        sessions = frappe_sync.scan_sessions(str(tmp_path))
+        assert [(x["project"], x["session"], x["clips"]) for x in sessions] == [
+            ("2456", 1, 2)]
+
+    def test_deep_informal_tree_rolls_up_and_clip_count_is_not_a_project_id(self, tmp_path):
+        # The 'Informal from MM' jobs nest day/source folders under one session
+        # whose name ends 'Clips-1763'. The day folders must NOT become their own
+        # sessions, and the 1763 clip count must NOT be read as a project id.
+        job = tmp_path / "2486 Dt-08 Nov 2025"
+        sess = job / "03 Morbi JJ Informal from MM Dt-08-Nov-25 Clips-1763"
+        for day in ("10 - Nov 08", "2 - Oct 31", "11 - Nov 09"):
+            src = sess / day / "DSLR Cam"
+            src.mkdir(parents=True)
+            (src / "clip.mp4").write_bytes(b"x")
+        sessions = frappe_sync.scan_sessions(str(tmp_path))
+        # Exactly one session (2486-3), everything below rolled into it.
+        assert [(s["project"], s["session"]) for s in sessions] == [("2486", 3)]
+        assert sessions[0]["clips"] == 3
+        assert all(s["project"] != "1763" for s in sessions)
+
     def test_sync_updates_existing_and_flags_unmatched(self, tmp_path):
         self._tree(tmp_path)
         sessions = frappe_sync.scan_sessions(str(tmp_path))
@@ -1812,6 +1840,196 @@ class TestFrappeSync:
     def test_rpc_methods_registered(self):
         assert "frappe_sync" in server.METHODS
         assert "frappe_scan" in server.METHODS
+
+
+class TestVerifyCsv:
+    """Offline compare of a drive against an exported duration list."""
+
+    def _drive(self, tmp_path):
+        job = tmp_path / "2456 Dt-03 Aug 2025"
+        s1 = job / "01 Adalaj Rakshabandhan Dt-03-08-25 Clips-02"
+        s1.mkdir(parents=True)
+        (s1 / "a.mp4").write_bytes(b"x")
+        (s1 / "b.mp4").write_bytes(b"x")
+        job2 = tmp_path / "2458 Dt-09 Aug 2025"
+        s2 = job2 / "Adalaj Darshan Dt-09-08-25 Clips-03"   # unnumbered -> session 1
+        s2.mkdir(parents=True)
+        for i in range(3):
+            (s2 / f"c{i}.mp4").write_bytes(b"x")
+        return tmp_path
+
+    def test_parse_seconds_handles_each_shape(self):
+        from vingest import verify_csv as V
+        assert V.parse_seconds("01:02:03") == 3723
+        assert V.parse_seconds("1h 2m 3s") == 3723
+        assert V.parse_seconds("90") == 90
+        assert V.parse_seconds("") is None
+
+    def test_compare_flags_match_diff_and_missing(self, tmp_path):
+        from vingest import verify_csv as V
+        self._drive(tmp_path)
+        master = tmp_path / "dur.csv"
+        master.write_text(
+            "ID,Duration,No of clips\n"
+            "DD-I-HD-2456-1,0s,2\n"       # matches drive (2 clips)
+            "DD-I-HD-2458-1,0s,9\n"       # clip count differs (drive has 3)
+            "DD-I-HD-2461-1,1h,7\n",      # not on drive at all
+            encoding="utf-8")
+        res = V.compare(str(tmp_path), str(master), None)
+        flags = {r["id"]: r["flag"] for r in res["rows"]}
+        assert flags["DD-I-HD-2456-1"] == "match"
+        assert flags["DD-I-HD-2458-1"] == "diff"
+        assert flags["DD-I-HD-2461-1"] == "master_only"
+        assert res["counts"] == {"match": 1, "diff": 1, "scan_only": 0,
+                                 "master_only": 1, "special": 0, "total": 3}
+
+    def test_parses_columns_by_name_regardless_of_order(self, tmp_path):
+        # This export lists clips BEFORE duration and carries extra columns;
+        # the parser must key off the header names, not column position.
+        from vingest import verify_csv as V
+        master = tmp_path / "dur.csv"
+        master.write_text(
+            "ID,No of clips,Duration,Activity,Author\n"
+            "DD-I-HD-2456-1,68,12m 17s,General,DD\n"
+            "DD-I-HD-2457-1,1,30m 50s,Sankul - Aptakumar Bhaio,DD\n"
+            "DJM-I-HD-2482-1,1,1h 10m 11s,General,DJM\n",
+            encoding="utf-8")
+        rows = {r["id"]: r for r in V.parse_master(str(master), None)}
+        assert rows["DD-I-HD-2456-1"]["clips"] == "68"
+        assert rows["DD-I-HD-2456-1"]["duration"] == "12m 17s"
+        assert rows["DD-I-HD-2457-1"]["activity"] == "Sankul - Aptakumar Bhaio"
+        assert rows["DJM-I-HD-2482-1"]["author"] == "DJM"
+
+    def test_sankul_or_djm_rows_are_special_light_blue(self, tmp_path):
+        from vingest import verify_csv as V
+        assert V.is_special("Sankul - All Sankul Bhaio", "DD")
+        assert V.is_special("General", "DJM")
+        assert not V.is_special("General", "DD")
+        assert not V.is_special("", "")
+        self._drive(tmp_path)                       # has 2456-1 and 2458-1
+        master = tmp_path / "dur.csv"
+        master.write_text(
+            "ID,No of clips,Duration,Activity,Author\n"
+            "DD-I-HD-2456-1,2,0s,General,DD\n"                 # match -> no fill
+            "DD-I-HD-2458-1,3,0s,Sankul - Bhaio Behno,DD\n"    # match but Sankul -> blue
+            "DJM-I-HD-2470-1,1,1h,General,DJM\n",              # in-Frappe + DJM -> blue
+            encoding="utf-8")
+        res = V.compare(str(tmp_path), str(master), None)
+        cat = {r["id"]: r["category"] for r in res["rows"]}
+        assert cat["DD-I-HD-2456-1"] == "match"
+        assert cat["DD-I-HD-2458-1"] == "special"      # Sankul wins over match
+        assert cat["DJM-I-HD-2470-1"] == "special"     # DJM wins over master_only
+        assert res["counts"]["special"] == 2
+        # A drive-only row can never be special (it has no Frappe entry/columns).
+        assert all(r["category"] != "special"
+                   for r in res["rows"] if r["flag"] == "scan_only")
+
+    def test_reads_xlsx_export(self, tmp_path):
+        from vingest import verify_csv as V
+        path = _write_min_xlsx(tmp_path / "dur.xlsx", [
+            ["ID", "Duration", "No of clips"],
+            ["DD-I-HD-2456-1", "12m 17s", "68"],
+            ["DD-I-4K-2467-1", "38m 46s", "89"],
+        ])
+        rows = V.parse_master(str(path), None)
+        assert [(r["key"], r["clips"]) for r in rows] == [
+            (("2456", 1), "68"), (("2467", 1), "89")]
+
+    def test_writes_highlighted_xlsx_report(self, tmp_path):
+        import zipfile
+        import re as _re
+        from vingest import verify_csv as V
+        self._drive(tmp_path)
+        master = tmp_path / "dur.csv"
+        master.write_text(
+            "ID,Duration,No of clips\n"
+            "DD-I-HD-2456-1,0s,2\n"       # match -> no fill
+            "DD-I-HD-2461-1,1h,7\n",      # master_only -> orange
+            encoding="utf-8")
+        res = V.compare(str(tmp_path), str(master), None)
+        out = V.write_report_xlsx(str(tmp_path / "report.xlsx"), res)
+        with zipfile.ZipFile(out) as z:
+            names = set(z.namelist())
+            assert {"xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml",
+                    "xl/styles.xml"} <= names
+            s1 = z.read("xl/worksheets/sheet1.xml").decode()
+            legend = z.read("xl/worksheets/sheet2.xml").decode()
+        # Header labels use the Frappe / Drive naming.
+        assert "ID (Frappe)" in s1 and "No of clips (Drive)" in s1
+        # 2458-1 is on the drive but not in the CSV -> red (style 3);
+        # 2461-1 is in the CSV but not on the drive -> orange (style 2).
+        assert len(_re.findall(r's="3"', s1)) == 6   # one 6-cell red row
+        assert len(_re.findall(r's="2"', s1)) == 6   # one 6-cell orange row
+        assert "Red" in legend and "Yellow" in legend
+
+    def test_rpc_registered(self):
+        assert "verify_csv" in server.METHODS
+
+
+def _write_min_xlsx(path, rows):
+    """Write a minimal, valid .xlsx (shared strings) with no third-party deps —
+    enough to exercise verify_csv's stdlib reader."""
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    strings, index = [], {}
+
+    def sref(v):
+        if v not in index:
+            index[v] = len(strings)
+            strings.append(v)
+        return index[v]
+
+    def col(n):
+        s = ""
+        n += 1
+        while n:
+            n, r = divmod(n - 1, 26)
+            s = chr(65 + r) + s
+        return s
+
+    sheet_rows = []
+    for ri, row in enumerate(rows, 1):
+        cells = "".join(
+            f'<c r="{col(ci)}{ri}" t="s"><v>{sref(str(val))}</v></c>'
+            for ci, val in enumerate(row))
+        sheet_rows.append(f'<row r="{ri}">{cells}</row>')
+    sheet = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+             '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+             f'<sheetData>{"".join(sheet_rows)}</sheetData></worksheet>')
+    sst = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+           '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+           f'count="{len(strings)}" uniqueCount="{len(strings)}">'
+           + "".join(f"<si><t>{escape(s)}</t></si>" for s in strings) + "</sst>")
+    content_types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                     '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                     '<Default Extension="xml" ContentType="application/xml"/>'
+                     '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                     '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                     '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+                     '</Types>')
+    root_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                 '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                 '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                 '</Relationships>')
+    workbook = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    wb_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+               '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+               '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+               '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>'
+               '</Relationships>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", root_rels)
+        z.writestr("xl/workbook.xml", workbook)
+        z.writestr("xl/_rels/workbook.xml.rels", wb_rels)
+        z.writestr("xl/sharedStrings.xml", sst)
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+    return path
 
 
 class TestMediaAndFolderScan:

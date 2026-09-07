@@ -294,3 +294,35 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .rename-table td.old { color: var(--muted); }
 .rename-table td.new { color: var(--text); }
 .rename-table td.arrow { color: var(--accent); width: 18px; text-align: center; }
+
+/* Offline verify: a wider panel and colour-coded comparison rows. */
+.modal-panel.wide { width: min(1080px, 100%); }
+.verify-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.verify-table th {
+  position: sticky; top: 0; background: var(--panel); text-align: left;
+  padding: 6px 8px; border-bottom: 1px solid var(--line);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+}
+.verify-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+/* Vibrant, solid highlights: bright red = on drive only, vibrant yellow = in CSV
+   only, orange = present in both but a value disagrees. Text colour is pinned so
+   the rows stay readable in both light and dark themes. */
+.verify-table tr.v-scan,   .verify-table tr.v-scan .mono,   .verify-table tr.v-scan .hint   { color: #fff; }
+.verify-table tr.v-master, .verify-table tr.v-master .mono, .verify-table tr.v-master .hint { color: #1a1400; }
+.verify-table tr.v-diff,   .verify-table tr.v-diff .mono,   .verify-table tr.v-diff .hint   { color: #1a1400; }
+.verify-table tr.v-special, .verify-table tr.v-special .mono, .verify-table tr.v-special .hint { color: #0a2230; }
+.verify-table tr.v-scan    { background: #ff2626; }
+.verify-table tr.v-master  { background: #ffe600; }
+.verify-table tr.v-diff    { background: #ff9d00; }
+.verify-table tr.v-special { background: #9cd3f7; }
+.v-key { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+.sw.v-scan   { background: #ff2626; border: 1px solid #cc0000; }
+.sw.v-master { background: #ffe600; border: 1px solid #b8a600; }
+.sw.v-diff    { background: #ff9d00; border: 1px solid #cc7a00; }
+.sw.v-special { background: #9cd3f7; border: 1px solid #3f9fd6; }
+.sw.v-ok      { background: var(--ok-soft); border: 1px solid var(--ok); }
+/* Status filter checkboxes above the comparison table. */
+.v-filters { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 2px 0 10px; }
+.v-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; user-select: none; }
+.v-filter input { margin: 0; }

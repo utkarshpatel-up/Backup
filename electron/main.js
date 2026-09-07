@@ -142,6 +142,21 @@ ipcMain.handle('dialog:pickZip', async () => {
   return r.canceled ? null : r.filePaths[0];
 });
 
+ipcMain.handle('dialog:pickCsv', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: 'Choose the duration list exported from Frappe (CSV or Excel)',
+    defaultPath: app.getPath('downloads'),
+    filters: [
+      { name: 'Duration list (CSV or Excel)', extensions: ['csv', 'xlsx', 'xlsm'] },
+      { name: 'CSV files', extensions: ['csv'] },
+      { name: 'Excel files', extensions: ['xlsx', 'xlsm'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+  });
+  return r.canceled ? null : r.filePaths[0];
+});
+
 ipcMain.handle('dialog:pickExecutable', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Locate ffprobe',

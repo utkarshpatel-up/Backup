@@ -51,6 +51,7 @@ const state = {
   camSeededKey: null,   // signature of the existing session(s) whose cam-folder names have been adopted
   frappe: null,         // Frappe connection/schema settings (loaded from disk)
   frappeUI: null,       // Frappe sync/settings modal: {open, view, busy, result, root}
+  verify: null,         // Offline CSV comparison page: {open, root, csv, busy, result, error}
 };
 
 // Field names the Frappe integration stores in settings.json.
@@ -686,6 +687,12 @@ function renderSources() {
         <span class="hint" style="margin:0">${frappeConfigComplete()
           ? 'Connected.' : 'Set your Frappe URL, key and field names first.'}</span>
       </div>
+      <p class="hint" style="margin-top:12px">No connection? Export the duration/clip list from
+        Frappe (CSV or Excel) while you have internet, then compare it against a drive here — fully
+        offline. Each session is flagged on-drive-only, in-CSV-only, or a duration/clip mismatch.</p>
+      <div class="row">
+        <button class="sm" id="btnVerifyCsv">Compare a folder to a CSV/Excel…</button>
+      </div>
     </div>`);
     return c.join('');
   }
@@ -840,6 +847,7 @@ function wireSources() {
   $('btnClipsOnlyExit')?.addEventListener('click', exitClipsOnly);
   $('btnFrappeSync')?.addEventListener('click', () => syncFrappe(null));
   $('btnFrappeSettingsBtn')?.addEventListener('click', openFrappeSettings);
+  $('btnVerifyCsv')?.addEventListener('click', () => openVerifyCsv());
 
   document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
     // The button toggles: "Use as source" adds it, "Added" takes it back off.
@@ -3278,6 +3286,7 @@ function renderModals() {
   if (!host) return;
   if (state.rename && state.rename.open) return renderRenameModal();
   if (state.frappeUI && state.frappeUI.open) return renderFrappeModal();
+  if (state.verify && state.verify.open) return renderVerifyModal();
   host.innerHTML = '';
   host.classList.remove('show');
 }
@@ -3681,6 +3690,194 @@ function renderFrappeModal() {
   $('btnFrappeRerun')?.addEventListener('click', () => syncFrappe(ui.root));
   $('btnFrappeRevealCsv')?.addEventListener('click', () => {
     if (ui.result && ui.result.csv_path) window.api.reveal(ui.result.csv_path);
+  });
+}
+
+/* --------------------------------------- offline CSV verification (page) */
+
+// The offline twin of the Frappe sync: pick a drive and a duration CSV that
+// was exported from Frappe while online, then diff them with no network. The
+// result is a side-by-side, colour-coded comparison plus a report CSV — the
+// same highlighting the standalone vidcount template produces.
+
+async function openVerifyCsv() {
+  const root = await window.api.pickFolder(
+    'Choose the drive or folder holding the sessions to verify');
+  if (!root) return;
+  const csv = await window.api.pickCsv();
+  if (!csv) return;
+  state.verify = { open: true, root, csv, busy: false, result: null, error: null,
+                   show: { match: true, diff: true, scan_only: true,
+                           master_only: true, special: true } };
+  render();
+  await runVerify();
+}
+
+async function chooseVerifyFolder() {
+  const root = await window.api.pickFolder(
+    'Choose the drive or folder holding the sessions to verify');
+  if (!root) return;
+  state.verify.root = root;
+  await runVerify();
+}
+
+async function chooseVerifyCsv() {
+  const csv = await window.api.pickCsv();
+  if (!csv) return;
+  state.verify.csv = csv;
+  await runVerify();
+}
+
+async function runVerify() {
+  const v = state.verify;
+  if (!v || !v.root || !v.csv) return;
+  v.busy = true; v.result = null; v.error = null;
+  render();
+  try {
+    v.result = await call('verify_csv',
+      { root: v.root, csv_path: v.csv, config: frappeConfig() },
+      { label: 'Comparing drive to CSV' });
+    const c = v.result.counts;
+    toast(`Verify: ${c.match} match, ${c.diff} mismatch, ` +
+          `${c.scan_only} on-drive-only, ${c.master_only} in-Frappe-only` +
+          (c.special ? `, ${c.special} Sankul/DJM.` : '.'),
+          (c.diff || c.scan_only || c.master_only) ? 'warn' : 'ok');
+  } catch (e) {
+    v.error = e.message;
+    toast(e.message, 'err');
+  } finally {
+    v.busy = false;
+    render();
+  }
+}
+
+function closeVerify() {
+  state.verify = null;
+  render();
+}
+
+const VERIFY_FLAG = {
+  match:       { label: 'OK',              cls: 'ok'   },
+  diff:        { label: 'Mismatch',        cls: 'diff' },
+  scan_only:   { label: 'On drive only',   cls: 'scan' },
+  master_only: { label: 'In Frappe only',  cls: 'master' },
+  special:     { label: 'Sankul / DJM',    cls: 'special' },
+};
+
+// The category decides the row colour and which filter box owns it. It is set
+// by the engine (Sankul/DJM rows take precedence over match/mismatch/in-Frappe);
+// fall back to the raw flag for older results.
+const verifyCat = (r) => r.category || r.flag;
+
+function verifyRowsHtml(rows) {
+  const shown = rows.slice(0, 1000);
+  const extra = rows.length - shown.length;
+  const body = shown.map((r) => {
+    const f = VERIFY_FLAG[verifyCat(r)] || { label: verifyCat(r), cls: '' };
+    const delta = (r.clip_delta === null || r.clip_delta === 0) ? ''
+      : (r.clip_delta > 0 ? `+${r.clip_delta}` : `${r.clip_delta}`);
+    return `<tr class="v-${f.cls}">
+      <td><span class="badge ${f.cls === 'ok' ? 'ok' : 'warn'}">${esc(f.label)}</span></td>
+      <td class="mono">${esc(r.id)}</td>
+      <td class="mono">${esc(String(r.master_duration || '—'))}</td>
+      <td class="mono">${esc(String(r.scan_duration || '—'))}</td>
+      <td class="mono">${esc(String(r.master_clips || '—'))}</td>
+      <td class="mono">${esc(String(r.scan_clips || '—'))}
+        ${delta ? `<span class="hint" style="margin:0">(${esc(delta)})</span>` : ''}</td>
+      <td class="hint" style="margin:0">${esc(r.note || '')}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="scroll" style="max-height:440px"><table class="verify-table">
+    <thead><tr>
+      <th>Status</th><th>ID</th>
+      <th>Duration (Frappe)</th><th>Duration (Drive)</th>
+      <th>Clips (Frappe)</th><th>Clips (Drive)</th><th>Note</th>
+    </tr></thead>
+    <tbody>${body}</tbody></table></div>${
+    extra ? `<p class="hint" style="margin:8px 0 0">…and ${extra} more not shown (all are in the report).</p>` : ''}`;
+}
+
+function renderVerifyModal() {
+  const host = $('modal');
+  const v = state.verify;
+  host.classList.add('show');
+
+  let body;
+  if (v.busy) {
+    body = `<div class="empty"><div class="big">🔎</div>
+      <div>Reading durations and comparing to the CSV…</div></div>`;
+  } else if (v.error) {
+    body = `<div class="note err"><b>Failed.</b> ${esc(v.error)}</div>`;
+  } else if (v.result) {
+    const c = v.result.counts;
+    const rows = v.result.rows || [];
+    const show = v.show || (v.show = { match: true, diff: true, scan_only: true,
+                                       master_only: true, special: true });
+    const filtered = rows.filter((r) => show[verifyCat(r)] !== false);
+    const clean = !c.diff && !c.scan_only && !c.master_only;
+    const chk = (flag, cls, label, count) => `<label class="v-filter">
+        <input type="checkbox" id="vf_${flag}" ${show[flag] === false ? '' : 'checked'}>
+        <span class="sw ${cls}"></span>${label} <b>${count || 0}</b></label>`;
+    body = `<div class="note ${clean ? 'ok' : 'warn'}">
+        <b>${c.match}</b> match · <b>${c.diff}</b> mismatch ·
+        <b>${c.scan_only}</b> on drive only · <b>${c.master_only}</b> in Frappe only ·
+        <b>${c.special || 0}</b> Sankul/DJM
+        <span class="hint" style="margin:0">· ${v.result.scanned} on drive, ${v.result.master} in Frappe</span></div>
+      <div class="v-filters">
+        <span class="hint" style="margin:0">Show:</span>
+        ${chk('scan_only', 'v-scan', 'On drive only', c.scan_only)}
+        ${chk('master_only', 'v-master', 'In Frappe only', c.master_only)}
+        ${chk('special', 'v-special', 'Sankul / DJM', c.special)}
+        ${chk('diff', 'v-diff', 'Mismatch', c.diff)}
+        ${chk('match', 'v-ok', 'Match', c.match)}
+      </div>
+      ${!rows.length
+        ? '<div class="note info">Nothing to compare — no sessions on the drive and no rows in the Frappe file.</div>'
+        : !filtered.length
+          ? '<div class="note info">No rows match the current filter — tick a box above to show some.</div>'
+          : verifyRowsHtml(filtered)}
+      ${v.result.report_path ? `<div class="note info" style="margin-top:10px">Highlighted report written to:
+        <div class="mono" style="margin-top:4px">${esc(v.result.report_path)}</div>
+        <button class="sm" id="btnVerifyReveal" style="margin-top:8px">Reveal report</button></div>` : ''}`;
+  } else {
+    body = '';
+  }
+
+  host.innerHTML = `<div class="modal-backdrop" data-close="1">
+    <div class="modal-panel wide" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div><h3 style="margin:0">Offline verify — Drive vs Frappe</h3>
+        <div class="path" style="margin-top:4px">Drive: ${esc(v.root || '')}</div>
+        <div class="path" style="margin-top:2px">Frappe file: ${esc(v.csv || '')}</div></div>
+        <button class="sm ghost" id="btnVerifyClose">Close</button>
+      </div>
+      <div class="modal-body">${body}</div>
+      <div class="modal-foot">
+        <button class="sm" id="btnVerifyFolder" ${v.busy ? 'disabled' : ''}>Choose folder…</button>
+        <button class="sm" id="btnVerifyPickCsv" ${v.busy ? 'disabled' : ''}>Choose CSV…</button>
+        <button class="sm ghost" id="btnVerifyRerun" ${v.busy ? 'disabled' : ''}>Run again</button>
+        <div class="spacer"></div>
+        <button class="primary" id="btnVerifyDone" ${v.busy ? 'disabled' : ''}>Done</button>
+      </div>
+    </div>
+  </div>`;
+  host.querySelector('[data-close]')?.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget && !v.busy) closeVerify();
+  });
+  $('btnVerifyClose')?.addEventListener('click', () => { if (!v.busy) closeVerify(); });
+  $('btnVerifyDone')?.addEventListener('click', closeVerify);
+  $('btnVerifyFolder')?.addEventListener('click', chooseVerifyFolder);
+  $('btnVerifyPickCsv')?.addEventListener('click', chooseVerifyCsv);
+  $('btnVerifyRerun')?.addEventListener('click', runVerify);
+  $('btnVerifyReveal')?.addEventListener('click', () => {
+    if (v.result && v.result.report_path) window.api.reveal(v.result.report_path);
+  });
+  ['match', 'diff', 'scan_only', 'master_only', 'special'].forEach((flag) => {
+    const el = $(`vf_${flag}`);
+    el?.addEventListener('change', () => {
+      (v.show || (v.show = {}))[flag] = el.checked;
+      render();
+    });
   });
 }
 

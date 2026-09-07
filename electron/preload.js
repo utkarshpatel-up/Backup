@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('api', {
 
   pickFolder: (title) => ipcRenderer.invoke('dialog:pickFolder', title),
   pickZip: () => ipcRenderer.invoke('dialog:pickZip'),
+  pickCsv: () => ipcRenderer.invoke('dialog:pickCsv'),
   pickVideoFiles: () => ipcRenderer.invoke('dialog:pickVideoFiles'),
   pickExecutable: () => ipcRenderer.invoke('dialog:pickExecutable'),
   confirm: (opts) => ipcRenderer.invoke('dialog:confirm', opts),

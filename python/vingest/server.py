@@ -11,13 +11,14 @@ Long-running methods run on a worker thread so the loop can still accept a
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import traceback
 from pathlib import Path
 
 from . import (__version__, compare, frappe_sync, ingest, naming, organize,
-               probe, report, sources, structure)
+               probe, report, sources, structure, verify_csv)
 from .hashing import algorithm
 
 _LOCK = threading.Lock()
@@ -283,6 +284,41 @@ def m_frappe_sync(p, req_id):
             csv_path = frappe_sync.write_unmatched_csv(
                 os.path.join(tempfile.gettempdir(), f"frappe_unmatched_{stamp}.csv"), to_fix)
     result["csv_path"] = csv_path
+    return result
+
+
+def m_verify_csv(p, req_id):
+    """Offline compare: diff the sessions under `root` against a duration CSV
+    exported from Frappe, and write a highlighted report. No network.
+
+    `config` is optional — when present, its field names help locate the
+    project/session/duration/clip columns in the exported CSV.
+    """
+    import datetime as _dt
+    root = p["root"]
+    csv_path = p["csv_path"]
+    if not os.path.isfile(csv_path):
+        raise ValueError(f"CSV not found: {csv_path}")
+
+    emit = _progress(req_id)
+    emit({"stage": "verify", "name": "Reading session durations…"})
+    result = verify_csv.compare(root, csv_path, p.get("config"))
+
+    report_path = None
+    if p.get("write_report", True):
+        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = p.get("report_path") or os.path.join(
+            os.path.abspath(root), f"vidcount_verify_{stamp}.xlsx")
+        try:
+            report_path = verify_csv.write_report_xlsx(target, result)
+        except OSError:
+            import tempfile
+            report_path = verify_csv.write_report_xlsx(
+                os.path.join(tempfile.gettempdir(), f"vidcount_verify_{stamp}.xlsx"),
+                result)
+    result["report_path"] = report_path
+    result["root"] = os.path.abspath(root)
+    result["csv_path"] = os.path.abspath(csv_path)
     return result
 
 

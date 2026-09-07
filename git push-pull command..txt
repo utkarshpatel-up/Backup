@@ -1,0 +1,7 @@
+git add .
+
+git commit -m "your message what update has been made"
+
+git push
+
+git pull

@@ -86,17 +86,20 @@ test('informal setup depends only on structure and output, not selected SD sourc
   assert.equal(rules.informalSetupReady(null, 'E:\\Backups'), false);
 });
 
-test('auto-suggest separates Canon camera filename prefixes even at identical formats', () => {
+test('auto-suggest keeps each source card as its own camera regardless of filename prefix', () => {
+  // Canon reuses reel ids like A_0003 across unrelated cards and mixes several
+  // within one card, so grouping is by the source drive, not the clip prefix.
   const common = { width: 1920, height: 1080, fps: 25, video_codec: 'hevc' };
   const clips = [
     { ...common, path: 'G:\\XFVC\\A_0027C397H260904_CANON_Proxy.MP4', mtime: 2 },
     { ...common, path: 'F:\\XFVC\\A_0003C801H260904_CANON.MP4', mtime: 3 },
-    { ...common, path: 'G:\\XFVC\\A_0027C398H260904_CANON_Proxy.MP4', mtime: 4 },
+    // Same card as the first clip (G:) but a different reel id — must stay with it.
+    { ...common, path: 'G:\\XFVC\\A_0055C398H260904_CANON_Proxy.MP4', mtime: 4 },
   ];
   const groups = rules.cameraGroups(clips, 'win32');
   assert.equal(groups.length, 2);
   assert.deepEqual(groups.map((group) => group.map((file) =>
-    rules.cameraFilenamePrefix(file))), [['A_0027', 'A_0027'], ['A_0003']]);
+    file.path.slice(0, 2))), [['G:', 'G:'], ['F:']]);
 });
 
 test('auto-suggest uses distinct card volumes when filenames carry no camera prefix', () => {
@@ -120,7 +123,7 @@ test('camera list filters by identity and assignment, then sorts deterministical
     'G:\\A_0027C001.MP4': 2,
   };
   const shown = rules.filterCameraFiles(files, assignments, {
-    identity: 'camera:A_0027', cam: '2', sort: 'camera-time', query: 'a_0027',
+    identity: 'volume:g:', cam: '2', sort: 'camera-time', query: 'a_0027',
   }, 'win32');
   assert.deepEqual(shown.map((file) => file.name), [
     'A_0027C001.MP4', 'A_0027C002.MP4',

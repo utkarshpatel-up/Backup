@@ -38,17 +38,25 @@
     return match ? match[1].toUpperCase() : '';
   }
 
-  /** Best available camera identity, before recording-format heuristics. */
+  /**
+   * Best available camera identity.
+   *
+   * A camera is a physical source: one SD card / drive is one camera. The clip's
+   * own filename prefix is deliberately NOT used — Canon bodies reuse reel ids
+   * like "A_0003" across unrelated cards and even mix several within one card, so
+   * grouping by it split one card across cams and merged different cards. The
+   * source volume the clip came off is the reliable signal; recording format is
+   * only a last resort when nothing identifies the source.
+   */
   function cameraGroupKey(file, platform = '') {
-    const prefix = cameraFilenamePrefix(file);
-    if (prefix) return `camera:${prefix}`;
-
     const volume = String((file && file.card_volume) || '');
     if (volume) return `volume:${pathKey(volume, platform)}`;
 
     const path = String((file && file.path) || '');
     const windowsRoot = /^([a-z]:)[\\/]/i.exec(path);
     if (windowsRoot) return `volume:${windowsRoot[1].toLowerCase()}`;
+    const posixMount = /^(\/Volumes\/[^/]+|\/media\/[^/]+\/[^/]+|\/mnt\/[^/]+)/i.exec(path);
+    if (posixMount) return `volume:${pathKey(posixMount[1], platform)}`;
 
     const card = String((file && file.card_label) || '').trim().toLowerCase();
     if (card) return `card:${card}`;

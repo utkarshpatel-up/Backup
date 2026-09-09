@@ -100,6 +100,13 @@ function fmtBytes(n) {
   return `${i === 0 ? n : n.toFixed(1)} ${u[i]}`;
 }
 
+// A file/folder byte count rendered as a solid, easy-to-spot chip. `total` gives
+// the green "folder total" variant used on folder rows; the default (accent) is
+// used on individual clips.
+function sizeBadge(bytes, kind = '') {
+  return `<span class="size-badge ${kind}">${fmtBytes(bytes)}</span>`;
+}
+
 function fmtDur(sec) {
   if (sec == null) return '—';
   const t = Math.floor(sec);
@@ -705,9 +712,6 @@ function renderSources() {
       <button class="sm" id="btnAddFolder">Add folder as source…</button>
       <button class="sm ${state.template ? '' : 'primary'}" id="btnAddZip">
         ${state.template ? 'Replace structure zip…' : 'Import structure zip…'}</button>
-      <div class="spacer"></div>
-      <button class="sm primary" id="btnClassify"
-          ${state.sources.length ? '' : 'disabled'}>Probe codecs &amp; assign roles</button>
     </div>`);
 
   if (!state.volumes.length && !state.sources.length) {
@@ -736,8 +740,15 @@ function renderSources() {
   c.push(`</div>`);
 
   if (state.sources.length) {
-    c.push(`<div class="card"><h3>Sources in this job</h3>
-      <p class="hint">Each source becomes its own copy of the session folder.</p>`);
+    c.push(`<div class="card">
+      <div class="row" style="align-items:flex-start;margin-bottom:12px">
+        <div style="flex:1;min-width:0">
+          <h3>Sources in this job</h3>
+          <p class="hint" style="margin:0">Each source becomes its own copy of the session folder.</p>
+        </div>
+        <button class="sm primary" id="btnClassify"
+          ${state.sources.length ? '' : 'disabled'}>Probe codecs &amp; assign roles</button>
+      </div>`);
     for (const s of state.sources) {
       const r = s.report;
       const fam = r ? r.family : null;
@@ -756,13 +767,15 @@ function renderSources() {
           </div>
         </div>
         <div class="role-pick">
-          <div class="seg">
+          ${s.kind === 'zip'
+            ? `<span class="badge template" title="A structure zip is always the folder structure — no need to pick a role">Structure</span>`
+            : `<div class="seg">
             ${['prores', 'h265', 'sd', 'template', 'other'].map((role) => `
               <button data-role="${role}" data-path="${esc(s.path)}"
                 class="${s.role === role ? 'on' : ''}">${
                   { prores: 'ProRes', h265: 'H.265', sd: 'SD card',
                     template: 'Structure', other: 'Other' }[role]}</button>`).join('')}
-          </div>
+          </div>`}
           <button class="sm ghost" data-remove="${esc(s.path)}">Remove</button>
         </div>
       </div>
@@ -2113,12 +2126,13 @@ function renderCameras() {
   for (const file of files) {
     const key = selectionRules.cameraGroupKey(file, window.api.platform);
     if (identityOptions.has(key)) continue;
-    const prefix = selectionRules.cameraFilenamePrefix(file);
+    // Cameras are grouped by their source card/drive, so label the option by
+    // that source rather than any one clip's (unreliable) filename prefix.
     const rootMatch = /^[a-z]:[\\/]/i.exec(file.path || '');
     const source = file.card_volume || (rootMatch ? rootMatch[0] : '');
-    identityOptions.set(key, prefix
-      ? `${prefix}${source ? ` · ${source}` : ''}`
-      : (file.card_label || source || key.replace(/^[^:]+:/, '')));
+    identityOptions.set(key, file.card_label
+      ? `${file.card_label}${source ? ` · ${source}` : ''}`
+      : (source || key.replace(/^[^:]+:/, '')));
   }
   if (state.cameraFilterIdentity !== 'all'
       && !identityOptions.has(state.cameraFilterIdentity)) {
@@ -2420,7 +2434,7 @@ function wireCameras() {
         : ` Lowest empty: ${suggestedCams.map(camLabel).join(', ')}.`;
       toast(groups.length === 1
         ? `All ${clips.length} clip(s) look like one camera — assigned to ${camLabel(suggestedCams[0])}.${placement}`
-        : `Grouped ${clips.length} clip(s) into ${groups.length} available cameras by card/source and Canon filename identity.${placement}`);
+        : `Grouped ${clips.length} clip(s) into ${groups.length} available cameras by source card/drive.${placement}`);
       render();
     } catch (e) { toast(`Could not check existing camera folders: ${e.message}`, 'err'); }
   });
@@ -2545,7 +2559,8 @@ function renderCopy() {
       ${t.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
       <div class="tree">
         ${t.job_folder ? `<div class="dir">📁 ${esc(t.job_folder)}</div>` : ''}
-        <div class="dir ${t.job_folder ? 'indent1' : ''}">📁 ${esc(t.session_folder)} ${pathCount(t.session_path)}</div>
+        <div class="dir ${t.job_folder ? 'indent1' : ''}">📁 ${esc(t.session_folder)}
+          ${sizeBadge(t.total_bytes, 'total')} ${pathCount(t.session_path)}</div>
         ${isInformal() ? '' : (t.master_present && !t.items.some((i) => i.kind === 'master')
           ? '<div class="ren indent2">🎬 <span style="color:var(--ok)">master already filed, kept</span></div>'
           : masterRows(t))}
@@ -2632,7 +2647,7 @@ function masterRows(t) {
   }
   return items.map((i) => `<div class="ren indent2">🎬
     <span style="color:var(--muted)">${esc(i.original_name)} →</span>
-    <b>${esc(i.dst.split(/[\\/]/).pop())}</b> ${pathCount(i.final_dst || i.dst)}
+    <b>${esc(i.dst.split(/[\\/]/).pop())}</b> ${sizeBadge(i.size)} ${pathCount(i.final_dst || i.dst)}
     <span style="color:var(--muted)">· ${fmtDurAuto(i.duration)}</span></div>`).join('');
 }
 
@@ -2681,11 +2696,13 @@ function camGroups(t) {
       ? ` <span style="color:var(--ok)">· ${info.existing} already filed, kept</span>` : '';
     const emptyTag = (!info.newItems.length && !info.existing)
       ? ' <span style="color:var(--warn)">· empty</span>' : '';
+    const folderBytes = info.newItems.reduce((sum, i) => sum + (i.size || 0), 0);
     const head = `<div class="dir ${folderIndent}">📁 ${esc(folder)}${already}${
-      info.newItems.length ? ` <span style="color:var(--accent)">· +${info.newItems.length} new</span>` : ''}${emptyTag}</div>`;
+      info.newItems.length ? ` <span style="color:var(--accent)">· +${info.newItems.length} new</span> ${
+        sizeBadge(folderBytes, 'total')}` : ''}${emptyTag}</div>`;
     return head + info.newItems.map((i) => `<div class="ren ${folderIndent}" style="padding-left:${filePadding}px">
-      <b>${esc(i.original_name)}</b> ${pathCount(i.final_dst || i.dst)}
-      <span style="color:var(--muted)">· ${fmtDur(i.duration)} · ${fmtBytes(i.size)}${
+      <b>${esc(i.original_name)}</b> ${sizeBadge(i.size)} ${pathCount(i.final_dst || i.dst)}
+      <span style="color:var(--muted)">· ${fmtDur(i.duration)}${
         i.original_name !== i.dst.split(/[\\/]/).pop()
           ? ` · renamed to ${esc(i.dst.split(/[\\/]/).pop())}${
             ''}` : ''}</span>

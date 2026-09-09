@@ -18,9 +18,12 @@ function pathCount(fullPath) {
 // the example reflects the real path length — folders and all — before a plan is
 // previewed. The clip name (event portion) comes from the editable base; the
 // folders it lands in are rebuilt from the same pieces the plan uses.
-function examplePath(exampleName) {
+// The directory the session folder lands in, rebuilt from the same pieces the
+// plan uses, with a trailing separator. A master sits at the session root, so
+// this is also the folder its file is written into.
+function sessionDirForPreview() {
   const src = primarySource();
-  if (!src) return exampleName;
+  if (!src) return '';
   const sep = (window.api && window.api.platform === 'win32') ? '\\' : '/';
   const d = detection() || {};
   const t = state.template || {};
@@ -29,9 +32,42 @@ function examplePath(exampleName) {
   const session = isInformal()
     ? stripClipsToken(rawBase).replace(/\s*\bDur-\S+/ig, '').trim()
     : `${stripClipsToken(rawBase)} Dur-${fmtDurAuto(masterTotalSeconds())}`;
-  const dir = [destOf(src), job, session, isInformal() ? 'Cam-01' : '']
-    .filter(Boolean).join(sep);
-  return dir ? dir + sep + exampleName : exampleName;
+  const dir = [destOf(src), job, session].filter(Boolean).join(sep);
+  return dir ? dir + sep : '';
+}
+
+function examplePath(exampleName) {
+  const dir = sessionDirForPreview();
+  if (!dir) return exampleName;
+  const sep = (window.api && window.api.platform === 'win32') ? '\\' : '/';
+  // Informal clips land one level deeper, inside a Cam folder.
+  return dir + (isInformal() ? `Cam-01${sep}` : '') + exampleName;
+}
+
+// Formal jobs carry only a handful of master files, so their rename fields are
+// shown inline on the Folder step — no need to press "Preview selected
+// filenames" first, which exists mainly to expand the long informal clip list.
+function formalMasterEditor() {
+  const masters = chosenMasters();
+  if (isInformal() || !masters.length) return '';
+  const base = state.clipTitle || state.renameBase
+    || (state.template || {}).session_name || (detection() || {}).session_name
+    || state.session.title;
+  const dir = sessionDirForPreview();
+  const rows = masters.map((m, i) => {
+    const generated = masterClipName(base, m.duration, i + 1, masters.length, m.path);
+    const value = state.clipNames[m.path] || generated;
+    return `<label class="field"><span>${esc(m.name)} → output filename</span>
+      <input type="text" data-output-name="${esc(m.path)}" data-dir="${esc(dir)}" value="${esc(value)}" />
+      <span class="path">${esc(dir + value)}</span></label>`;
+  }).join('');
+  return `<div class="name-preview-target">
+    <b>Master filename${masters.length > 1 ? 's' : ''}</b>
+    <p class="hint" style="margin:4px 0 10px">Edit any of the ${masters.length} master name${
+      masters.length > 1 ? 's' : ''} right here. Camera clips keep their original names; use
+      <b>Preview selected filenames</b> below only if you want to rename an individual camera clip too.</p>
+    ${rows}
+  </div>`;
 }
 
 function renderNamingEditor() {
@@ -54,14 +90,19 @@ function renderNamingEditor() {
     </label>
     <div class="preview-name">Example filename: ${esc(example)}</div>
     ${pathCount(examplePath(example))}
+    ${formalMasterEditor()}
     <p class="hint">The example uses a sample extension and sequence. Load/select your clips, then preview
       their exact names below. Formal camera clips keep their original names unless individually edited.</p>
     <button id="btnPreviewNames" ${state.busy ? 'disabled' : ''}>Preview selected filenames</button>
-    ${preview ? preview.targets.map((t) => `<div class="name-preview-target">
+    ${preview ? preview.targets.map((t) => {
+      // Formal masters are already editable inline above, so the preview list
+      // only needs the camera clips; informal shows every renamed clip.
+      const items = isInformal() ? t.items : t.items.filter((item) => item.kind !== 'master');
+      return `<div class="name-preview-target">
       <b>${esc(t.role)} · Session folder</b><div class="preview-name">${esc(t.session_folder)}</div>
       ${pathCount(t.session_path)}
       <div class="path">${esc(t.session_path)}</div>
-      ${t.items.map((item) => {
+      ${items.map((item) => {
         const full = item.final_dst || item.dst;
         const name = full.split(/[\\/]/).pop();
         const dir = full.slice(0, full.length - name.length);
@@ -69,8 +110,10 @@ function renderNamingEditor() {
           <input type="text" data-output-name="${esc(item.src)}" data-dir="${esc(dir)}" value="${esc(name)}" />
           <span class="path">${esc(full)}</span></label>`;
       }).join('')}
-      ${!t.items.length ? '<p class="hint">No new files selected. Tick camera clips or select a master first.</p>' : ''}
-    </div>`).join('') : ''}
+      ${!items.length ? `<p class="hint">${isInformal()
+        ? 'No new files selected. Tick camera clips or select a master first.'
+        : 'No camera clips to rename — masters are edited above.'}</p>` : ''}
+    </div>`; }).join('') : ''}
   </div>`;
 }
 

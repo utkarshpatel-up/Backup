@@ -18,13 +18,63 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "dist-python"
 
+EXE = ".exe" if os.name == "nt" else ""
+
+
+def _has_tools(directory: Path) -> bool:
+    """True when `directory` holds both ffprobe and ffmpeg executables."""
+    return all((directory / (tool + EXE)).exists()
+               for tool in ("ffprobe", "ffmpeg"))
+
+
+def autodetect_ffmpeg() -> Path | None:
+    """Find a folder containing ffmpeg + ffprobe without the operator naming it.
+
+    Checks, in order: whatever is on PATH, then the usual install locations on
+    each OS. Returns the folder, or None if a complete pair is nowhere to be
+    found — so the build can carry on unbundled rather than fail.
+    """
+    for tool in ("ffprobe", "ffmpeg"):
+        found = shutil.which(tool)
+        if found:
+            directory = Path(found).resolve().parent
+            if _has_tools(directory):
+                return directory
+    common = [
+        Path(r"C:\ffmpeg\bin"), Path(r"C:\Program Files\ffmpeg\bin"),
+        Path("/opt/homebrew/bin"), Path("/usr/local/bin"), Path("/usr/bin"),
+    ]
+    for directory in common:
+        if _has_tools(directory):
+            return directory
+    return None
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--with-ffmpeg", metavar="DIR",
                     help="Directory holding ffmpeg/ffprobe to bundle into the binary. "
-                         "Omit to rely on ffmpeg being installed on the target machine.")
+                         "Omit and the build auto-detects ffmpeg (PATH, then the usual "
+                         "install folders) so the installer is self-contained by default.")
+    ap.add_argument("--no-ffmpeg", action="store_true",
+                    help="Do not bundle ffmpeg; the target machine must have it installed. "
+                         "Overrides auto-detection.")
     args = ap.parse_args()
+
+    # ffmpeg is bundled by default: use the explicit folder if given, otherwise
+    # go looking for one, so a plain `npm run dist:win` yields a self-contained
+    # installer. --no-ffmpeg is the deliberate opt-out.
+    if args.no_ffmpeg:
+        args.with_ffmpeg = None
+    elif not args.with_ffmpeg:
+        found = autodetect_ffmpeg()
+        if found:
+            args.with_ffmpeg = str(found)
+            print(f"Auto-detected ffmpeg at {found}")
+        else:
+            print("Could not auto-detect ffmpeg. Building without it — install "
+                  "ffmpeg and pass --with-ffmpeg <dir> for a self-contained build, "
+                  "or the target machine will need ffmpeg itself.")
 
     try:
         import PyInstaller  # noqa: F401

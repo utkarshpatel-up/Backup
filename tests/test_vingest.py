@@ -1350,6 +1350,46 @@ class TestCameraCards:
         assert result["cards"][0]["label"] == "CanonA_0006"
         assert result["cards"][0]["suggested_cam"] == 1
 
+    def _mount_sound(self, tmp_path, name, takes=("0071", "0072"), pairs=True):
+        """A TASCAM/field-recorder card: a top-level SOUND folder of .wav pairs."""
+        sound = tmp_path / name / "SOUND"
+        sound.mkdir(parents=True)
+        for take in takes:
+            (sound / f"260908_{take}.bin").write_bytes(b"x" * 4)   # tiny sidecar
+            channels = ("-1", "-2") if pairs else ("",)
+            for ch in channels:
+                (sound / f"260908_{take}{ch}.wav").write_bytes(b"x" * 10)
+        return tmp_path / name
+
+    def test_a_sound_folder_of_wavs_is_detected_as_an_audio_card(self, tmp_path, monkeypatch):
+        # The drive is named for the drone/USB stick, not the recorder — so the
+        # SOUND folder itself, not the volume name, is what identifies the card.
+        self._mount_sound(tmp_path, "Drone 128GB")
+        r = self._find(tmp_path, monkeypatch)
+        assert r["card_count"] == 1
+        card = r["cards"][0]
+        assert card["layout"] == "TASCAM audio"
+        assert card["suggested_cam"] is None      # no letter → next free cam in the GUI
+
+    def test_sound_card_takes_every_wav_but_skips_the_bin_sidecars(self, tmp_path, monkeypatch):
+        self._mount_sound(tmp_path, "Drone 64GB", takes=("0071", "0072"))
+        card = self._find(tmp_path, monkeypatch)["cards"][0]
+        names = [Path(f).name for f in card["files"]]
+        assert all(n.lower().endswith(".wav") for n in names)
+        assert card["file_count"] == 4            # two takes × two channels
+
+    def test_an_empty_sound_folder_is_not_a_card(self, tmp_path, monkeypatch):
+        (tmp_path / "Blank USB" / "SOUND").mkdir(parents=True)
+        assert self._find(tmp_path, monkeypatch)["card_count"] == 0
+
+    def test_a_canon_card_and_a_sound_card_are_both_found(self, tmp_path, monkeypatch):
+        self._mount(tmp_path, "CanonA_0006", "0006")
+        self._mount_sound(tmp_path, "Drone 128GB")
+        r = self._find(tmp_path, monkeypatch)
+        assert r["card_count"] == 2
+        layouts = {c["layout"] for c in r["cards"]}
+        assert layouts == {"Canon XF", "TASCAM audio"}
+
 
 class TestMasterClipNaming:
     """Masters are renamed after the folder; the folder's Dur- is their total."""

@@ -11,7 +11,7 @@ import zipfile
 from dataclasses import dataclass, asdict
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .probe import JUNK_NAMES, VIDEO_EXTS, is_junk
+from .probe import AUDIO_EXTS, JUNK_NAMES, VIDEO_EXTS, is_junk
 
 
 @dataclass
@@ -294,12 +294,23 @@ def eject(path: str) -> dict:
 # XFVC/REEL_<n>. The trailing number differs per card and is not matched on —
 # the structure is what identifies the card, and the letter says which camera
 # body it came from.
+# A TASCAM (and most field recorders — Zoom, DJI mic receiver) drops its takes
+# into a top-level SOUND folder as .wav pairs with a tiny .bin sidecar. There is
+# no vendor volume name to key on, so this layout matches ANY mounted card that
+# has a SOUND folder holding audio, and files those .wav into their own camera.
 CARD_LAYOUTS = [
     {
         "name": "Canon XF",
         "volume_prefix": "Canon",
         "inner": ["XFVC", "REEL_*"],
         "letter_re": r"^canon(?P<letter>[a-z])",
+    },
+    {
+        "name": "TASCAM audio",
+        "volume_prefix": "",          # any volume that carries a SOUND folder
+        "inner": ["SOUND"],
+        "exts": AUDIO_EXTS,
+        "require_files": True,        # an empty SOUND folder is not a sound card
     },
 ]
 
@@ -357,20 +368,28 @@ def find_camera_cards(layouts: list[dict] | None = None) -> dict:
         # the CanonA/CanonB identifier used to recognise and assign a card.
         name = vol.get("label") or vol_path.name or vol["path"]
         for layout in layouts:
-            if not name.lower().startswith(layout["volume_prefix"].lower()):
+            prefix = layout.get("volume_prefix", "")
+            if prefix and not name.lower().startswith(prefix.lower()):
                 continue
             reels = _walk_layout(vol_path, layout["inner"])
             if not reels:
                 continue
 
+            exts = layout.get("exts", VIDEO_EXTS)
             files: list[Path] = []
             for reel in reels:
                 try:
                     files.extend(p for p in sorted(reel.iterdir())
                                  if p.is_file() and is_junk(p) is False
-                                 and p.suffix.lower() in VIDEO_EXTS)
+                                 and p.suffix.lower() in exts)
                 except OSError:
                     continue
+
+            # A layout keyed only on a generic folder (SOUND) must actually hold
+            # its media before we call the drive a card, or every drive with an
+            # empty SOUND folder would masquerade as a recorder.
+            if layout.get("require_files") and not files:
+                continue
 
             cam = None
             m = _re.match(layout.get("letter_re", ""), name.lower()) \

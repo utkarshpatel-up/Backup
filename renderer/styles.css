@@ -125,6 +125,7 @@ label.field > span {
 }
 .badge.prores { background: color-mix(in srgb, var(--prores) 14%, transparent); color: var(--prores); }
 .badge.h265   { background: color-mix(in srgb, var(--h265) 16%, transparent); color: var(--h265); }
+.badge.template { background: var(--accent-soft); color: var(--accent); }
 .badge.ok  { background: var(--ok-soft); color: var(--ok); }
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
 .badge.err { background: var(--err-soft); color: var(--err); }
@@ -203,6 +204,15 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .tree .ren b { color: var(--text); font-weight: 550; }
 .indent1 { padding-left: 18px; } .indent2 { padding-left: 36px; }
 .indent3 { padding-left: 54px; }
+/* Solid, high-contrast size chip so the byte count stands out from the muted
+   tree text both while building the plan and after the copy finishes. */
+.size-badge {
+  display: inline-block; padding: 1px 7px; border-radius: 5px;
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  background: var(--accent); color: #fff; white-space: nowrap;
+  vertical-align: baseline;
+}
+.size-badge.total { background: var(--ok); }
 
 .empty { text-align: center; padding: 46px 20px; color: var(--muted); }
 .empty .big { font-size: 30px; margin-bottom: 8px; }

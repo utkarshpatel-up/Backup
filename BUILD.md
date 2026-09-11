@@ -91,24 +91,27 @@ npm run dist:win
 ```
 
 Output: **`dist\AV Backup Setup 1.0.0.exe`** — copy that to the other PC and run
-it to install. (The version number matches `version` in `package.json`.)
+it to install. Nothing else needs to be installed on the target machine: the
+Python engine **and ffmpeg/ffprobe** are frozen inside the installer. (The
+version number matches `version` in `package.json`.)
 
-### Bundle ffmpeg into the installer (optional, recommended)
+### ffmpeg is bundled automatically
 
-By default ffmpeg is **not** bundled, so the target PC would need ffmpeg
-installed. To make one fully self-contained installer, freeze the engine with
-ffmpeg first, then package:
+`npm run dist:win` freezes ffmpeg into the engine on its own — it looks for
+`ffmpeg.exe` / `ffprobe.exe` on your **PATH** first, then the usual install
+folders (`C:\ffmpeg\bin`, `C:\Program Files\ffmpeg\bin`). The build log prints
+`Auto-detected ffmpeg at …` and its smoke test fails the build if the bundled
+tools don't actually run, so a green build is a guarantee the installer is
+self-contained.
 
-```
-npm run bundle:python -- --with-ffmpeg "C:\path\to\ffmpeg\bin"
-```
+- **ffmpeg somewhere unusual?** Point at it explicitly:
+  `npm run bundle:python -- --with-ffmpeg "D:\tools\ffmpeg\bin"` then
+  `npx electron-builder --win`.
+- **Deliberately ship without ffmpeg** (target already has it on PATH):
+  `npm run bundle:python -- --no-ffmpeg` then `npx electron-builder --win`.
 
-```
-npx electron-builder --win
-```
-
-`C:\path\to\ffmpeg\bin` is the folder that contains `ffmpeg.exe` and
-`ffprobe.exe` (e.g. from a gyan.dev / BtbN ffmpeg download).
+Get ffmpeg for Windows from gyan.dev or BtbN — unzip it and either add its `bin`
+folder to PATH or drop it at `C:\ffmpeg\bin`, and the build finds it.
 
 ---
 
@@ -133,8 +136,8 @@ Helper scripts for macOS live in `scripts/macos.sh` (`setup:mac`, `dist:mac`).
 | Command | What it does |
 | --- | --- |
 | `npm start` | Run the app from source (dev). |
-| `npm run bundle:python` | Freeze the Python engine to `dist-python/` (add `-- --with-ffmpeg "<dir>"` to include ffmpeg). |
-| `npm run dist:win` | Bundle the engine **and** build the Windows installer. |
+| `npm run bundle:python` | Freeze the Python engine to `dist-python/` (auto-includes ffmpeg; `-- --with-ffmpeg "<dir>"` to force a folder, `-- --no-ffmpeg` to skip). |
+| `npm run dist:win` | Bundle the engine (with ffmpeg) **and** build the self-contained Windows installer. |
 | `npm run dist:mac` | Same, for macOS. |
 | `python -m pytest tests/ -q` | Run the engine test suite. |
 

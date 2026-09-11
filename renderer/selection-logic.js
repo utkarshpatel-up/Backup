@@ -202,6 +202,45 @@
     return [...occupied].sort((a, b) => a - b);
   }
 
+  // Existing on-disk clip count per camera number, read from a plan's
+  // existing_cams report (folder name -> clips already filed). Both SSD backups
+  // report the same folder, so keep the largest count per camera rather than
+  // summing the identical copies across targets.
+  function existingCamCounts(plan, camNames = {}) {
+    const named = new Map(Object.entries(camNames).map(([number, name]) =>
+      [String(name || '').trim().toLowerCase(), Number(number)]));
+    const counts = {};
+    for (const target of (plan && plan.targets) || []) {
+      for (const [folder, count] of Object.entries(target.existing_cams || {})) {
+        const n = Number(count);
+        if (!Number.isFinite(n) || n <= 0) continue;
+        const clean = String(folder || '').trim();
+        // Match "Cam-05" and suffixed names like "Cam-05 (Audio)".
+        const match = /^Cam-(\d+)\b/i.exec(clean);
+        const number = match ? Number(match[1]) : named.get(clean.toLowerCase());
+        if (!Number.isFinite(number)) continue;
+        counts[number] = Math.max(counts[number] || 0, n);
+      }
+    }
+    return counts;
+  }
+
+  // The short clips (under maxSeconds) that bookend a Formal session are usually
+  // Pujyashree's entry and exit recordings. Ordered by shoot time — falling back
+  // to modified time, then name — the earliest is the entry and the latest the
+  // exit. With a single short clip the two are the same file (the operator picks
+  // which label to apply); with none, both are null.
+  function entryExitCeremonyClips(files, maxSeconds) {
+    const shorts = (files || [])
+      .filter((f) => typeof f.duration === 'number' && f.duration < maxSeconds)
+      .slice()
+      .sort((a, b) => String(a.shoot_iso || '').localeCompare(String(b.shoot_iso || ''))
+        || (a.mtime || 0) - (b.mtime || 0)
+        || String(a.name || '').localeCompare(String(b.name || '')));
+    if (!shorts.length) return { entry: null, exit: null };
+    return { entry: shorts[0], exit: shorts[shorts.length - 1] };
+  }
+
   function lowestAvailableCams(count, occupied = []) {
     const filled = new Set((occupied || []).map(Number).filter(Number.isFinite));
     const available = [];
@@ -247,6 +286,7 @@
   return { pathKey, isJunkPath, cameraFiles, cameraFilenamePrefix, cameraGroupKey,
            cameraGroups, filterCameraFiles, camsForAssignments, removeCardImports,
            importedCamCount, informalSetupReady, normalizedTemplateDirs,
-           cameraCountAfterDetection, occupiedCamNumbers,
+           cameraCountAfterDetection, occupiedCamNumbers, existingCamCounts,
+           entryExitCeremonyClips,
            lowestAvailableCams, emptyCamNumbers, unexpectedPlanClips };
 });

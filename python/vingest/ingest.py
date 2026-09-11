@@ -90,6 +90,7 @@ class TargetPlan:
     ensure_dirs: list = field(default_factory=list)   # folders to create even if empty
     cam_names: dict = field(default_factory=dict)     # cam number -> displayed folder name
     existing_cams: dict = field(default_factory=dict) # cam folder -> clips already filed there
+    existing_cam_folders: dict = field(default_factory=dict) # cam number -> folder name (incl. empty)
     existing_matches: list = field(default_factory=list) # assigned sources matching filed sizes
     master_present: bool = False                      # a master already sits in the folder
     items: list[PlanItem] = field(default_factory=list)
@@ -353,14 +354,22 @@ def build_plan(spec: dict, progress=None) -> dict:
                 raise ValueError("Keep the original file extension when renaming: " + override)
             return override
 
+        ceremony_names = t.get("ceremony_names") or {}
         for index, master in enumerate(masters, 1):
             # Unlike the cam clips, a master is renamed after the folder it sits
-            # in, carrying its own duration and its position in the session.
-            name = naming.dedupe(
-                output_name(master.path, naming.master_clip_name(
-                    t.get("clip_title") or session_folder, master.duration, index,
-                    len(masters), Path(master.path).suffix)),
-                taken)
+            # in, carrying its own duration and its position in the session. A
+            # ceremony master (Pujyashree's Entry/Exit) keeps that same shape but
+            # swaps the topic for its tag; a hand-typed clip_names override still
+            # wins over either default.
+            tag = ceremony_names.get(str(master.path))
+            base_name = t.get("clip_title") or session_folder
+            generated = (naming.ceremony_clip_name(
+                             base_name, tag, master.duration, index,
+                             len(masters), Path(master.path).suffix)
+                         if tag else naming.master_clip_name(
+                             base_name, master.duration, index,
+                             len(masters), Path(master.path).suffix))
+            name = naming.dedupe(output_name(master.path, generated), taken)
             taken.add(name)
             plan.items.append(PlanItem(
                 src=master.path, dst=str(staging_path / name),
@@ -533,6 +542,13 @@ def build_plan(spec: dict, progress=None) -> dict:
                 if n:
                     plan.existing_cams[child.name] = n
 
+        # Every camera folder present on disk — including empty ones — so the
+        # Cameras page can show a chip for each without first visiting Folder,
+        # whose structure detection is otherwise the only thing that grows the
+        # camera count for a resumed session.
+        plan.existing_cam_folders = {str(num): name
+                                     for num, name in existing_cam_names.items()}
+
         # A camera number can already be held by a suffixed folder on disk
         # ("Cam-05 (Drone)", "Cam-08 (MM Drone)", "Cam-05 (Audio)"). Don't ensure
         # — or let the preview show — a bare "Cam-05" beside it: that would be a
@@ -628,7 +644,8 @@ def build_plan(spec: dict, progress=None) -> dict:
         "targets": [t.to_dict() for t in targets_out],
         "total_bytes": sum(t.total_bytes for t in targets_out),
         "item_count": sum(len(t.items) for t in targets_out),
-        "renames": [{"role": t.role, "from": t.rename_from, "to": t.rename_to}
+        "renames": [{"role": t.role, "source": t.source_root,
+                     "from": t.rename_from, "to": t.rename_to}
                     for t in targets_out if t.rename_to],
         "warnings": [w for t in targets_out for w in t.warnings],
     }
@@ -885,7 +902,8 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
             continue
         staging = Path(target["staging_path"])
         final = Path(target["session_path"])
-        record = {"role": target.get("role"), "from": target.get("rename_from"),
+        record = {"role": target.get("role"), "source": target.get("source_root"),
+                  "from": target.get("rename_from"),
                   "to": target.get("rename_to"), "done": False, "message": ""}
         if cancelled or errors:
             record["message"] = ("Left as-is: the copy did not finish cleanly, so the "
@@ -907,9 +925,11 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
         renames.append(record)
 
     # Report the post-rename location, which is what the operator will look for.
-    renamed_roles = {r["role"] for r in renames if r["done"]}
+    # Key by source path, not role — two drives can share a codec role, and only
+    # the one whose folder actually renamed should have its items relocated.
+    renamed_sources = {r.get("source") for r in renames if r["done"]}
     for target in plan.get("targets", []):
-        if target.get("role") not in renamed_roles:
+        if target.get("source_root") not in renamed_sources:
             continue
         for item in target.get("items", []):
             if item.get("final_dst"):

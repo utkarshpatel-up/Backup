@@ -55,8 +55,7 @@ function formalMasterEditor() {
     || state.session.title;
   const dir = sessionDirForPreview();
   const rows = masters.map((m, i) => {
-    const generated = masterClipName(base, m.duration, i + 1, masters.length, m.path);
-    const value = state.clipNames[m.path] || generated;
+    const value = masterDisplayName(m, i + 1, masters.length, base);
     return `<label class="field"><span>${esc(m.name)} → output filename</span>
       <input type="text" data-output-name="${esc(m.path)}" data-dir="${esc(dir)}" value="${esc(value)}" />
       <span class="path">${esc(dir + value)}</span></label>`;
@@ -140,7 +139,7 @@ function wireNamingEditor() {
     });
   });
   // Live counters never rebuild the input or steal the typing cursor.
-  document.querySelectorAll('#fRename, #fStructureJob, #fTitle, #fClipTitle, [data-output-name], [data-camname]').forEach((field) => {
+  document.querySelectorAll('#fRename, #fStructureJob, #fTitle, #fClipTitle, [data-output-name]').forEach((field) => {
     const count = document.createElement('span');
     field.insertAdjacentElement('afterend', count);
     // Clip-name fields carry the destination directory in data-dir, so their live

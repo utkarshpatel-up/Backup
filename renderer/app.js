@@ -28,6 +28,7 @@ const state = {
   assign: {},           // primary file path -> 'master' | cam number | 'skip'
   camCount: 3,
   clipNames: {},
+  ceremonyNames: {},    // master path -> "Pujyashree's Entry"/"Exit" tag (topic swap)
   clipTitle: '',
   namingPreview: null,
   selection: [],        // paths ticked for a batch assign (shift/ctrl on the Cameras page)
@@ -49,6 +50,7 @@ const state = {
   rename: null,         // in-place rename/clip-count tool: {open, root, plan, scanning, applying, result}
   clipsOnly: false,     // "only camera clips": skip the master step, add clips into an existing session
   camSeededKey: null,   // signature of the existing session(s) whose cam-folder names have been adopted
+  existingCamCounts: {},// cam number -> clips already filed on disk (shown beside each camera chip)
   frappe: null,         // Frappe connection/schema settings (loaded from disk)
   frappeUI: null,       // Frappe sync/settings modal: {open, view, busy, result, root}
   verify: null,         // Offline CSV comparison page: {open, root, csv, busy, result, error}
@@ -92,19 +94,20 @@ function parentDir(p) {
   return idx > 0 ? norm.slice(0, idx) : norm;
 }
 
-function fmtBytes(n) {
+function fmtBytes(n, decimals = 1) {
   if (!n && n !== 0) return '—';
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return `${i === 0 ? n : n.toFixed(1)} ${u[i]}`;
+  return `${i === 0 ? n : n.toFixed(decimals)} ${u[i]}`;
 }
 
 // A file/folder byte count rendered as a solid, easy-to-spot chip. `total` gives
 // the green "folder total" variant used on folder rows; the default (accent) is
 // used on individual clips.
 function sizeBadge(bytes, kind = '') {
-  return `<span class="size-badge ${kind}">${fmtBytes(bytes)}</span>`;
+  // The green folder-total badges carry two decimals; per-clip badges stay at one.
+  return `<span class="size-badge ${kind}">${fmtBytes(bytes, kind === 'total' ? 2 : 1)}</span>`;
 }
 
 function fmtDur(sec) {
@@ -219,7 +222,7 @@ function clipsOnlyReady() {
   // No source drive added: the simple, informal-style path — one chosen session
   // is enough, and the clips are brought in by hand on the Cameras page.
   if (!f.length) return !!state.filedSessions.other;
-  return f.every((s) => state.filedSessions[s.role]);
+  return f.every((s) => state.filedSessions[filedKeyFor(s.path)]);
 }
 
 /** Sources that carry footage — the template is a structure donor, not footage. */
@@ -255,6 +258,21 @@ function primarySource() {
 /** Where a source's output goes; defaults to the source drive itself. */
 function destOf(src) {
   return (src && (src.dest || src.path)) || '';
+}
+
+/**
+ * The key a source's filed session folder is tracked under in state.filedSessions.
+ *
+ * Formal footage drives key by PATH, not by codec role, so two drives that share
+ * a role (both ProRes, both H.265, both Other) are tracked — and copied to —
+ * independently instead of colliding on one role slot. The two logical
+ * singletons keep their fixed keys: an informal run and the clips-only path with
+ * no source drive each file into a single chosen folder.
+ */
+function filedKeyFor(srcPath) {
+  if (isInformal()) return 'informal';
+  if (state.clipsOnly && !footageSources().length) return 'other';
+  return srcPath || 'other';
 }
 
 /** The shoot date the folder name states, if any. */
@@ -593,10 +611,41 @@ function masterTotalSeconds() {
   return timed.length ? timed.reduce((a, b) => a + b, 0) : null;
 }
 
-function secondarySource() {
-  if (isInformal()) return null;
-  const p = primarySource();
-  return footageSources().find((s) => s !== p && (s.role === 'prores' || s.role === 'h265'));
+// A clip shorter than this is treated as a possible Pujyashree entry/exit
+// ceremony recording rather than a program master.
+const CEREMONY_MAX_SECONDS = 8 * 60;
+
+/** The tag a ceremony clip's topic is replaced by, e.g. "Pujyashree's Entry". */
+function ceremonyTag(kind) {
+  return `Pujyashree's ${kind}`;
+}
+
+// Swap a master name's middle topic for `tag`, keeping the location word, the
+// session indicator (E./M./E2.) and every date/Dur-/Clip- token. Mirrors
+// naming.replace_topic on the Python side so the preview matches the plan.
+function replaceTopicWithTag(name, tag) {
+  const extMatch = /\.[^./\\]+$/.exec(name || '');
+  const ext = extMatch ? extMatch[0] : '';
+  const stem = ext ? name.slice(0, -ext.length) : name;
+  const date = /\s*\bDt-\d{1,2}-[A-Za-z]{3}-\d{2,4}\b/.exec(stem);
+  const head = (date ? stem.slice(0, date.index) : stem).trim();
+  const tail = date ? stem.slice(date.index).trim() : '';
+  const ind = /\s*\b([EM]\d*)\.\s*$/.exec(head);
+  const indicator = ind ? `${ind[1]}.` : '';
+  const front = ind ? head.slice(0, ind.index).trim() : head;
+  const location = front ? front.split(' ')[0] : '';
+  const rebuilt = [location, tag, indicator, tail]
+    .filter(Boolean).join(' ').replace(/\s{2,}/g, ' ').trim();
+  return rebuilt + ext;
+}
+
+/** The output filename shown for a master: a hand override, else the ceremony
+ *  tag applied to the house name, else the plain house master name. */
+function masterDisplayName(m, index, count, base) {
+  if (state.clipNames[m.path]) return state.clipNames[m.path];
+  const generated = masterClipName(base, m.duration, index, count, m.path);
+  const tag = state.ceremonyNames[m.path];
+  return tag ? replaceTopicWithTag(generated, tag) : generated;
 }
 
 /* ------------------------------------------------------------ step: sources */
@@ -809,6 +858,7 @@ function wireSources() {
       state.backupType = next;
       state.assignment = null;
       state.masters = {};
+      state.ceremonyNames = {};
       state.masterSource = null;
       state.mastersFiled = false;
       state.filedSessions = {};
@@ -901,9 +951,11 @@ function wireSources() {
   document.querySelectorAll('[data-role]').forEach((b) => b.addEventListener('click', () => {
     const s = state.sources.find((x) => x.path === b.dataset.path);
     if (!s) return;
-    // Roles other than "other" are exclusive: two ProRes targets is always a mistake.
-    if (b.dataset.role !== 'other') {
-      state.sources.forEach((x) => { if (x !== s && x.role === b.dataset.role) x.role = 'other'; });
+    // Only the Structure donor is exclusive — there is one folder-structure zip.
+    // Codec roles may repeat: two drives can both be ProRes / H.265 / SD backups,
+    // each keeping its own master and getting its own copy of the session folder.
+    if (b.dataset.role === 'template') {
+      state.sources.forEach((x) => { if (x !== s && x.role === 'template') x.role = 'other'; });
     }
     const was = s.role;
     s.role = b.dataset.role;
@@ -987,7 +1039,7 @@ async function activateTemplateSession(index, announce = true) {
   state.template = next;
   state.renameBase = null;
   state.jobNameOverride = null;
-  state.clipNames = {}; state.clipTitle = ''; state.namingPreview = null;
+  state.clipNames = {}; state.ceremonyNames = {}; state.clipTitle = ''; state.namingPreview = null;
   state.camNames = {};
   state.camCount = selectionRules.importedCamCount(next);
   state.masters = {};
@@ -1054,7 +1106,7 @@ function clipsOnlySessions() {
   if (!f.length) {
     return state.filedSessions.other ? [state.filedSessions.other] : [];
   }
-  return f.map((s) => state.filedSessions[s.role]).filter(Boolean);
+  return f.map((s) => state.filedSessions[filedKeyFor(s.path)]).filter(Boolean);
 }
 
 function clipsOnlyCardHtml() {
@@ -1122,7 +1174,7 @@ async function enterClipsOnly() {
           d = await call('detect_structure', { root: folder }, { label: 'Reading session' });
         } catch (e) { toast(e.message, 'err'); return; }
         const sessionPath = d.session_path || folder;
-        filed[s.role] = sessionPath;
+        filed[filedKeyFor(s.path)] = sessionPath;
         s.dest = parentDir(sessionPath);
         state.detected[s.path] = d;
       }
@@ -1152,7 +1204,7 @@ function completingFolderPaths() {
     if (state.filedSessions.informal) paths.push(state.filedSessions.informal);
   } else {
     for (const s of footageSources()) {
-      const filed = state.filedSessions[s.role];
+      const filed = state.filedSessions[filedKeyFor(s.path)];
       const det = state.detected[s.path] && state.detected[s.path].session_path;
       if (filed) paths.push(filed);
       else if (det) paths.push(det);
@@ -1181,21 +1233,33 @@ async function seedExistingCamNames() {
     spec.targets = (spec.targets || []).map((t) => ({ ...t, cams: {} }));
     if (!spec.targets.length) return;
     const plan = await call('build_plan', spec);   // silent: no footer takeover
+    state.existingCamCounts = selectionRules.existingCamCounts(plan, state.camNames);
     for (const t of plan.targets || []) {
-      for (const folder of Object.keys(t.existing_cams || {})) {
-        const clean = String(folder).trim();
-        const m = /^Cam-(\d+)\b/i.exec(clean);
-        if (!m) continue;
-        const num = Number(m[1]);
+      // existing_cam_folders lists every camera folder on disk (empty ones too),
+      // so a resumed session shows a chip for each without first visiting Folder.
+      // Fall back to existing_cams for an older engine that omits the new field.
+      const folders = Object.keys(t.existing_cam_folders || {}).length
+        ? Object.entries(t.existing_cam_folders).map(([num, name]) => [Number(num), String(name).trim()])
+        : Object.keys(t.existing_cams || {}).map((name) => {
+            const m = /^Cam-(\d+)\b/i.exec(String(name).trim());
+            return [m ? Number(m[1]) : NaN, String(name).trim()];
+          });
+      for (const [num, clean] of folders) {
+        if (!Number.isFinite(num)) continue;
         const bare = `Cam-${String(num).padStart(2, '0')}`;
+        // Grow the count to cover this folder's number, whether it is bare
+        // "Cam-05" or suffixed "Cam-05 (Drone)", so it renders as a chip.
+        state.camCount = Math.max(state.camCount, num);
         // Only adopt a suffixed name, and never overwrite one the operator typed.
         if (clean !== bare && !(state.camNames[num] || '').trim()) {
           state.camNames[num] = clean;
-          state.camCount = Math.max(state.camCount, num);
         }
       }
     }
   } catch (e) {
+    // A failed seed (e.g. the engine was still starting) must be retryable, so
+    // clear the guard that would otherwise suppress the next attempt.
+    state.camSeededKey = null;
     // Non-fatal: without seeding the chips just stay bare "Cam-NN".
   }
 }
@@ -1413,6 +1477,40 @@ function applyKindCamName(cam, kind) {
   if (isDefault) state.camNames[cam] = `Cam-${String(cam).padStart(2, '0')}${suffix}`;
 }
 
+// The kind suffix a cam folder has earned from its current clips: a kind tag
+// when every assigned clip is that one non-camera kind, otherwise nothing.
+function camKindSuffix(files) {
+  if (!files.length) return '';
+  const kinds = new Set(files.map(clipKind));
+  if (kinds.size !== 1) return '';                 // mixed → no tag
+  const [only] = kinds;
+  return only === 'camera' ? '' : kindSuffix(only);
+}
+
+// Re-derive the "(Audio)" / "(Drone)" / "(MM Drone)" tag on every cam folder
+// from the clips it currently holds. Moving audio/drone clips out of a folder
+// (or into another) must carry the tag with them: a folder left holding regular
+// video loses the tag, the folder that received the clips gains it. Only auto /
+// default names are touched — a name the operator typed is left alone.
+function reconcileKindCamNames() {
+  const src = primarySource();
+  if (!src) return;
+  const byCam = {};
+  for (const f of cameraFiles(src)) {
+    const cam = state.assign[f.path];
+    if (typeof cam === 'number') (byCam[cam] = byCam[cam] || []).push(f);
+  }
+  for (let cam = 1; cam <= state.camCount; cam += 1) {
+    const current = (state.camNames[cam] || '').trim();
+    const isDefault = !current || /^Cam-\d+(\s*\(.*\))?$/i.test(current);
+    if (!isDefault) continue;                        // operator-named, leave it
+    const suffix = camKindSuffix(byCam[cam] || []);
+    const name = `Cam-${String(cam).padStart(2, '0')}${suffix}`;
+    if (suffix) state.camNames[cam] = name;
+    else delete state.camNames[cam];                 // back to a bare Cam-NN
+  }
+}
+
 /** A cam's folder name: the custom name if set, else "Cam-NN". */
 function camLabel(n) {
   return (state.camNames[n] || '').trim() || `Cam-${String(n).padStart(2, '0')}`;
@@ -1542,14 +1640,44 @@ function renderDriveColumn(f) {
           recording.</div>` : ''}
       ${masters.length ? `
         <p class="hint" style="margin:10px 0 4px">Renamed after the folder:</p>
-        <div class="preview-name" style="font-size:11px">${masters.map((m, i) => `🎬 ${
-          esc(state.clipNames[m.path] || masterClipName(base, m.duration, i + 1, masters.length, m.path))} ${nameCount(state.clipNames[m.path] || masterClipName(base, m.duration, i + 1, masters.length, m.path))}`).join('<br>')}
+        <div class="preview-name" style="font-size:11px">${masters.map((m, i) => {
+          const nm = masterDisplayName(m, i + 1, masters.length, base);
+          return `🎬 ${esc(nm)} ${nameCount(nm)}`;
+        }).join('<br>')}
         </div>
         ${masters.length > 1 ? `<p class="hint" style="margin:6px 0 0">${
           masters.map((m) => esc(fmtDurAuto(m.duration))).join(' + ')} =
           <b>${esc(fmtDurAuto(total))}</b>, Clips-${String(masters.length).padStart(2, '0')}.</p>` : ''}`
-        : '<p class="hint" style="margin:8px 0 0">Tick the program recording above.</p>'}`
+        : '<p class="hint" style="margin:8px 0 0">Tick the program recording above.</p>'}
+      ${ceremonySection(f)}`
       : `<div class="note warn" style="margin:0">Nothing loaded — Scan or Add files.</div>`}
+  </div>`;
+}
+
+// Formal only: offer to include and rename the session's short bookend clips as
+// "Pujyashree's Entry" (earliest under 8 min) and "Pujyashree's Exit" (latest).
+// Both rows show the same clip when a drive has only one short clip; the checked
+// state reads from clipNames, so the two labels stay mutually exclusive there.
+function ceremonySection(f) {
+  const { entry, exit } = selectionRules.entryExitCeremonyClips(filePool(f), CEREMONY_MAX_SECONDS);
+  if (!entry && !exit) return '';
+  const row = (kind, clip) => {
+    if (!clip) return '';
+    const checked = state.ceremonyNames[clip.path] === ceremonyTag(kind);
+    return `<label class="row" style="gap:8px;align-items:center;margin:4px 0;cursor:pointer">
+      <input type="checkbox" style="width:auto" data-ceremony="${kind}"
+        data-cpath="${esc(clip.path)}" data-csrc="${esc(f.path)}" ${checked ? 'checked' : ''} />
+      <span>Name <span class="mono">${esc(clip.name)}</span>
+        (${esc(fmtClock(clip.duration))}) as <b>Pujyashree's ${kind}</b></span>
+    </label>`;
+  };
+  return `<div class="note info" style="margin:10px 0 0">
+    <div style="font-weight:600;margin-bottom:2px">Pujyashree's Entry / Exit</div>
+    <p class="hint" style="margin:0 0 6px">The shortest bookend clips (under 8 min) are
+      usually the entry and exit recordings. Ticking includes the clip as a master and
+      renames it.</p>
+    ${row('Entry', entry)}
+    ${row('Exit', exit)}
   </div>`;
 }
 
@@ -1813,12 +1941,39 @@ function wireSession() {
     // Each drive keeps its own masters — ticking one never touches the other.
     const current = state.masters[from];
     const picks = new Set(Array.isArray(current) ? current : (current ? [current] : []));
-    if (box.checked) picks.add(path); else picks.delete(path);
+    if (box.checked) picks.add(path); else { picks.delete(path); delete state.ceremonyNames[path]; }
     state.masters[from] = [...picks];
     delete state.assign[path];     // promoted to master, no longer a cam clip
     if (!state.masterSource || !(state.masters[state.masterSource] || []).length) {
       state.masterSource = from;   // cams are assigned against a drive that has a master
     }
+    state.plan = null; state.namingPreview = null;
+    ensureDefaultAssignments();
+    render();
+  }));
+  document.querySelectorAll('[data-ceremony]').forEach((box) => box.addEventListener('change', () => {
+    const kind = box.dataset.ceremony;          // 'Entry' | 'Exit'
+    const path = box.dataset.cpath;
+    const from = box.dataset.csrc;
+    const tag = ceremonyTag(kind);
+    // Ticking includes the short clip as a master (so it files at the session
+    // root and counts toward Dur-) and swaps its topic for the tag; unticking
+    // undoes both. The tag is recorded per path, so the two labels stay
+    // mutually exclusive when a drive has only one short clip.
+    const current = state.masters[from];
+    const picks = new Set(Array.isArray(current) ? current : (current ? [current] : []));
+    if (box.checked) {
+      picks.add(path);
+      delete state.assign[path];      // promoted to master, no longer a cam clip
+      state.ceremonyNames[path] = tag;
+      if (!state.masterSource || !(state.masters[state.masterSource] || []).length) {
+        state.masterSource = from;
+      }
+    } else {
+      picks.delete(path);
+      if (state.ceremonyNames[path] === tag) delete state.ceremonyNames[path];
+    }
+    state.masters[from] = [...picks];
     state.plan = null; state.namingPreview = null;
     ensureDefaultAssignments();
     render();
@@ -2187,13 +2342,11 @@ function renderCameras() {
     </tr>`;
   }).join('');
 
-  const sec = secondarySource();
-  const prim = src;
-  const secName = sec ? sec.label : 'the other drive';
-  const pairInfo = sec
-    ? `<div class="note info">These clips are filed to <b>both</b> ${esc(prim.label)} and
-         ${esc(secName)} — the two SSDs are kept as identical backups. Each drive keeps its
-         own master (${esc(prim.role)} / ${esc(sec.role)}).</div>`
+  const drives = isInformal() ? [] : footageSources();
+  const pairInfo = drives.length > 1
+    ? `<div class="note info">These clips are filed to <b>all ${drives.length} drives</b>
+         (${drives.map((d) => esc(d.label)).join(', ')}) — the SSDs are kept as identical
+         backups. Each drive keeps its own master (${drives.map((d) => esc(d.role)).join(' / ')}).</div>`
     : '';
 
   return `
@@ -2228,7 +2381,9 @@ function renderCameras() {
           title="Rename this camera's folder"
           style="width:${Math.max(64, camLabel(n).length * 8)}px;background:transparent;
           border:none;border-bottom:1px dashed var(--line);color:inherit;padding:0 2px;font:inherit" />
-        : ${counts[n] || 0}</span>`).join('')}
+        : ${counts[n] || 0}${state.existingCamCounts[n]
+          ? ` <span class="hint" style="margin:0;opacity:.8" title="Clips already filed in this camera folder on disk">· ${state.existingCamCounts[n]} on disk</span>`
+          : ''}</span>`).join('')}
       <span class="badge">Skipped: ${skipped}</span>
     </div>
     ${pairInfo}
@@ -2338,6 +2493,7 @@ function wireCameras() {
   document.querySelectorAll('[data-assign]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.assign;
     state.assign[b.dataset.file] = v === 'skip' ? 'skip' : Number(v);
+    reconcileKindCamNames();
     state.plan = null; state.namingPreview = null;
     render();
   }));
@@ -2376,6 +2532,7 @@ function wireCameras() {
     const v = b.dataset.batch;
     const val = v === 'skip' ? 'skip' : Number(v);
     for (const p of state.selection) state.assign[p] = val;
+    reconcileKindCamNames();
     state.lastPicked = null; state.plan = null; state.namingPreview = null;
     render();
   }));
@@ -2418,6 +2575,9 @@ function wireCameras() {
       const destinationPlan = await call('build_plan', checkSpec,
         { label: 'Checking existing camera folders' });
       const occupied = selectionRules.occupiedCamNumbers(destinationPlan, state.camNames);
+      // Surface how many clips already sit in each on-disk cam folder, so the
+      // chips below show the existing count beside the newly-assigned one.
+      state.existingCamCounts = selectionRules.existingCamCounts(destinationPlan, state.camNames);
       const groups = camGroupsWithKind(clips);
       const previousCount = state.camCount;
       const suggestedCams = nextFreeCams(groups.length, occupied);
@@ -2459,7 +2619,7 @@ async function scanSource(src, force = false, deep = false) {
 /* --------------------------------------------------------------- step: copy */
 
 function buildSpec() {
-  const a = primarySource(), b = secondarySource();
+  const a = primarySource();
   const targets = [];
 
   // Only clips currently in play can reach the plan. state.assign is a record of
@@ -2476,7 +2636,7 @@ function buildSpec() {
     // on one destination but not the other. Treat each target independently so
     // resuming never moves that master again or invents a second session folder.
     const role = isInformal() ? 'informal' : src.role;
-    const filed = state.filedSessions[role];
+    const filed = state.filedSessions[filedKeyFor(src.path)];
     const masterAlreadyFiled = Boolean(filed);
     const masters = masterAlreadyFiled ? [] : masterList;
     // An operator-typed replacement for the session folder's base name, applied
@@ -2484,7 +2644,8 @@ function buildSpec() {
     const rename = state.renameBase ? { session_rename: state.renameBase } : {};
     const base = { role, source_root: src.path, dest_root: destOf(src),
                    masters: isInformal() ? [] : masters, cams, cam_names: state.camNames,
-                   clip_names: state.clipNames, clip_title: state.clipTitle,
+                   clip_names: state.clipNames, ceremony_names: state.ceremonyNames,
+                   clip_title: state.clipTitle,
                    allow_no_master: isInformal(), rename_camera_clips: isInformal(),
                    direct_camera_folders: isInformal(),
                    skip_existing_by_size: isInformal() && state.skipExistingBySize,
@@ -2510,9 +2671,19 @@ function buildSpec() {
     return Array.isArray(raw) ? raw : raw ? [raw] : [];
   };
   const cams = camsFor((p) => p);
-  targets.push(targetFor(a, cams, isInformal() ? [] : chosenPaths(a)));
-  if (!isInformal() && b) {
-    targets.push(targetFor(b, cams, chosenPaths(b)));
+  const footage = footageSources();
+  if (isInformal() || !footage.length) {
+    // Informal, or a clips-only run with no source drive added: one logical
+    // target filing into a single chosen folder.
+    targets.push(targetFor(a, cams, isInformal() ? [] : chosenPaths(a)));
+  } else {
+    // Every selected footage drive becomes its own copy of the session folder.
+    // Drives that happen to share a codec role (both ProRes, both H.265, both
+    // Other) are copied to just the same — each keeps whatever master was picked
+    // on it, and the review page shows one breakdown per drive.
+    for (const src of footage) {
+      targets.push(targetFor(src, cams, chosenPaths(src)));
+    }
   }
 
   return {
@@ -2535,8 +2706,10 @@ function renderCopy() {
       <p class="hint">Every source file is probed and its destination name worked out.
         Nothing is written to disk at this stage.${isInformal()
           ? ' Every camera clip rename will be shown for approval.' : ''}</p>
-      ${secondarySource() ? `<div class="note info">The camera selection will be copied to
-        <b>both destination drives</b>. Each drive keeps its own selected master.</div>` : ''}
+      ${!isInformal() && footageSources().length > 1
+        ? `<div class="note info">The camera selection will be copied to
+        <b>all ${footageSources().length} destination drives</b>. Each drive keeps its own
+        selected master.</div>` : ''}
       <button class="primary" id="btnPlan">Build plan</button>
     </div>`;
   }
@@ -2904,7 +3077,10 @@ async function reconcileRunState(plan, result) {
   }
 
   for (const target of plan.targets || []) {
-    const rename = (result.renames || []).find((entry) => entry.role === target.role);
+    // Match the rename by source path — two drives can share a codec role, so the
+    // role alone no longer identifies a single target.
+    const rename = (result.renames || []).find((entry) =>
+      (entry.source || entry.role) === (target.source_root || target.role));
     const root = rename && rename.done
       ? target.session_path
       : (target.staging_path || target.session_path);
@@ -2916,15 +3092,15 @@ async function reconcileRunState(plan, result) {
       }
       if (detected.session_path && (isInformal()
           || (detected.master_candidates || []).length)) {
-        state.filedSessions[target.role] = detected.session_path;
+        state.filedSessions[filedKeyFor(target.source_root)] = detected.session_path;
       }
     } catch {
       // The normal run result still explains any failure. A missing/ejected
       // destination simply cannot contribute fresh resume state.
     }
   }
-  const roles = (plan.targets || []).map((target) => target.role);
-  if (roles.length && roles.every((role) => state.filedSessions[role])) {
+  const keys = (plan.targets || []).map((target) => filedKeyFor(target.source_root));
+  if (keys.length && keys.every((key) => state.filedSessions[key])) {
     state.mastersFiled = true;
   }
 }
@@ -2942,7 +3118,8 @@ async function doRun() {
       ? 'There is no master. Clips are placed into their assigned camera folders and renamed '
         + 'in modified-time order. Same-drive files are relocated; files from a card or another drive are copied.\n'
       : 'The master moves into the folder on its own drive. Camera clips are copied to '
-        + 'both SSDs. Nothing is deleted — clear the cards yourself afterwards.\n') +
+        + `${footageSources().length > 1 ? 'every selected drive' : 'the drive'}. `
+        + 'Nothing is deleted — clear the cards yourself afterwards.\n') +
       (renames ? `\nFolder rename:${renames}\n` : '') +
       '\nThe folder is renamed only after every file lands successfully.',
     confirmLabel: 'Go ahead',
@@ -2959,7 +3136,7 @@ async function doRun() {
       // The masters are filed and the folders named; remember where, so adding a
       // camera afterwards goes straight into these folders without re-detection.
       state.mastersFiled = true;
-      for (const t of p.targets) state.filedSessions[t.role] = t.session_path;
+      for (const t of p.targets) state.filedSessions[filedKeyFor(t.source_root)] = t.session_path;
       // Clips that landed are done. Drop them from the pool and the assignment so
       // a later card swap does not try to re-plan them from a now-ejected card.
       const filed = new Set((r.items || [])

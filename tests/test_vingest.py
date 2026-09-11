@@ -1422,6 +1422,23 @@ class TestMasterClipNaming:
         assert naming.master_clip_name(self.FOLDER, self.A, 1, 2, ".MOV").endswith(".MOV")
         assert naming.master_clip_name(self.FOLDER, self.A, 1, 2, ".mp4").endswith(".mp4")
 
+    def test_a_ceremony_clip_swaps_only_the_topic(self):
+        # Location (Coppell), session indicator (E.) and every token are kept;
+        # only the middle "Shibir General Satsang" becomes the tag.
+        assert naming.ceremony_clip_name(self.FOLDER, "Pujyashree's Entry",
+                                         self.A, 1, 2, ".MOV") == \
+            "Coppell Pujyashree's Entry E. Dt-06-Aug-26 Dur-44m43s Clip-01.MOV"
+
+    def test_a_numbered_session_indicator_survives_the_swap(self):
+        folder = "02 Adalaj Soneri Satsang Aptavani-2 Q&A E2. Dt-03-Sep-26 Dur-56m11s"
+        assert naming.ceremony_clip_name(folder, "Pujyashree's Exit", 247, 1, 1, ".MP4") == \
+            "Adalaj Pujyashree's Exit E2. Dt-03-Sep-26 Dur-4m7s.MP4"
+
+    def test_a_name_without_a_session_indicator_still_swaps_the_topic(self):
+        assert naming.replace_topic(
+            "Adalaj Soneri Satsang Dt-03-Sep-26 Dur-4m7s.MP4", "Pujyashree's Entry") == \
+            "Adalaj Pujyashree's Entry Dt-03-Sep-26 Dur-4m7s.MP4"
+
     def test_renaming_is_idempotent(self):
         once = naming.master_clip_name(self.FOLDER, self.A, 1, 2, ".MOV")
         again = naming.master_clip_name(
@@ -1476,6 +1493,33 @@ class TestMasterClipNaming:
         clip_name = Path(t["items"][0]["dst"]).name
         assert folder_dur in clip_name, "a lone master must carry the folder's duration"
         assert "Clip-" not in clip_name and "Clips-" not in t["session_folder"]
+
+    @needs_ffmpeg
+    def test_a_ceremony_master_swaps_the_topic_and_counts_toward_dur(self, tmp_path):
+        # A short ceremony clip, tagged Pujyashree's Entry, keeps the location,
+        # the session indicator (E.) and every Dt-/Dur-/Clip- token — only the
+        # middle topic is replaced — and still adds into the folder's Dur- total.
+        import os
+        import datetime as _dt
+        drive = tmp_path / "SSD"
+        drive.mkdir()
+        for name, secs, when in (("entry.MOV", 30, (2026, 8, 6, 5, 37)),
+                                 ("program.MOV", 65, (2026, 8, 6, 6, 34))):
+            make_clip(drive / name, secs)
+            stamp = _dt.datetime(*when).timestamp()
+            os.utime(drive / name, (stamp, stamp))
+
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(drive), "dest_root": str(tmp_path / "out"),
+            "session_name": "02 Coppell Shibir General Satsang E. Dt-06-Aug-26",
+            "masters": [str(drive / "entry.MOV"), str(drive / "program.MOV")],
+            "ceremony_names": {str(drive / "entry.MOV"): "Pujyashree's Entry"},
+            "cams": {}}]})
+
+        t = plan["targets"][0]
+        names = [Path(i["dst"]).name for i in t["items"] if i["kind"] == "master"]
+        assert "Coppell Pujyashree's Entry E. Dt-06-Aug-26 Dur-30s Clip-01.MOV" in names, names
+        assert t["session_folder"].endswith("Dur-1m35s Clips-02"), t["session_folder"]
 
 
 class TestNoDeletion:
@@ -2120,6 +2164,31 @@ class TestMediaAndFolderScan:
             "rename_camera_clips": True, "cams": {}}]})
         existing = plan["targets"][0]["existing_cams"]
         assert existing.get("Cam-05 (Audio)") == 1, existing
+
+    def test_existing_cam_folders_reports_empty_folders_too(self, tmp_path):
+        # A resumed session jumps straight to the Cameras page, so the plan must
+        # report every cam folder present — including empty ones — for the chips.
+        dest = tmp_path / "DEST"
+        session = dest / "2601 Dt-01 Sep 2026" / "Kashi Dt-01-Sep-26 Clips-20"
+        for cam in ("Cam-01", "Cam-02", "Cam-03"):
+            (session / cam).mkdir(parents=True)          # empty folders
+        (session / "Cam-09").mkdir(parents=True)
+        for i in range(2):
+            (session / "Cam-09" / f"v{i}.mp4").write_bytes(b"x")
+        raw = tmp_path / "RAW"; raw.mkdir()
+        (raw / "new.mp4").write_bytes(b"x")
+        plan = ingest.build_plan({"targets": [{
+            "role": "informal", "source_root": str(raw), "dest_root": str(dest),
+            "session_source": str(session), "allow_no_master": True,
+            "rename_camera_clips": True, "cams": {}}]})
+        target = plan["targets"][0]
+        # Empty folders are absent from existing_cams (count-only)...
+        assert target["existing_cams"] == {"Cam-09": 2}, target["existing_cams"]
+        # ...but existing_cam_folders lists every folder by number, so the chips
+        # can render Cam-01 through Cam-09.
+        assert target["existing_cam_folders"] == {
+            "1": "Cam-01", "2": "Cam-02", "3": "Cam-03", "9": "Cam-09",
+        }, target["existing_cam_folders"]
 
 
 class TestSuffixedCamFolders:

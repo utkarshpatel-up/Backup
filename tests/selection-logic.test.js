@@ -185,6 +185,73 @@ test('the final safety check rejects a clip or camera not shown by the Cameras p
   assert.equal(rules.unexpectedPlanClips(unsafe, assignments, files, 'win32').length, 3);
 });
 
+test('entry/exit ceremony clips are the earliest and latest short clips by date', () => {
+  const files = [
+    { name: 'program.mov', duration: 5400, shoot_iso: '2026-09-01T10:00:00' },
+    { name: 'exit.mp4', duration: 300, shoot_iso: '2026-09-01T18:30:00' },
+    { name: 'middle.mp4', duration: 200, shoot_iso: '2026-09-01T14:00:00' },
+    { name: 'entry.mp4', duration: 240, shoot_iso: '2026-09-01T09:15:00' },
+  ];
+  const { entry, exit } = rules.entryExitCeremonyClips(files, 8 * 60);
+  assert.equal(entry.name, 'entry.mp4');
+  assert.equal(exit.name, 'exit.mp4');
+});
+
+test('a clip at or over the limit is never a ceremony candidate', () => {
+  const files = [
+    { name: 'long.mov', duration: 480, shoot_iso: '2026-09-01T09:00:00' },
+    { name: 'short.mp4', duration: 479, shoot_iso: '2026-09-01T12:00:00' },
+  ];
+  const { entry, exit } = rules.entryExitCeremonyClips(files, 8 * 60);
+  assert.equal(entry.name, 'short.mp4');
+  assert.equal(exit.name, 'short.mp4');
+});
+
+test('a single short clip is both the entry and exit candidate', () => {
+  const files = [
+    { name: 'only.mp4', duration: 120, shoot_iso: '2026-09-01T11:00:00' },
+    { name: 'program.mov', duration: 3600, shoot_iso: '2026-09-01T10:00:00' },
+  ];
+  const { entry, exit } = rules.entryExitCeremonyClips(files, 8 * 60);
+  assert.equal(entry, exit);
+  assert.equal(entry.name, 'only.mp4');
+});
+
+test('ceremony ordering falls back to modified time when dates tie', () => {
+  const files = [
+    { name: 'b.mp4', duration: 100, shoot_iso: '', mtime: 200 },
+    { name: 'a.mp4', duration: 100, shoot_iso: '', mtime: 100 },
+  ];
+  const { entry, exit } = rules.entryExitCeremonyClips(files, 8 * 60);
+  assert.equal(entry.name, 'a.mp4');
+  assert.equal(exit.name, 'b.mp4');
+});
+
+test('no short clips yields no ceremony candidates', () => {
+  const files = [{ name: 'p.mov', duration: 3600, shoot_iso: '2026-09-01T10:00:00' }];
+  assert.deepEqual(rules.entryExitCeremonyClips(files, 8 * 60), { entry: null, exit: null });
+});
+
+test('existingCamCounts reports on-disk clips per camera, ignoring empty folders', () => {
+  const plan = { targets: [{ existing_cams: {
+    'Cam-01': 3, 'Cam-02': 0, 'Cam-05 (Audio)': 2,
+  } }] };
+  assert.deepEqual(rules.existingCamCounts(plan, {}), { 1: 3, 5: 2 });
+});
+
+test('existingCamCounts keeps the largest count across identical backup drives', () => {
+  const plan = { targets: [
+    { existing_cams: { 'Cam-01': 4 } },
+    { existing_cams: { 'Cam-01': 4, 'Cam-02': 1 } },
+  ] };
+  assert.deepEqual(rules.existingCamCounts(plan, {}), { 1: 4, 2: 1 });
+});
+
+test('existingCamCounts maps a renamed folder through camNames', () => {
+  const plan = { targets: [{ existing_cams: { 'Drone A': 7 } }] };
+  assert.deepEqual(rules.existingCamCounts(plan, { 8: 'Drone A' }), { 8: 7 });
+});
+
 test('a suffixed camera folder like "Cam-05 (Audio)" counts as occupied', () => {
   const plan = { targets: [{ existing_cams: {
     'Cam-01': 6, 'Cam-02': 1, 'Cam-03': 1, 'Cam-04': 20, 'Cam-05 (Audio)': 2,

@@ -175,6 +175,52 @@ def master_clip_name(folder_name: str, seconds: float | None,
     return sanitize(out) + ext        # the source's own extension case is kept
 
 
+# A session indicator sitting just before the date token: "E." / "M." (evening /
+# morning) optionally numbered when a day holds more than one ("E1.", "M2.").
+SESSION_INDICATOR_RE = re.compile(r"\s*\b([EM]\d*)\.\s*$")
+
+
+def replace_topic(name: str, tag: str) -> str:
+    """Swap a master name's middle 'topic' for `tag`, keeping the leading
+    location word, the session indicator (E./M./E2.) and every date/Dur-/Clip-
+    token exactly as the house convention produced them.
+
+    'Adalaj Soneri Satsang Aptavani-2 Q&A E. Dt-03-Sep-26 Dur-4m7s Clip-01.MOV'
+        + "Pujyashree's Entry"
+      -> "Adalaj Pujyashree's Entry E. Dt-03-Sep-26 Dur-4m7s Clip-01.MOV"
+    """
+    stem, dot, suffix = name.rpartition(".")
+    if dot:
+        ext = dot + suffix
+    else:
+        stem, ext = name, ""
+    # Everything from the date token onward (date, Dur-, Clip-) is kept verbatim.
+    date = DATE_TOKEN_RE.search(stem)
+    if date:
+        head, tail = stem[:date.start()].strip(), stem[date.start():].strip()
+    else:
+        head, tail = stem.strip(), ""
+    # Peel a trailing session indicator off the head so it survives the swap.
+    indicator = ""
+    ind = SESSION_INDICATOR_RE.search(head)
+    if ind:
+        indicator = f"{ind.group(1)}."
+        head = head[:ind.start()].strip()
+    # The first word is the location; the remainder was the topic we replace.
+    location = head.split(" ", 1)[0] if head else ""
+    front = " ".join(p for p in (location, tag, indicator) if p)
+    return sanitize(" ".join(p for p in (front, tail) if p)) + ext
+
+
+def ceremony_clip_name(folder_name: str, tag: str, seconds: float | None,
+                       index: int = 1, clip_count: int = 1, ext: str = "") -> str:
+    """A ceremony master (Pujyashree's Entry/Exit): the ordinary master name with
+    its topic replaced by `tag`, so it keeps the location, session indicator and
+    every date/Dur-/Clip- token the folder dictates."""
+    return replace_topic(
+        master_clip_name(folder_name, seconds, index, clip_count, ext), tag)
+
+
 def informal_event_name(folder_name: str) -> str:
     """Derive the clean event portion used by camera-only clip names."""
     name = CLIPS_TOKEN_RE.sub("", folder_name)

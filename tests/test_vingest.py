@@ -664,6 +664,63 @@ class TestPlan:
         assert live, "speed must be emitted while the file is still copying"
         assert live[-1]["eta_seconds"] is not None
 
+    def test_relocated_master_is_left_out_of_the_copy_size_and_speed(self, tmp_path):
+        """A big same-drive master relocates instantly; its bytes must not be
+        folded into the copy total or the transfer speed. Only the copied cam
+        clip counts, so the bar reads "8 of 8", not "1008 of 1016"."""
+        drive = tmp_path / "CARD"
+        (drive / "DCIM").mkdir(parents=True)
+        master = drive / "master.bin"
+        master.write_bytes(b"x" * 1000)          # relocates (same volume)
+        clip = drive / "DCIM" / "clip.bin"
+        clip.write_bytes(b"abcdefgh")            # copies to a different volume
+        dest = tmp_path / "DEST"
+        plan = {
+            "mode": "copy", "verify": "size", "total_bytes": 1008,
+            "targets": [{
+                "role": "prores", "session_path": str(dest),
+                "staging_path": str(dest), "ensure_dirs": [],
+                "items": [
+                    {"src": str(master), "dst": str(dest / "master.bin"),
+                     "size": 1000, "kind": "master"},
+                    {"src": str(clip), "dst": str(dest / "Cam-01" / "clip.bin"),
+                     "size": 8, "kind": "clip"},
+                ],
+            }],
+        }
+
+        def paced_copy(source, target, on_chunk, should_cancel):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+            on_chunk(source.stat().st_size)
+            return source.stat().st_size
+
+        # The master's source sits at the drive root and is treated as same-volume
+        # (a relocation); the cam clip lives under DCIM and is copied elsewhere.
+        orig_same = ingest._same_volume
+        ingest._same_volume = lambda a, b: Path(a) == drive
+        orig_copy = ingest._copy_with_progress
+        ingest._copy_with_progress = paced_copy
+        orig_chunk = ingest.CHUNK
+        ingest.CHUNK = 1
+        try:
+            events = []
+            result = ingest.execute_plan(plan, progress=events.append)
+        finally:
+            ingest._same_volume = orig_same
+            ingest._copy_with_progress = orig_copy
+            ingest.CHUNK = orig_chunk
+
+        assert result["failed"] == 0
+        assert not master.exists(), "the master relocated off the card root"
+        copy_events = [e for e in events if e.get("stage") == "copy"]
+        assert copy_events, "copy progress must be emitted"
+        # The relocated 1000-byte master never inflates the copy total or the done
+        # counter — the progress is about the 8 copied bytes alone.
+        assert all(e["bytes_total"] == 8 for e in copy_events), \
+            [e["bytes_total"] for e in copy_events]
+        assert max(e["bytes_done"] for e in copy_events) == 8
+
 
 class TestStructureDetection:
     """The session folder is read off the drive, never invented."""

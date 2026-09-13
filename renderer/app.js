@@ -94,20 +94,31 @@ function parentDir(p) {
   return idx > 0 ? norm.slice(0, idx) : norm;
 }
 
-function fmtBytes(n, decimals = 1) {
+// Sizes are formatted the way Windows Explorer does, so the numbers here match
+// what the operator sees in the file manager next to them: base 1024, three
+// significant figures, and the remainder TRUNCATED rather than rounded up — the
+// long-standing shell behaviour (StrFormatByteSize) where 2,097,151 bytes reads
+// "1.99 MB", never "2.00 MB". Bytes below a KB are shown whole with the locale's
+// digit grouping ("1,024 bytes"), exactly as the Explorer status bar shows them.
+function fmtBytes(n) {
   if (!n && n !== 0) return '—';
-  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const u = ['bytes', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
-  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return `${i === 0 ? n : n.toFixed(decimals)} ${u[i]}`;
+  let v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  if (i === 0) return `${Math.round(v).toLocaleString()} ${u[0]}`;
+  // Three significant figures: 2 decimals under 10, 1 under 100, none above.
+  const decimals = v >= 100 ? 0 : v >= 10 ? 1 : 2;
+  const factor = 10 ** decimals;
+  const truncated = Math.floor(v * factor) / factor;
+  return `${truncated.toFixed(decimals)} ${u[i]}`;
 }
 
 // A file/folder byte count rendered as a solid, easy-to-spot chip. `total` gives
 // the green "folder total" variant used on folder rows; the default (accent) is
 // used on individual clips.
 function sizeBadge(bytes, kind = '') {
-  // The green folder-total badges carry two decimals; per-clip badges stay at one.
-  return `<span class="size-badge ${kind}">${fmtBytes(bytes, kind === 'total' ? 2 : 1)}</span>`;
+  return `<span class="size-badge ${kind}">${fmtBytes(bytes)}</span>`;
 }
 
 function fmtDur(sec) {
@@ -1654,30 +1665,40 @@ function renderDriveColumn(f) {
   </div>`;
 }
 
-// Formal only: offer to include and rename the session's short bookend clips as
-// "Pujyashree's Entry" (earliest under 8 min) and "Pujyashree's Exit" (latest).
-// Both rows show the same clip when a drive has only one short clip; the checked
-// state reads from clipNames, so the two labels stay mutually exclusive there.
+// Formal only: offer to include and rename the session's short bookend clips.
+// Each distinct short clip is listed once — the earliest with a choice of
+// "Pujyashree's Welcome" or "Pujyashree's Entry", the latest as "Pujyashree's
+// Exit" — with the label checkboxes shown beneath the clip name. The labels for
+// a clip are mutually exclusive because the tag is recorded per path, so when a
+// drive has only one short clip its single block offers all three.
 function ceremonySection(f) {
   const { entry, exit } = selectionRules.entryExitCeremonyClips(filePool(f), CEREMONY_MAX_SECONDS);
   if (!entry && !exit) return '';
-  const row = (kind, clip) => {
-    if (!clip) return '';
+  const single = entry && exit && entry.path === exit.path;
+  const choice = (kind, clip) => {
     const checked = state.ceremonyNames[clip.path] === ceremonyTag(kind);
-    return `<label class="row" style="gap:8px;align-items:center;margin:4px 0;cursor:pointer">
+    return `<label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer;width:auto">
       <input type="checkbox" style="width:auto" data-ceremony="${kind}"
         data-cpath="${esc(clip.path)}" data-csrc="${esc(f.path)}" ${checked ? 'checked' : ''} />
-      <span>Name <span class="mono">${esc(clip.name)}</span>
-        (${esc(fmtClock(clip.duration))}) as <b>Pujyashree's ${kind}</b></span>
-    </label>`;
+      <b>Pujyashree's ${kind}</b></label>`;
+  };
+  const block = (clip, kinds) => {
+    if (!clip) return '';
+    return `<div style="margin:8px 0 0">
+      <div><span class="mono">${esc(clip.name)}</span> (${esc(fmtClock(clip.duration))})</div>
+      <div class="row" style="gap:16px;margin:4px 0 0 22px">
+        ${kinds.map((kind) => choice(kind, clip)).join('')}
+      </div>
+    </div>`;
   };
   return `<div class="note info" style="margin:10px 0 0">
-    <div style="font-weight:600;margin-bottom:2px">Pujyashree's Entry / Exit</div>
+    <div style="font-weight:600;margin-bottom:2px">Pujyashree's Welcome / Entry / Exit</div>
     <p class="hint" style="margin:0 0 6px">The shortest bookend clips (under 8 min) are
-      usually the entry and exit recordings. Ticking includes the clip as a master and
-      renames it.</p>
-    ${row('Entry', entry)}
-    ${row('Exit', exit)}
+      usually the entry and exit recordings. Tick a label to include the clip as a master
+      and rename it. Only one label applies to a clip at a time.</p>
+    ${single
+      ? block(entry, ['Welcome', 'Entry', 'Exit'])
+      : `${block(entry, ['Welcome', 'Entry'])}${block(exit, ['Exit'])}`}
   </div>`;
 }
 
@@ -2601,6 +2622,20 @@ function wireCameras() {
 
 }
 
+// Entering the Folder step: detect the session structure, then load every
+// selected footage drive's root so each drive's master clip is ready to pick
+// without the operator pressing Scan on every column. Runs the drives one after
+// another so they share the single busy indicator cleanly; scanSource and
+// detectStructure both skip anything already loaded, so re-entering the step
+// (or having pressed Scan by hand) costs nothing.
+async function enterFolderStep() {
+  if (!state.template) await detectStructure(primarySource());
+  if (isInformal()) return;
+  for (const src of footageSources()) {
+    await scanSource(src);
+  }
+}
+
 async function scanSource(src, force = false, deep = false) {
   if (!src || (state.scans[src.path] && !force)) return;
   try {
@@ -3417,7 +3452,7 @@ function goStep(i) {
   // In template mode the ZIP already supplied the structure. Scanning a footage
   // drive here used to race with it and could replace a three-camera ZIP with
   // Cam-04 (or whatever old structure happened to exist on that drive).
-  if (i === 1 && !state.template) detectStructure(primarySource());
+  if (i === 1) enterFolderStep();
   if (i === 2 && !isInformal()) scanSource(primarySource());
   // Entering the Cameras page: adopt the real (suffixed) names of cameras that
   // already exist in the folder being completed — after a copy, or when

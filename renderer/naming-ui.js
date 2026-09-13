@@ -21,17 +21,20 @@ function pathCount(fullPath) {
 // The directory the session folder lands in, rebuilt from the same pieces the
 // plan uses, with a trailing separator. A master sits at the session root, so
 // this is also the folder its file is written into.
-function sessionDirForPreview() {
-  const src = primarySource();
+function sessionDirForPreview(src = primarySource()) {
   if (!src) return '';
   const sep = (window.api && window.api.platform === 'win32') ? '\\' : '/';
   const d = detection() || {};
   const t = state.template || {};
   const job = state.jobNameOverride != null ? state.jobNameOverride : (t.job_name || d.job_name || '');
   const rawBase = state.renameBase || t.session_name || d.session_name || (state.session || {}).title || '';
+  // The session folder's Dur- token is the total of the masters ON THIS DRIVE,
+  // so each drive's preview path reflects its own recording length.
+  const timed = mastersFor(src).map((m) => m.duration).filter((x) => x != null);
+  const secs = timed.length ? timed.reduce((a, b) => a + b, 0) : masterTotalSeconds();
   const session = isInformal()
     ? stripClipsToken(rawBase).replace(/\s*\bDur-\S+/ig, '').trim()
-    : `${stripClipsToken(rawBase)} Dur-${fmtDurAuto(masterTotalSeconds())}`;
+    : `${stripClipsToken(rawBase)} Dur-${fmtDurAuto(secs)}`;
   const dir = [destOf(src), job, session].filter(Boolean).join(sep);
   return dir ? dir + sep : '';
 }
@@ -48,24 +51,42 @@ function examplePath(exampleName) {
 // shown inline on the Folder step — no need to press "Preview selected
 // filenames" first, which exists mainly to expand the long informal clip list.
 function formalMasterEditor() {
-  const masters = chosenMasters();
-  if (isInformal() || !masters.length) return '';
+  if (isInformal()) return '';
   const base = state.clipTitle || state.renameBase
     || (state.template || {}).session_name || (detection() || {}).session_name
     || state.session.title;
-  const dir = sessionDirForPreview();
-  const rows = masters.map((m, i) => {
-    const value = masterDisplayName(m, i + 1, masters.length, base);
-    return `<label class="field"><span>${esc(m.name)} → output filename</span>
-      <input type="text" data-output-name="${esc(m.path)}" data-dir="${esc(dir)}" value="${esc(value)}" />
-      <span class="path">${esc(dir + value)}</span></label>`;
+  // Every source drive carries its own master recording — ProRes on one drive,
+  // H.265 on another, or several master clips on any of them — so each drive with
+  // masters gets its own rename group here, not just the primary drive.
+  const drives = footageSources()
+    .map((src) => ({ src, masters: mastersFor(src) }))
+    .filter((drive) => drive.masters.length);
+  if (!drives.length) return '';
+  const total = drives.reduce((sum, drive) => sum + drive.masters.length, 0);
+  const multiDrive = drives.length > 1;
+  const groups = drives.map(({ src, masters }) => {
+    const dir = sessionDirForPreview(src);
+    const rows = masters.map((m, i) => {
+      const value = masterDisplayName(m, i + 1, masters.length, base);
+      return `<label class="field"><span>${esc(m.name)} → output filename</span>
+        <input type="text" data-output-name="${esc(m.path)}" data-dir="${esc(dir)}" value="${esc(value)}" />
+        <span class="path">${esc(dir + value)}</span></label>`;
+    }).join('');
+    // The drive header is only worth the space once more than one drive has a
+    // master to edit; a single drive keeps the plain list it always showed.
+    const head = multiDrive
+      ? `<div class="name" style="font-weight:600;margin:10px 0 4px">${esc(src.label)}
+          <span class="badge ${src.role}">${esc(src.role)}</span></div>`
+      : '';
+    return `${head}${rows}`;
   }).join('');
   return `<div class="name-preview-target">
-    <b>Master filename${masters.length > 1 ? 's' : ''}</b>
-    <p class="hint" style="margin:4px 0 10px">Edit any of the ${masters.length} master name${
-      masters.length > 1 ? 's' : ''} right here. Camera clips keep their original names; use
-      <b>Preview selected filenames</b> below only if you want to rename an individual camera clip too.</p>
-    ${rows}
+    <b>Master filename${total > 1 ? 's' : ''}</b>
+    <p class="hint" style="margin:4px 0 10px">Edit any master name right here${
+      multiDrive ? ', grouped by the drive it lives on' : ''}. Camera clips keep their original
+      names; use <b>Preview selected filenames</b> below only if you want to rename an individual
+      camera clip too.</p>
+    ${groups}
   </div>`;
 }
 

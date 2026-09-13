@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { PythonBridge } = require('./python-bridge');
@@ -22,6 +22,57 @@ function saveSettings(patch) {
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
+
+// ------------------------------------------------------------------ theme
+// The app ships dark by default. The choice is forced through nativeTheme so it
+// wins over the OS setting, and the renderer's CSS (which already carries a full
+// dark palette under prefers-color-scheme: dark) follows it live — no reload.
+function currentTheme() {
+  return loadSettings().theme === 'light' ? 'light' : 'dark';   // default dark
+}
+function applyTheme(theme) {
+  nativeTheme.themeSource = theme === 'light' ? 'light' : 'dark';
+}
+
+function buildMenu() {
+  const isMac = process.platform === 'darwin';
+  const template = [
+    ...(isMac ? [{ role: 'appMenu' }] : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    {
+      label: 'View',
+      submenu: [
+        {
+          id: 'toggle-dark',
+          label: 'Toggle dark mode',
+          type: 'checkbox',
+          checked: currentTheme() === 'dark',
+          accelerator: isMac ? 'Cmd+Shift+D' : 'Ctrl+Shift+D',
+          click: (item) => {
+            const next = currentTheme() === 'dark' ? 'light' : 'dark';
+            saveSettings({ theme: next });
+            applyTheme(next);
+            item.checked = next === 'dark';
+          },
+        },
+        { type: 'separator' },
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    { role: 'windowMenu' },
+    { role: 'help', submenu: [{ role: 'about' }] },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function createWindow() {
@@ -70,6 +121,8 @@ function createBridge() {
 }
 
 app.whenReady().then(() => {
+  applyTheme(currentTheme());   // force dark (default) before the window paints
+  buildMenu();
   createBridge();
   createWindow();
   app.on('activate', () => {

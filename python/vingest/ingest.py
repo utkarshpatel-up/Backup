@@ -658,12 +658,35 @@ def _same_volume(a, b) -> bool:
         return False
 
 
+def _nearest_existing(path: Path) -> Path:
+    """The path itself if it exists, else its closest existing ancestor.
+
+    A destination folder may not exist yet when the plan is classified up front;
+    its volume is that of the first ancestor already on disk (the drive root at
+    worst), which is all a same-volume test needs.
+    """
+    for cand in (path, *path.parents):
+        if cand.exists():
+            return cand
+    return path
+
+
 def human(n: float) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(n) < 1024 or unit == "TB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
-        n /= 1024
-    return f"{n:.1f} TB"
+    """A byte count formatted the way Windows Explorer shows it: base 1024, three
+    significant figures, and the remainder truncated rather than rounded up, so
+    the numbers line up with what the operator sees in the file manager. Values
+    under a kilobyte are shown whole with digit grouping ("1,023 bytes")."""
+    v = float(n)
+    for unit in ("bytes", "KB", "MB", "GB", "TB"):
+        if abs(v) < 1024 or unit == "TB":
+            if unit == "bytes":
+                return f"{int(v):,} {unit}"
+            decimals = 0 if abs(v) >= 100 else 1 if abs(v) >= 10 else 2
+            factor = 10 ** decimals
+            truncated = int(v * factor) / factor      # truncate, never round up
+            return f"{truncated:.{decimals}f} {unit}"
+        v /= 1024
+    return f"{v:.2f} TB"
 
 
 # ----------------------------------------------------------------- execution
@@ -734,6 +757,7 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
     done_bytes = 0
     copied_bytes = 0        # bytes that were actually COPIED (relocations excluded)
     copy_seconds = 0.0      # wall-clock spent copying, for a meaningful rate
+    copy_done_bytes = 0     # copy progress: bytes copied or already present (no moves)
     active_copy_started: float | None = None
     active_copy_bytes = 0
     started = time.time()
@@ -743,20 +767,25 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
 
     def emit(**kw):
         if progress:
-            # Rate and ETA are based on copied bytes over the time spent copying:
-            # relocations (same-drive renames) move their whole size instantly and
-            # would otherwise report a wildly inflated, useless speed.
-            live_bytes = copied_bytes + active_copy_bytes
+            # Size, speed and ETA all describe only the data being COPIED.
+            # Same-volume relocations (a master already on its drive) move their
+            # whole size in one instant rename, so folding them into the total
+            # would inflate the size shown and the transfer speed alike — the
+            # progress line would read "384 GB of 386 GB" the moment the run
+            # began. The rate is copied bytes over the time actually spent
+            # copying; the bar and ETA count copied-or-already-present bytes
+            # against the copy-only total.
             live_seconds = copy_seconds
             if active_copy_started is not None:
                 live_seconds += max(time.time() - active_copy_started, 0)
-            rate = live_bytes / live_seconds if live_seconds > 0.05 else 0
-            remaining = max(total_bytes - done_bytes, 0)
+            rate = (copied_bytes + active_copy_bytes) / live_seconds if live_seconds > 0.05 else 0
+            shown_done = copy_done_bytes + active_copy_bytes
+            remaining = max(copy_total_bytes - shown_done, 0)
             progress({
                 "stage": "copy",
-                "bytes_done": done_bytes,
-                "bytes_total": total_bytes,
-                "percent": round(done_bytes / total_bytes * 100, 2),
+                "bytes_done": shown_done,
+                "bytes_total": copy_total_bytes,
+                "percent": round(shown_done / copy_total_bytes * 100, 2),
                 "rate_bps": rate,
                 "copied_bytes": copied_bytes,
                 "eta_seconds": round(remaining / rate) if rate > 1 else None,
@@ -775,6 +804,25 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
         for _i in _t.get("items", []):
             key = _os.path.normcase(_i["src"])
             dest_count[key] = dest_count.get(key, 0) + 1
+
+    # Classify every item up front as a relocation (an instant same-volume move)
+    # or a real copy, and total only the copy bytes. The size, speed and ETA the
+    # GUI shows are all about copying, so a relocated master is left out of the
+    # total entirely rather than making the bar leap to 99% before a byte is
+    # copied. The execution loop re-derives the same decision per item once the
+    # destination folder exists; here the nearest existing ancestor stands in.
+    relocate_by_id: dict[int, bool] = {}
+    copy_total_bytes = 0
+    for _t in plan.get("targets", []):
+        for _i in _t.get("items", []):
+            key = _os.path.normcase(_i["src"])
+            will_reloc = (dest_count.get(key, 1) == 1
+                          and _same_volume(Path(_i["src"]).parent,
+                                           _nearest_existing(Path(_i["dst"]).parent)))
+            relocate_by_id[id(_i)] = will_reloc
+            if not will_reloc:
+                copy_total_bytes += _i.get("size", 0)
+    copy_total_bytes = copy_total_bytes or 1
 
     for target in plan.get("targets", []):
         staging_root = Path(target.get("staging_path") or target["session_path"])
@@ -806,6 +854,10 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                     item["status"] = "skipped"
                     item["message"] = "Already present with matching size"
                     done_bytes += item["size"]
+                    # An already-present copy still counts as copy progress, so the
+                    # bar reaches 100% on a resumed run; a relocation never does.
+                    if not relocate_by_id.get(id(item)):
+                        copy_done_bytes += item["size"]
                     results.append(item)
                     emit(current=src.name, target=target["role"])
                     continue
@@ -848,6 +900,7 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
                         active_copy_bytes = 0
                     copy_seconds += _elapsed
                     copied_bytes += item["size"]
+                    copy_done_bytes += item["size"]
                     problem = _verify(src, dst, verify)
 
                 if problem:

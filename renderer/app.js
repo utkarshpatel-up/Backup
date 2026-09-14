@@ -94,24 +94,29 @@ function parentDir(p) {
   return idx > 0 ? norm.slice(0, idx) : norm;
 }
 
-// Sizes are formatted the way Windows Explorer does, so the numbers here match
-// what the operator sees in the file manager next to them: base 1024, three
-// significant figures, and the remainder TRUNCATED rather than rounded up — the
-// long-standing shell behaviour (StrFormatByteSize) where 2,097,151 bytes reads
-// "1.99 MB", never "2.00 MB". Bytes below a KB are shown whole with the locale's
-// digit grouping ("1,024 bytes"), exactly as the Explorer status bar shows them.
+// Sizes are formatted the way the host OS file manager shows them, so the numbers
+// here match what the operator sees next to the files. On Windows that is Explorer's
+// base-1024 (StrFormatByteSize) behaviour where 2,097,151 bytes reads "1.99 MB". On
+// macOS the Finder uses base-1000 (decimal SI), where 2,829,394,112 bytes reads
+// "2.83 GB", so we switch the divisor by platform. Three significant figures, the
+// remainder TRUNCATED rather than rounded up. Bytes below the first unit are shown
+// whole with the locale's digit grouping ("1,024 bytes").
+const SIZE_MAC = window.api && window.api.platform === 'darwin';
+const SIZE_BASE = SIZE_MAC ? 1000 : 1024;
 function fmtBytes(n) {
   if (!n && n !== 0) return '—';
   const u = ['bytes', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
   let v = n;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  while (v >= SIZE_BASE && i < u.length - 1) { v /= SIZE_BASE; i++; }
   if (i === 0) return `${Math.round(v).toLocaleString()} ${u[0]}`;
   // Three significant figures: 2 decimals under 10, 1 under 100, none above.
   const decimals = v >= 100 ? 0 : v >= 10 ? 1 : 2;
   const factor = 10 ** decimals;
-  const truncated = Math.floor(v * factor) / factor;
-  return `${truncated.toFixed(decimals)} ${u[i]}`;
+  // The Finder rounds (2,829,394,112 B → "2.83 GB"); Explorer truncates
+  // (2,097,151 B → "1.99 MB", never "2.00 MB"). Match whichever the operator sees.
+  const scaled = SIZE_MAC ? Math.round(v * factor) : Math.floor(v * factor);
+  return `${(scaled / factor).toFixed(decimals)} ${u[i]}`;
 }
 
 // A file/folder byte count rendered as a solid, easy-to-spot chip. `total` gives
@@ -560,6 +565,11 @@ function nameStatesOtherDate(file, day) {
   return iso !== day;
 }
 
+// Two masters are "the same recording" when their durations agree to within a
+// minute — the small drift between a ProRes master and its H.265 twin, or two
+// takes of one program on different drives.
+const MASTER_DUR_TOLERANCE = 60;   // seconds
+
 /** Pre-select each drive's root/date masters, leaving manual picks alone. */
 function suggestMasters() {
   // Several same-day sessions cannot be distinguished safely by date/length.
@@ -571,6 +581,39 @@ function suggestMasters() {
     const sug = suggestedMastersFor(f);
     if (sug.length) {
       state.masters[f.path] = sug.map((x) => x.path);
+      state.masterSource = state.masterSource || f.path;
+    }
+  }
+  matchMastersByDuration();
+}
+
+/**
+ * Cross-drive safety net: when one drive's masters are already selected but
+ * another footage drive has none, auto-select that drive's root clips whose
+ * durations match the selected masters (within a minute). The two SSDs hold the
+ * same program in different codecs, so a duration match is strong proof — this
+ * catches the cases where the per-drive date/length heuristic ticks one drive
+ * but silently misses its twin.
+ */
+function matchMastersByDuration() {
+  // Reference durations: every master already selected on any drive.
+  const refDurations = footageSources()
+    .flatMap((f) => mastersFor(f))
+    .map((m) => m.duration)
+    .filter((d) => d != null);
+  if (!refDurations.length) return;
+
+  for (const f of footageSources()) {
+    const already = state.masters[f.path];
+    if (Array.isArray(already) && already.length) continue;   // already sorted
+    // Consider this drive's root clips (never nested camera-card footage).
+    const rootClips = filePool(f).filter((c) => atDriveRoot(c, f) && c.duration != null);
+    const matched = rootClips.filter((c) => refDurations.some(
+      (d) => Math.abs(d - c.duration) <= MASTER_DUR_TOLERANCE));
+    if (matched.length) {
+      state.masters[f.path] = matched
+        .sort((a, b) => (a.mtime || 0) - (b.mtime || 0))
+        .map((x) => x.path);
       state.masterSource = state.masterSource || f.path;
     }
   }
@@ -2942,9 +2985,12 @@ function renderRunResult() {
     ${r.errors.map((e) => `<div class="note err mono">${esc(e)}</div>`).join('')}
     <div class="row">
       <button class="primary" id="btnOpenAll">📂 Open ${isInformal() ? 'session folder' : 'both Clips for Insert folders'}</button>
-      <span class="hint" style="margin:0">${finderTargets().length} window(s):
-        ${isInformal() ? 'the session folder containing the Cam folders' : "each drive's Clips for Insert folder"}${cardFolders().length
-          ? ` + ${cardFolders().length} camera card${cardFolders().length > 1 ? 's' : ''}` : ''}</span>
+      <span class="hint" style="margin:0">${isInformal()
+        ? `the session folder containing the Cam folders${cardFolders().length
+            ? ` + ${cardFolders().length} camera card${cardFolders().length > 1 ? 's' : ''}` : ''}`
+        : `one window with each drive's Clips for Insert folder as a tab${cardFolders().length
+            ? `, and a second window with ${cardFolders().length} camera card${
+                cardFolders().length > 1 ? 's' : ''} as tabs` : ''}`}</span>
     </div>
     <div class="row" style="margin-top:8px">
       ${(r.manifests || []).map((m) => `<button class="sm" data-open="${esc(m.json)}">
@@ -3011,6 +3057,18 @@ function finderTargets() {
   return [...new Set([...clipsForInsertFolders(), ...cardFolders()])];
 }
 
+/**
+ * The same folders split into two groups for the tabbed open: every drive's
+ * "Clips for Insert" folder in one window, every camera-card folder in another,
+ * so the operator compares destinations against sources side by side. Empty
+ * groups are dropped (an informal job has no separate cards window).
+ */
+function finderGroups() {
+  const dests = [...new Set(clipsForInsertFolders())];
+  const cards = [...new Set(cardFolders())];
+  return [dests, cards].filter((g) => g.length);
+}
+
 function wireCopy() {
   $('btnPlan')?.addEventListener('click', doPlan);
   $('btnReplan')?.addEventListener('click', doPlan);
@@ -3042,12 +3100,12 @@ function wireCopy() {
     goStep(4);
   });
   $('btnOpenAll')?.addEventListener('click', async () => {
-    const res = await window.api.openFolders(finderTargets());
+    const res = await window.api.openFolderGroups(finderGroups());
     if (res.missing && res.missing.length) {
       toast(`${res.opened.length} opened; ${res.missing.length} folder(s) not found `
         + `(a card may have been ejected).`, 'warn');
     } else {
-      toast(`Opened ${res.opened.length} folder window(s).`, 'ok');
+      toast(`Opened ${res.opened.length} folder(s) — destinations and cards in separate windows.`, 'ok');
     }
   });
   document.querySelectorAll('[data-reveal]').forEach((b) =>

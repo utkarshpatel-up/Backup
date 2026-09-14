@@ -108,10 +108,10 @@ function renderNamingEditor() {
     <label class="field"><span>Clip name base (optional)</span>
       <input id="fClipTitle" type="text" value="${esc(state.clipTitle || base)}" placeholder="Use session folder name" />
     </label>
-    <div class="preview-name">Example filename: ${esc(example)}</div>
-    ${pathCount(examplePath(example))}
+    ${isInformal() ? `<div class="preview-name">Example filename: ${esc(example)}</div>
+    ${pathCount(examplePath(example))}` : ''}
     ${formalMasterEditor()}
-    <p class="hint">The example uses a sample extension and sequence. Load/select your clips, then preview
+    <p class="hint">${isInformal() ? 'The example uses a sample extension and sequence. ' : ''}Load/select your clips, then preview
       their exact names below. Formal camera clips keep their original names unless individually edited.</p>
     <button id="btnPreviewNames" ${state.busy ? 'disabled' : ''}>Preview selected filenames</button>
     ${preview ? preview.targets.map((t) => {

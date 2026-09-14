@@ -3,6 +3,7 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme } = requir
 const path = require('path');
 const fs = require('fs');
 const { PythonBridge } = require('./python-bridge');
+const { openFolderGroups } = require('./open-folders');
 app.setName('AV Backup');
 
 let win = null;
@@ -158,8 +159,13 @@ ipcMain.handle('py:restart', async () => {
 ipcMain.handle('app:setBusy', (_e, busy) => { global.__vingestBusy = !!busy; return true; });
 
 ipcMain.handle('dialog:pickFolder', async (_e, title) => {
+  const label = title || 'Choose a folder';
   const r = await dialog.showOpenDialog(win, {
-    title: title || 'Choose a folder',
+    title: label,
+    // macOS open panels do not show `title`; `message` is the text the Finder
+    // panel actually displays, so set both to keep the prompt visible there —
+    // e.g. which drive's session folder to pick under "Only camera clips".
+    message: label,
     properties: ['openDirectory', 'createDirectory'],
   });
   return r.canceled ? null : r.filePaths[0];
@@ -168,6 +174,7 @@ ipcMain.handle('dialog:pickFolder', async (_e, title) => {
 ipcMain.handle('dialog:pickVideoFiles', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose footage',
+    message: 'Choose footage',   // macOS shows `message`, not `title`
     // Media is the default, but audio recorders, images and text guideline
     // files are all selectable — pick "All files" for anything else.
     filters: [
@@ -188,6 +195,7 @@ ipcMain.handle('dialog:pickVideoFiles', async () => {
 ipcMain.handle('dialog:pickZip', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose a zip archive',
+    message: 'Choose a zip archive',   // macOS shows `message`, not `title`
     defaultPath: app.getPath('downloads'),
     filters: [{ name: 'Zip archives', extensions: ['zip'] }],
     properties: ['openFile'],
@@ -198,6 +206,7 @@ ipcMain.handle('dialog:pickZip', async () => {
 ipcMain.handle('dialog:pickCsv', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose the duration list exported from Frappe (CSV or Excel)',
+    message: 'Choose the duration list exported from Frappe (CSV or Excel)',
     defaultPath: app.getPath('downloads'),
     filters: [
       { name: 'Duration list (CSV or Excel)', extensions: ['csv', 'xlsx', 'xlsm'] },
@@ -213,6 +222,7 @@ ipcMain.handle('dialog:pickCsv', async () => {
 ipcMain.handle('dialog:pickExecutable', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Locate ffprobe',
+    message: 'Locate ffprobe',   // macOS shows `message`, not `title`
     properties: ['openFile'],
   });
   return r.canceled ? null : r.filePaths[0];
@@ -246,6 +256,11 @@ ipcMain.handle('shell:openFolders', async (_e, paths) => {
   }
   return { opened, missing };
 });
+
+// Open groups of folders as tabbed windows — one window per group (destinations
+// in one, camera cards in another), the folders inside it as tabs.
+ipcMain.handle('shell:openFolderGroups', (_e, groups) =>
+  openFolderGroups(groups, shell, process.platform));
 
 ipcMain.handle('settings:get', () => loadSettings());
 ipcMain.handle('settings:set', (_e, patch) => saveSettings(patch));

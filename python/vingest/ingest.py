@@ -13,6 +13,7 @@ import datetime as _dt
 import os
 import re
 import shutil
+import sys as _sys
 import time
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -599,9 +600,14 @@ def build_plan(spec: dict, progress=None) -> dict:
         except OSError:
             plan.free_bytes = 0
 
-        # A copy needs room for the files that are not just relocated on the drive.
+        # A copy needs room only for files that are actually copied. A master is
+        # already on this drive and just relocates into the folder (an atomic move,
+        # no new space), so it must not count. The destination folder does not exist
+        # yet at plan time, so test the volume against its nearest existing ancestor
+        # — matching the relocate decision execute_plan makes against dst.parent.
+        dest_vol = _nearest_existing(session_path)
         copy_bytes = sum(i.size for i in plan.items
-                         if not _same_volume(Path(i.src).parent, session_path))
+                         if not _same_volume(Path(i.src).parent, dest_vol))
         if plan.free_bytes and copy_bytes > plan.free_bytes * 0.98:
             plan.warnings.append(
                 f"Not enough free space on {dest_root}: needs "
@@ -671,21 +677,29 @@ def _nearest_existing(path: Path) -> Path:
     return path
 
 
+# Windows Explorer counts in base 1024; the macOS Finder counts in base 1000
+# (decimal SI). Match whichever file manager the operator is looking at.
+_SIZE_BASE = 1000 if _sys.platform == "darwin" else 1024
+
+
 def human(n: float) -> str:
-    """A byte count formatted the way Windows Explorer shows it: base 1024, three
-    significant figures, and the remainder truncated rather than rounded up, so
-    the numbers line up with what the operator sees in the file manager. Values
-    under a kilobyte are shown whole with digit grouping ("1,023 bytes")."""
+    """A byte count formatted the way the host OS file manager shows it: base 1024
+    on Windows, base 1000 on macOS, three significant figures, and the remainder
+    truncated rather than rounded up, so the numbers line up with what the operator
+    sees. Values under the first unit are shown whole with digit grouping."""
     v = float(n)
+    base = _SIZE_BASE
+    mac = _sys.platform == "darwin"
     for unit in ("bytes", "KB", "MB", "GB", "TB"):
-        if abs(v) < 1024 or unit == "TB":
+        if abs(v) < base or unit == "TB":
             if unit == "bytes":
                 return f"{int(v):,} {unit}"
             decimals = 0 if abs(v) >= 100 else 1 if abs(v) >= 10 else 2
             factor = 10 ** decimals
-            truncated = int(v * factor) / factor      # truncate, never round up
-            return f"{truncated:.{decimals}f} {unit}"
-        v /= 1024
+            # Finder rounds; Explorer truncates ("1.99 MB", never "2.00 MB").
+            scaled = round(v * factor) if mac else int(v * factor)
+            return f"{scaled / factor:.{decimals}f} {unit}"
+        v /= base
     return f"{v:.2f} TB"
 
 

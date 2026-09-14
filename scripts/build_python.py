@@ -7,6 +7,11 @@ lands in dist-python/ and is copied into the app's Resources by the packager.
     python3 scripts/build_python.py [--with-ffmpeg /path/to/ffmpeg/bin]
 """
 
+# Defer annotation evaluation so the `Path | None` union type works on the
+# Python 3.9 that ships with Apple's Command Line Tools (PEP 604 unions are
+# otherwise only evaluated on 3.10+).
+from __future__ import annotations
+
 import argparse
 import json
 import os

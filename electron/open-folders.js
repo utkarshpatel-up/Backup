@@ -1,18 +1,22 @@
 'use strict';
 //
-// Open sets of folders as GROUPED, TABBED windows in the OS file manager.
+// Open sets of folders GROUPED side by side in the OS file manager.
 //
 // The "Open both Clips for Insert folders" button hands us groups: the first is
 // every destination drive's "Clips for Insert" folder, the second is every
-// camera-card folder the clips came from. We open ONE window per group with the
-// folders inside it as tabs, so the operator gets destinations in one window and
-// cards in another to compare side by side — instead of a scatter of separate
-// windows landing wherever the shell chose.
+// camera-card folder the clips came from. We lay the groups out in columns —
+// destinations on the left, cards on the right — so the operator can compare
+// them side by side instead of a scatter of windows landing wherever the shell
+// chose.
 //
-// Neither Windows Explorer nor macOS Finder exposes a supported API to open a
-// folder as a tab, so the tab step is UI automation (SendKeys / System Events)
-// run best-effort. If it cannot run, each group still opens — its folders as
-// plain windows — so the button never silently does nothing.
+// Windows: one window per group, the group's folders as TABS inside it, tiled
+// left/right. Explorer has no tab API, so the tab step is SendKeys automation;
+// if it cannot run, each folder still opens as a plain window.
+//
+// macOS: Finder has no scriptable tab API and the Cmd+T keystroke workaround is
+// unreliable (needs Accessibility permission and mis-targets the new tab), so we
+// TILE each folder as its own Finder window — group per column, folders stacked
+// as rows. Pure Finder scripting, so it never silently fails.
 //
 const fs = require('fs');
 const path = require('path');
@@ -139,40 +143,60 @@ function applescriptQuote(p) {
   return String(p).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+// Finder refuses to make a window smaller than this, so the grid must not ask for
+// cells narrower/shorter than these or the windows spill off-screen and overlap.
+const MAC_MIN_WIN_W = 476;
+const MAC_MIN_WIN_H = 280;
+
 function macScript(groups) {
-  let s = 'tell application "Finder" to activate\n';
-  for (const g of groups) {
-    if (!g.length) continue;
-    s += `tell application "Finder"
-  set w to make new Finder window
-  set target of w to POSIX file "${applescriptQuote(g[0])}"
-  set index of w to 1
-end tell
-delay 0.5
+  // macOS Finder has no scriptable way to open a folder as a TAB, and the Cmd+T
+  // keystroke workaround is unreliable (it needs Accessibility permission and the
+  // new tab lands on the wrong folder). So on the Mac we TILE each folder as its
+  // own window: each group gets a vertical slice of the screen (destinations on
+  // the left, cards on the right) and its folders are laid out as a GRID inside
+  // that slice — e.g. six camera cards become a 2x3 grid in the right slice.
+  //
+  // The column count is worked out at runtime from the real screen width, capped
+  // so no cell falls below Finder's minimum window width; otherwise Finder would
+  // enforce its minimum and the windows would overrun the screen edge.
+  const gs = groups.filter((g) => g.length);
+  const n = gs.length;
+  let s = `tell application "Finder" to activate
+tell application "Finder" to set desktopBounds to bounds of window of desktop
+set scrW to item 3 of desktopBounds
+set scrH to item 4 of desktopBounds
+set topM to 44
 `;
-    for (let i = 1; i < g.length; i++) {
-      // The keystroke needs Accessibility permission; if it is not granted the
-      // try block swallows the error so the folder still opens (as a window), the
-      // script still exits 0, and no duplicate fallback opening is triggered.
-      s += `try
-  tell application "System Events" to tell process "Finder"
-    set frontmost to true
-    keystroke "t" using command down
-  end tell
-  delay 0.4
+  gs.forEach((g, k) => {
+    const paths = g.map((p) => `"${applescriptQuote(p)}"`).join(', ');
+    s += `set grpPaths to {${paths}}
+set m to count of grpPaths
+set sliceW to scrW / ${n}
+set maxCols to (sliceW div ${MAC_MIN_WIN_W})
+if maxCols < 1 then set maxCols to 1
+set cols to (round (m ^ 0.5) rounding up)
+if cols > maxCols then set cols to maxCols
+if cols < 1 then set cols to 1
+set rows to ((m + cols - 1) div cols)
+set cellW to sliceW / cols
+set cellH to (scrH - topM) / rows
+if cellH < ${MAC_MIN_WIN_H} then set cellH to ${MAC_MIN_WIN_H}
+repeat with j from 0 to (m - 1)
+  set c to (j mod cols)
+  set r to (j div cols)
+  set winL to (round (${k} * sliceW + c * cellW))
+  set winR to (round (${k} * sliceW + (c + 1) * cellW))
+  set winT to (round (topM + r * cellH))
+  set winB to (round (topM + (r + 1) * cellH))
   tell application "Finder"
-    set target of front Finder window to POSIX file "${applescriptQuote(g[i])}"
+    set w to make new Finder window
+    set target of w to POSIX file (item (j + 1) of grpPaths)
+    set bounds of w to {winL, winT, winR, winB}
   end tell
-on error
-  tell application "Finder"
-    set w2 to make new Finder window
-    set target of w2 to POSIX file "${applescriptQuote(g[i])}"
-  end tell
-end try
-delay 0.35
+  delay 0.12
+end repeat
 `;
-    }
-  }
+  });
   return s;
 }
 

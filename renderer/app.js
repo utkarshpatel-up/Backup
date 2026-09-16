@@ -1095,7 +1095,10 @@ async function activateTemplateSession(index, announce = true) {
   state.jobNameOverride = null;
   state.clipNames = {}; state.ceremonyNames = {}; state.clipTitle = ''; state.namingPreview = null;
   state.camNames = {};
-  state.camCount = selectionRules.importedCamCount(next);
+  // Informal mirrors the structure exactly — a 2-cam structure gets 2 cam
+  // folders, no phantom third. Formal keeps its 3-cam default (its mixer-master
+  // workflow expects the three bodies), so its behaviour is unchanged.
+  state.camCount = selectionRules.importedCamCount(next, isInformal() ? 1 : 3);
   state.masters = {};
   state.masterSource = null;
   state.mastersFiled = false;

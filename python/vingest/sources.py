@@ -127,7 +127,11 @@ def list_volumes() -> list[dict]:
 
 
 CARD_MARKERS = ("dcim", "private", "avchd", "clip", "xdroot", "bdmv",
-                "m4root", "panasonic", "contents")
+                "m4root", "panasonic", "contents", "sound")
+
+# Card markers that identify by folder-name prefix rather than exact match, so a
+# numbered offload folder such as DJI_Audio_001 is recognised whatever its number.
+CARD_MARKER_PREFIXES = ("dji_audio",)
 
 
 def _looks_like_card(root: Path) -> bool:
@@ -135,7 +139,9 @@ def _looks_like_card(root: Path) -> bool:
         names = {p.name.lower() for p in root.iterdir() if p.is_dir()}
     except OSError:
         return False
-    return any(m in names for m in CARD_MARKERS)
+    if any(m in names for m in CARD_MARKERS):
+        return True
+    return any(n.startswith(p) for n in names for p in CARD_MARKER_PREFIXES)
 
 
 # ---------------------------------------------------------------- zip sources
@@ -298,6 +304,10 @@ def eject(path: str) -> dict:
 # into a top-level SOUND folder as .wav pairs with a tiny .bin sidecar. There is
 # no vendor volume name to key on, so this layout matches ANY mounted card that
 # has a SOUND folder holding audio, and files those .wav into their own camera.
+# A DJI Audio kit (Mic transmitters offloaded through the receiver/USB) instead
+# drops its takes into one or more top-level DJI_Audio_<n> folders as .WAV files
+# named DJI_<nn>_<date>_<time>.WAV. Like the SOUND card it has no vendor volume
+# name, so this layout matches ANY mounted card carrying a DJI_Audio_* folder.
 CARD_LAYOUTS = [
     {
         "name": "Canon XF",
@@ -311,6 +321,18 @@ CARD_LAYOUTS = [
         "inner": ["SOUND"],
         "exts": AUDIO_EXTS,
         "require_files": True,        # an empty SOUND folder is not a sound card
+    },
+    {
+        "name": "DJI audio",
+        "volume_prefix": "",          # any volume with a DJI_Audio_* folder
+        "inner": ["DJI_Audio_*"],
+        "exts": AUDIO_EXTS,
+        "require_files": True,        # an empty DJI_Audio folder is not a card
+        # A DJI Audio kit bundles several transmitters onto one card, each writing
+        # DJI_<nn>_<date>_<time>.WAV. Every transmitter is its own mic, so it must
+        # land on its own cam: split the takes by the DJI_<nn> prefix and report
+        # one card per transmitter, exactly as if each were a separate volume.
+        "group_re": r"^(dji_\d+)_",
     },
 ]
 
@@ -348,6 +370,29 @@ def _walk_layout(root: Path, segments: list[str]) -> list[Path]:
         if not current:
             return []
     return current
+
+
+def _group_cards(files: list[Path], group_re: str | None,
+                 default_label: str) -> list[tuple[str, list[Path]]]:
+    """Split one card's files into (label, files) groups.
+
+    Without a pattern the whole card is a single group under the volume's own
+    name. With one, files are grouped by the pattern's first capture (e.g. the
+    DJI_<nn> transmitter prefix), so each recorder becomes its own card, in the
+    order the transmitters first appear. Files the pattern does not match stay
+    together under the volume name, so nothing is ever dropped.
+    """
+    if not group_re:
+        return [(default_label, files)]
+
+    import re as _re
+    rx = _re.compile(group_re, _re.IGNORECASE)
+    groups: dict[str, list[Path]] = {}
+    for f in files:
+        m = rx.match(f.name)
+        token = m.group(1).upper() if m else default_label
+        groups.setdefault(token, []).append(f)
+    return list(groups.items())
 
 
 def find_camera_cards(layouts: list[dict] | None = None) -> dict:
@@ -397,16 +442,20 @@ def find_camera_cards(layouts: list[dict] | None = None) -> dict:
             if m and m.group("letter"):
                 cam = ord(m.group("letter")) - ord("a") + 1
 
-            cards.append({
-                "volume": str(vol_path),
-                "label": name,
-                "layout": layout["name"],
-                "reels": [str(r) for r in reels],
-                "suggested_cam": cam,
-                "file_count": len(files),
-                "bytes": sum(f.stat().st_size for f in files if f.exists()),
-                "files": [str(f) for f in files],
-            })
+            # One volume can carry several recorders (a DJI kit's transmitters).
+            # group_re splits the takes into one card per recorder; without it the
+            # whole card is a single group carrying the volume's own name.
+            for label, group in _group_cards(files, layout.get("group_re"), name):
+                cards.append({
+                    "volume": str(vol_path),
+                    "label": label,
+                    "layout": layout["name"],
+                    "reels": [str(r) for r in reels],
+                    "suggested_cam": cam,
+                    "file_count": len(group),
+                    "bytes": sum(f.stat().st_size for f in group if f.exists()),
+                    "files": [str(f) for f in group],
+                })
             break
 
     cards.sort(key=lambda c: c["label"].lower())

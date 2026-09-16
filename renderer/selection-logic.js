@@ -49,8 +49,13 @@
    * only a last resort when nothing identifies the source.
    */
   function cameraGroupKey(file, platform = '') {
+    const card = String((file && file.card_label) || '').trim().toLowerCase();
     const volume = String((file && file.card_volume) || '');
-    if (volume) return `volume:${pathKey(volume, platform)}`;
+    // A DJI Audio kit bundles several transmitters onto one volume, each imported
+    // as its own labelled card. The volume alone would collapse them into one cam,
+    // so the card label refines the key when present — one transmitter, one cam.
+    // Canon/TASCAM cards each own their volume, so this only ever splits the kit.
+    if (volume) return `volume:${pathKey(volume, platform)}${card ? `|${card}` : ''}`;
 
     const path = String((file && file.path) || '');
     const windowsRoot = /^([a-z]:)[\\/]/i.exec(path);
@@ -58,7 +63,6 @@
     const posixMount = /^(\/Volumes\/[^/]+|\/media\/[^/]+\/[^/]+|\/mnt\/[^/]+)/i.exec(path);
     if (posixMount) return `volume:${pathKey(posixMount[1], platform)}`;
 
-    const card = String((file && file.card_label) || '').trim().toLowerCase();
     if (card) return `card:${card}`;
 
     return `format:${file && file.width}x${file && file.height}`

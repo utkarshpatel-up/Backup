@@ -111,15 +111,17 @@ test('auto-suggest uses distinct card volumes when filenames carry no camera pre
   assert.equal(groups.length, 2);
 });
 
-test('DJI transmitters on one volume split into a cam each by their card label', () => {
-  const common = { width: 0, height: 0, fps: 0, video_codec: '', card_volume: 'F:\\' };
+test('DJI Audio takes on one volume stay together as a single audio cam', () => {
+  const common = { width: 0, height: 0, fps: 0, video_codec: '',
+                   card_volume: 'F:\\', card_label: 'USB Drive' };
   const groups = rules.cameraGroups([
-    { ...common, path: 'F:\\DJI_Audio_001\\DJI_01_A.WAV', card_label: 'DJI_01' },
-    { ...common, path: 'F:\\DJI_Audio_001\\DJI_02_A.WAV', card_label: 'DJI_02' },
-    { ...common, path: 'F:\\DJI_Audio_001\\DJI_03_A.WAV', card_label: 'DJI_03' },
+    { ...common, path: 'F:\\DJI_Audio_001\\DJI_01_A.WAV' },
+    { ...common, path: 'F:\\DJI_Audio_001\\DJI_02_A.WAV' },
+    { ...common, path: 'F:\\DJI_Audio_001\\DJI_03_A.WAV' },
   ], 'win32');
-  // Same volume, three transmitters → three separate cameras.
-  assert.equal(groups.length, 3);
+  // One recorder on one volume → one camera, all three takes together.
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].length, 3);
 });
 
 test('camera list filters by identity and assignment, then sorts deterministically', () => {

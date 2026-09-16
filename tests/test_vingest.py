@@ -1448,41 +1448,38 @@ class TestCameraCards:
         assert layouts == {"Canon XF", "TASCAM audio"}
 
     def _mount_dji_audio(self, tmp_path, name, folders=("DJI_Audio_001",),
-                         transmitters=(1, 2), takes=("131625", "132259")):
+                         takes=("131625", "132259", "132333")):
         """A DJI Audio kit card: top-level DJI_Audio_<n> folders of .WAV takes.
 
-        Each transmitter writes DJI_<nn>_<date>_<time>.WAV; several transmitters
-        share one card, so a folder holds a take per transmitter per recording.
+        DJI_<nn> is a sequential take from one recorder, not a separate mic, so a
+        folder's DJI_01/DJI_02/DJI_03 files are all takes from the same recorder.
         """
         for folder in folders:
             d = tmp_path / name / folder
             d.mkdir(parents=True)
-            for tx in transmitters:
-                for take in takes:
-                    (d / f"DJI_{tx:02d}_20260916_{take}.WAV").write_bytes(b"x" * 10)
+            for i, take in enumerate(takes, 1):
+                (d / f"DJI_{i:02d}_20260916_{take}.WAV").write_bytes(b"x" * 10)
         return tmp_path / name
 
-    def test_each_dji_transmitter_becomes_its_own_card(self, tmp_path, monkeypatch):
+    def test_a_dji_audio_folder_is_one_card_whatever_the_take_count(self, tmp_path, monkeypatch):
         # The USB stick is named "USB Drive", so the DJI_Audio_* folder itself,
-        # not the volume name, is what identifies the card. Each transmitter
-        # (DJI_01, DJI_02, DJI_03) lands on its own cam.
-        self._mount_dji_audio(tmp_path, "USB Drive", transmitters=(1, 2, 3))
-        r = self._find(tmp_path, monkeypatch)
-        assert r["card_count"] == 3
-        assert all(c["layout"] == "DJI audio" for c in r["cards"])
-        assert [c["label"] for c in r["cards"]] == ["DJI_01", "DJI_02", "DJI_03"]
-        assert all(c["suggested_cam"] is None for c in r["cards"])   # next free cam
-        assert all(c["file_count"] == 2 for c in r["cards"])         # two takes each
-        # A transmitter's card holds only its own takes.
-        assert all(Path(f).name.startswith("DJI_01_") for f in r["cards"][0]["files"])
-
-    def test_dji_transmitter_card_gathers_takes_across_every_folder(self, tmp_path, monkeypatch):
-        self._mount_dji_audio(tmp_path, "USB Drive",
-                              folders=("DJI_Audio_001", "DJI_Audio_002"),
-                              transmitters=(1,))
+        # not the volume name, is what identifies the card. Every take in the
+        # folder belongs to one recorder → one audio cam (volume = cam folder).
+        self._mount_dji_audio(tmp_path, "USB Drive")
         r = self._find(tmp_path, monkeypatch)
         assert r["card_count"] == 1
-        assert r["cards"][0]["file_count"] == 4       # two folders × two takes
+        card = r["cards"][0]
+        assert card["layout"] == "DJI audio"
+        assert card["file_count"] == 3            # three sequential takes, one cam
+        assert card["suggested_cam"] is None      # no letter → next free cam
+        assert all(Path(f).name.lower().endswith(".wav") for f in card["files"])
+
+    def test_dji_audio_card_gathers_takes_across_every_numbered_folder(self, tmp_path, monkeypatch):
+        self._mount_dji_audio(tmp_path, "USB Drive",
+                              folders=("DJI_Audio_001", "DJI_Audio_002"))
+        r = self._find(tmp_path, monkeypatch)
+        assert r["card_count"] == 1               # still one recorder → one cam
+        assert r["cards"][0]["file_count"] == 6   # two folders × three takes
 
     def test_an_empty_dji_audio_folder_is_not_a_card(self, tmp_path, monkeypatch):
         (tmp_path / "Blank USB" / "DJI_Audio_001").mkdir(parents=True)

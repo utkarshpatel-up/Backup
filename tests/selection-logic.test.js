@@ -57,12 +57,22 @@ test('a three-camera ZIP remains three cameras when a footage drive has Cam-04',
     template, fromZip, footageDriveDetection), 3);
 });
 
-test('a 2-cam structure yields 2 cams for informal but keeps 3 for formal', () => {
-  const template = { tree: ['Cam-01', 'Cam-02'] };
-  // Informal mirrors the structure exactly (floor of 1); formal keeps its
-  // 3-cam default. This is the phantom-third-folder fix.
-  assert.equal(rules.importedCamCount(template, 1), 2);
-  assert.equal(rules.importedCamCount(template, 3), 3);
+test('cam count mirrors the structure exactly with a floor of zero', () => {
+  // Both modes now pass a floor of 0, so the Folder page never invents a
+  // phantom cam: a 2-cam structure stays 2, a 0-cam structure stays 0.
+  assert.equal(rules.importedCamCount({ tree: ['Cam-01', 'Cam-02'] }, 0), 2);
+  assert.equal(rules.importedCamCount({ tree: [] }, 0), 0);
+  assert.equal(rules.importedCamCount({ tree: ['Cam-01', 'Cam-05'] }, 0), 5);
+});
+
+test('the Root target (cam 0) buckets clips just like any cam number', () => {
+  const files = [
+    { path: 'F:\\a.WAV' }, { path: 'F:\\b.WAV' }, { path: 'F:\\c.WAV' },
+  ];
+  const cams = rules.camsForAssignments(
+    { 'F:\\a.WAV': 0, 'F:\\b.WAV': 0, 'F:\\c.WAV': 1 }, files, (p) => p, 'win32');
+  assert.deepEqual(cams[0], ['F:\\a.WAV', 'F:\\b.WAV']);   // Root bucket
+  assert.deepEqual(cams[1], ['F:\\c.WAV']);
 });
 
 test('direct camera folders from a ZIP are normalised to the house layout', () => {

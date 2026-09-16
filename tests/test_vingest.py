@@ -464,6 +464,56 @@ class TestPlan:
             "Cam-01 Allentown Hotel Venue Clip-002.MP4",
         }
 
+    def test_informal_root_cam_files_into_the_session_folder_without_a_cam_prefix(self, tmp_path):
+        import os
+        import re
+
+        src = tmp_path / "RAW"
+        src.mkdir()
+        late = src / "random-b.MP4"
+        early = src / "random-a.mov"
+        late.write_bytes(b"late")
+        early.write_bytes(b"early")
+        os.utime(early, (100, 100))
+        os.utime(late, (200, 200))
+
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "informal", "source_root": str(src),
+            "dest_root": str(tmp_path / "DEST"),
+            "session_name": "01 Allentown Hotel Venue Dt-12-06-25 Clips-04",
+            "masters": [], "allow_no_master": True,
+            "rename_camera_clips": True,
+            # Cam 0 is the "Root" target: no camera folder in the structure.
+            "cams": {"0": [str(late), str(early)]},
+            "template_dirs": [],
+        }]})
+
+        target = plan["targets"][0]
+        clips = [item for item in target["items"] if item["kind"] == "clip"]
+        # No "Cam-01 " prefix, and no Cam folder anywhere in the destination path.
+        assert [(item["original_name"], Path(item["dst"]).name) for item in clips] == [
+            ("random-a.mov", "Allentown Hotel Venue Clip-001.mov"),
+            ("random-b.MP4", "Allentown Hotel Venue Clip-002.MP4"),
+        ]
+        assert all(not re.match(r"Cam-\d+", part, re.IGNORECASE)
+                   for item in clips for part in Path(item["dst"]).parts)
+        # No Cam-00 (or any cam) folder is created for the root target.
+        assert target["ensure_dirs"] == []
+
+        result = ingest.execute_plan(plan)
+        assert result["failed"] == 0
+        assert result["copied"] == 2
+        landed = [Path(item["dst"]) for item in result["items"]]
+        assert {p.name for p in landed} == {
+            "Allentown Hotel Venue Clip-001.mov",
+            "Allentown Hotel Venue Clip-002.MP4",
+        }
+        # All in one session folder, with no Cam sub-folder beside them.
+        session_dir = landed[0].parent
+        assert {p.parent for p in landed} == {session_dir}
+        assert not any(child.is_dir() and child.name.lower().startswith("cam-")
+                       for child in session_dir.iterdir())
+
     def test_informal_sequence_continues_after_existing_clips(self, tmp_path):
         raw = tmp_path / "RAW"
         raw.mkdir()

@@ -394,8 +394,14 @@ function selected(src) {
  * it carries. And when the folder states no date at all, there is no "other
  * day" to exclude, so the operator drives selection with the day buttons.
  */
+// The session-root target for informal backups. Clips assigned here are filed
+// directly into the session folder with no camera folder and no "Cam-NN" prefix.
+const ROOT_CAM = 0;
+
 function defaultAssignmentFor(file) {
-  const cam = firstEmptyCam();
+  // A structure with no camera folders files everything into the session root
+  // until the operator adds a cam and moves clips into it.
+  const cam = isInformal() && state.camCount === 0 ? ROOT_CAM : firstEmptyCam();
   if (file.manual) return cam;
   const day = sessionDate();
   if (!day) return cam;
@@ -1095,10 +1101,11 @@ async function activateTemplateSession(index, announce = true) {
   state.jobNameOverride = null;
   state.clipNames = {}; state.ceremonyNames = {}; state.clipTitle = ''; state.namingPreview = null;
   state.camNames = {};
-  // Informal mirrors the structure exactly — a 2-cam structure gets 2 cam
-  // folders, no phantom third. Formal keeps its 3-cam default (its mixer-master
-  // workflow expects the three bodies), so its behaviour is unchanged.
-  state.camCount = selectionRules.importedCamCount(next, isInformal() ? 1 : 3);
+  // Both modes now mirror the structure exactly — a 2-cam structure gets 2 cam
+  // folders, no phantom third, and a 0-cam structure gets none. Informal then
+  // files clips into the session root (the "Root" target); formal, and any cam
+  // shortfall, is still topped up on the Cameras page (Add Cam / card import).
+  state.camCount = selectionRules.importedCamCount(next, 0);
   state.masters = {};
   state.masterSource = null;
   state.mastersFiled = false;
@@ -1399,6 +1406,9 @@ function renderSession() {
       ${isInformal() ? ''
         : '<div class="indent2" style="color:var(--muted)">📁 Clips for Insert</div>'}
       ${cams.map((n) => `<div class="${isInformal() ? 'indent2' : 'indent3'}" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
+      ${isInformal() && state.camCount === 0
+        ? '<div class="indent2" style="color:var(--muted)">📄 clips filed here (session root — no camera folders)</div>'
+        : ''}
     </div>
     <div class="row" style="margin:10px 0 0;align-items:center;gap:8px">
       <label class="field" style="flex:1;max-width:520px;margin:0"><span>Edit session folder name${
@@ -1568,8 +1578,9 @@ function reconcileKindCamNames() {
   }
 }
 
-/** A cam's folder name: the custom name if set, else "Cam-NN". */
+/** A cam's folder name: the custom name if set, else "Cam-NN". Cam 0 is Root. */
 function camLabel(n) {
+  if (Number(n) <= 0) return 'Root';
   return (state.camNames[n] || '').trim() || `Cam-${String(n).padStart(2, '0')}`;
 }
 
@@ -1811,6 +1822,9 @@ function renderTemplateFolder(src) {
       ${isInformal() ? ''
         : '<div class="indent2" style="color:var(--muted)">📁 Clips for Insert</div>'}
       ${cams.map((n) => `<div class="${isInformal() ? 'indent2' : 'indent3'}" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
+      ${isInformal() && state.camCount === 0
+        ? '<div class="indent2" style="color:var(--muted)">📄 clips filed here (session root — no camera folders)</div>'
+        : ''}
     </div>
     <div class="grid2" style="margin-top:12px">
       <label class="field"><span>Edit job folder${
@@ -2402,6 +2416,8 @@ function renderCameras() {
           ? '<span class="badge warn">other day</span>' : ''}</td>
       <td class="num">${fmtBytes(f.size)}</td>
       <td><div class="seg">
+        ${isInformal() ? `<button class="${a === ROOT_CAM ? 'on' : ''}" data-assign="${ROOT_CAM}"
+           data-file="${esc(f.path)}" title="File into the session root — no camera folder">Root</button>` : ''}
         ${cams.map((n) => `<button class="${a === n ? 'on' : ''}" data-assign="${n}"
            data-file="${esc(f.path)}">${n}</button>`).join('')}
         <button class="${a === 'skip' ? 'on skip' : ''}" data-assign="skip" data-file="${esc(f.path)}">Skip</button>
@@ -2443,6 +2459,7 @@ function renderCameras() {
       <button class="sm ghost" id="btnRescanFiles">${isInformal() ? 'Re-scan cards' : 'Re-scan'}</button>
     </div>
     <div class="row" style="margin-bottom:6px">
+      ${isInformal() ? `<span class="badge" title="Clips filed straight into the session folder, no camera subfolder">Root : ${counts[ROOT_CAM] || 0}</span>` : ''}
       ${cams.map((n) => `<span class="badge" style="gap:4px">
         <input type="text" data-camname="${n}" value="${esc(camLabel(n))}"
           title="Rename this camera's folder"
@@ -2467,6 +2484,7 @@ function renderCameras() {
       <label class="field" style="width:170px;margin:0"><span>Assignment</span>
         <select id="fCameraFilterCam">
           <option value="all">All cameras</option>
+          ${isInformal() ? `<option value="${ROOT_CAM}" ${state.cameraFilterCam === String(ROOT_CAM) ? 'selected' : ''}>Root</option>` : ''}
           ${cams.map((n) => `<option value="${n}" ${state.cameraFilterCam === String(n) ? 'selected' : ''}>${esc(camLabel(n))}</option>`).join('')}
           <option value="skip" ${state.cameraFilterCam === 'skip' ? 'selected' : ''}>Skipped</option>
         </select></label>
@@ -2494,6 +2512,7 @@ function renderCameras() {
         Include all shown</label>
       ${state.selection.length ? `<b>${state.selection.length} selected</b>
         <span class="hint" style="margin:0">→ assign to</span>
+        ${isInformal() ? `<button class="sm" data-batch="${ROOT_CAM}">Root</button>` : ''}
         ${cams.map((n) => `<button class="sm" data-batch="${n}">${esc(camLabel(n))}</button>`).join('')}
         <button class="sm" data-batch="skip">Skip</button>
         <button class="sm ghost" id="btnClearSel">Clear selection</button>`

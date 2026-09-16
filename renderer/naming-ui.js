@@ -43,8 +43,10 @@ function examplePath(exampleName) {
   const dir = sessionDirForPreview();
   if (!dir) return exampleName;
   const sep = (window.api && window.api.platform === 'win32') ? '\\' : '/';
-  // Informal clips land one level deeper, inside a Cam folder.
-  return dir + (isInformal() ? `Cam-01${sep}` : '') + exampleName;
+  // Informal clips land one level deeper, inside a Cam folder — unless the
+  // structure has no cameras, when they sit in the session root itself.
+  const camFolder = isInformal() && state.camCount > 0 ? `Cam-01${sep}` : '';
+  return dir + camFolder + exampleName;
 }
 
 // Formal jobs carry only a handful of master files, so their rename fields are
@@ -94,8 +96,9 @@ function renderNamingEditor() {
   const d = detection() || {};
   const base = state.renameBase || (state.template || {}).session_name || d.session_name || state.session.title;
   const title = state.clipTitle || base || 'Event Name';
+  const informalPrefix = state.camCount > 0 ? 'Cam-01 ' : '';   // '' = files in the session root
   const example = isInformal()
-    ? `Cam-01 ${stripClipsToken(title).replace(/\s*\bDur-\S+/ig, '')
+    ? `${informalPrefix}${stripClipsToken(title).replace(/\s*\bDur-\S+/ig, '')
       .replace(/\s*\bDt-\d{1,2}(?:-\d{1,2}-\d{2,4}|-[A-Za-z]{3,9}-\d{2,4}|\s+[A-Za-z]{3,9}\s+\d{4})\b/ig, '')
       .replace(/^\d+\s+/, '').replace(/\s{2,}/g, ' ').trim()} Clip-001.MP4`
     : masterClipName(title, masterTotalSeconds(), 1, 1, '.mov');

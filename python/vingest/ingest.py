@@ -318,11 +318,14 @@ def build_plan(spec: dict, progress=None) -> dict:
 
         ensure = [_apply_cam_name(d) for d in (t.get("template_dirs") or []) if d]
         if not ensure:
-            # No template: still create a cam folder for every cam in play.
+            # No template: still create a cam folder for every cam in play. Cam 0
+            # is the informal Root target — it files into the session folder itself,
+            # so it has no folder to create.
             ensure = [
                 ("" if direct_camera_folders else f"{naming.CLIPS_DIRNAME}/")
                 + naming.sanitize(_names.get(str(c)) or naming.cam_folder(int(c)))
                 for c in sorted((t.get("cams") or {}), key=int)
+                if int(c) > 0
             ]
 
         plan = TargetPlan(
@@ -407,6 +410,10 @@ def build_plan(spec: dict, progress=None) -> dict:
         skip_existing_by_size = bool(t.get("skip_existing_by_size"))
 
         def cam_folder_name(idx: int) -> str:
+            # Cam 0 is the informal "Root" target: no camera folder at all, so the
+            # clip lands directly in the session folder with no "Cam-NN" prefix.
+            if int(idx) <= 0:
+                return ""
             custom = cam_names.get(str(idx)) or cam_names.get(idx)
             return naming.sanitize(custom) if custom else naming.cam_folder(idx)
 
@@ -460,7 +467,7 @@ def build_plan(spec: dict, progress=None) -> dict:
                 if os.path.normcase(os.path.abspath(str(candidate))) in designated_masters:
                     plan.warnings.append(
                         f"{candidate.name} is selected as a master clip — it cannot also be "
-                        f"filed into {cam_folder_name(cam_index)} and was skipped.")
+                        f"filed into {cam_folder_name(cam_index) or 'the session root'} and was skipped.")
                     continue
                 if not Path(p).exists():
                     # A clip whose card was already ejected (its footage is filed

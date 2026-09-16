@@ -398,6 +398,13 @@ function selected(src) {
 // directly into the session folder with no camera folder and no "Cam-NN" prefix.
 const ROOT_CAM = 0;
 
+/** How many in-play clips are currently assigned to the session Root (cam 0). */
+function rootAssignedCount() {
+  const src = primarySource();
+  if (!src) return 0;
+  return cameraFiles(src).filter((f) => state.assign[f.path] === ROOT_CAM).length;
+}
+
 function defaultAssignmentFor(file) {
   // A structure with no camera folders files everything into the session root
   // until the operator adds a cam and moves clips into it.
@@ -1408,7 +1415,9 @@ function renderSession() {
       ${cams.map((n) => `<div class="${isInformal() ? 'indent2' : 'indent3'}" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
       ${isInformal() && state.camCount === 0
         ? '<div class="indent2" style="color:var(--muted)">📄 clips filed here (session root — no camera folders)</div>'
-        : ''}
+        : (isInformal() && rootAssignedCount() > 0
+          ? `<div class="indent2" style="color:var(--muted)">📄 + ${rootAssignedCount()} clip${rootAssignedCount() === 1 ? '' : 's'} in the session root</div>`
+          : '')}
     </div>
     <div class="row" style="margin:10px 0 0;align-items:center;gap:8px">
       <label class="field" style="flex:1;max-width:520px;margin:0"><span>Edit session folder name${
@@ -1824,7 +1833,9 @@ function renderTemplateFolder(src) {
       ${cams.map((n) => `<div class="${isInformal() ? 'indent2' : 'indent3'}" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
       ${isInformal() && state.camCount === 0
         ? '<div class="indent2" style="color:var(--muted)">📄 clips filed here (session root — no camera folders)</div>'
-        : ''}
+        : (isInformal() && rootAssignedCount() > 0
+          ? `<div class="indent2" style="color:var(--muted)">📄 + ${rootAssignedCount()} clip${rootAssignedCount() === 1 ? '' : 's'} in the session root</div>`
+          : '')}
     </div>
     <div class="grid2" style="margin-top:12px">
       <label class="field"><span>Edit job folder${

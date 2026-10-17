@@ -29,6 +29,10 @@ H265_CODECS = {"hevc", "h265"}
 
 _FFPROBE: str | None = None
 _FFMPEG: str | None = None
+# Set once ffprobe is known not to run at all on this machine (e.g. a build made
+# for a newer macOS), so a scan stops launching it for every file and finishes.
+_BROKEN: str | None = None
+_SIGNAL_DEATHS = 0
 
 
 def _bundled_dir() -> Path | None:
@@ -57,7 +61,8 @@ def _find(tool: str, override: str | None = None) -> str | None:
 
 
 def configure(ffprobe: str | None = None, ffmpeg: str | None = None) -> dict:
-    global _FFPROBE, _FFMPEG
+    global _FFPROBE, _FFMPEG, _BROKEN, _SIGNAL_DEATHS
+    _BROKEN, _SIGNAL_DEATHS = None, 0      # a new location gets a fresh chance
     _FFPROBE = _find("ffprobe", ffprobe)
     _FFMPEG = _find("ffmpeg", ffmpeg)
     return {"ffprobe": _FFPROBE, "ffmpeg": _FFMPEG}
@@ -160,12 +165,35 @@ def probe(path: str | Path, timeout: int = 60) -> MediaInfo:
     info = MediaInfo(path=str(p), name=p.name, size=st.st_size, mtime=st.st_mtime)
     cmd = [ffprobe_path(), "-v", "error", "-print_format", "json",
            "-show_format", "-show_streams", str(p)]
+    global _BROKEN, _SIGNAL_DEATHS
+    if _BROKEN:
+        raise RuntimeError(_BROKEN)
     try:
         res = subprocess.run(cmd, capture_output=True, text=True,
                              timeout=timeout, **_no_window())
     except subprocess.TimeoutExpired:
         info.error = "ffprobe timed out"
         return info
+    except OSError as exc:
+        _BROKEN = f"ffprobe could not start on this computer ({exc})."
+        raise RuntimeError(_BROKEN) from exc
+    stderr = res.stderr or ""
+    if "dyld" in stderr:
+        # The loader refused the binary: built for a newer macOS, or a library
+        # is missing. Every later file would fail the same way.
+        line = next((l for l in stderr.splitlines() if "dyld" in l), stderr)
+        _BROKEN = f"ffprobe cannot run on this Mac: {line.strip()[:300]}"
+        raise RuntimeError(_BROKEN)
+    if res.returncode < 0:
+        # Killed by a signal. One odd file can do that; three in a row means
+        # ffprobe itself is unusable here.
+        _SIGNAL_DEATHS += 1
+        if _SIGNAL_DEATHS >= 3:
+            _BROKEN = (f"ffprobe keeps crashing on this computer "
+                       f"(signal {-res.returncode}).")
+            raise RuntimeError(_BROKEN)
+    else:
+        _SIGNAL_DEATHS = 0
     if res.returncode != 0:
         info.error = (res.stderr or "ffprobe failed").strip().splitlines()[-1][:300]
         return info

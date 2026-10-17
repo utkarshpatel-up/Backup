@@ -2361,3 +2361,73 @@ class TestSuffixedCamFolders:
         assert "Cam-08" not in leaves, leaves      # Cam-08 (MM Drone) already holds 8
         assert "Cam-06" in leaves                  # no suffixed sibling -> kept
         assert "Cam-09 (Drone)" in leaves          # new suffixed camera created
+
+
+class TestUnusableFfprobe:
+    """An ffprobe that cannot start here (e.g. built for a newer macOS) must not
+    stall a scan by being launched — and failing — once per file."""
+
+    @pytest.fixture(autouse=True)
+    def _fake_ffprobe(self, monkeypatch):
+        monkeypatch.setattr(probe, "_FFPROBE", "/fake/ffprobe")
+        monkeypatch.setattr(probe, "_BROKEN", None)
+        monkeypatch.setattr(probe, "_SIGNAL_DEATHS", 0)
+
+    def _drive(self, tmp_path, n=5):
+        for i in range(n):
+            (tmp_path / f"C{i:04d}.MP4").write_bytes(b"x")
+        return tmp_path
+
+    def test_a_loader_failure_stops_probing_and_the_scan_still_lists_files(
+            self, tmp_path, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, -6, "", "dyld[812]: Symbol not found: _AVCaptureDeviceTypeContinuityCamera\n"
+                             "  Referenced from: ffprobe (built for macOS 15.0 which is newer "
+                             "than running OS)")
+        monkeypatch.setattr(probe.subprocess, "run", fake_run)
+
+        res = server.m_scan({"root": str(self._drive(tmp_path)), "max_depth": 0}, 1)
+        assert res["count"] == 5                       # every file still listed
+        assert len(calls) == 1                         # ffprobe launched once, not 5 times
+        assert "cannot run on this Mac" in res["warning"]
+        assert all(f["duration"] is None for f in res["files"])
+
+    def test_one_crash_on_an_odd_file_does_not_disable_ffprobe(self, tmp_path, monkeypatch):
+        results = iter([-11, 0, -11, 0, 0])
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, next(results),
+                                               '{"format": {"duration": "4.0"}}', "")
+        monkeypatch.setattr(probe.subprocess, "run", fake_run)
+
+        res = server.m_scan({"root": str(self._drive(tmp_path)), "max_depth": 0}, 1)
+        assert res["warning"] is None
+        assert sum(1 for f in res["files"] if f["duration"] == 4.0) == 3
+
+    def test_three_crashes_in_a_row_disable_it(self, tmp_path, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, -11, "", "")
+        monkeypatch.setattr(probe.subprocess, "run", fake_run)
+
+        res = server.m_scan({"root": str(self._drive(tmp_path)), "max_depth": 0}, 1)
+        assert len(calls) == 3 and res["count"] == 5
+        assert "keeps crashing" in res["warning"]
+
+    def test_an_exec_error_disables_it_and_locating_a_new_one_re_enables(
+            self, tmp_path, monkeypatch):
+        def fake_run(cmd, **kw):
+            raise OSError(86, "Bad CPU type in executable")
+        monkeypatch.setattr(probe.subprocess, "run", fake_run)
+        clip = self._drive(tmp_path, 1) / "C0000.MP4"
+        with pytest.raises(RuntimeError, match="could not start"):
+            probe.probe(clip)
+        assert probe._BROKEN
+        probe.configure(ffprobe=str(clip))             # operator picks another binary
+        assert probe._BROKEN is None

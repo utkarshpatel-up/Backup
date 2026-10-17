@@ -25,6 +25,49 @@ OUT = ROOT / "dist-python"
 
 EXE = ".exe" if os.name == "nt" else ""
 
+# The oldest macOS the shipped app must run on (12 = Monterey). Every binary in
+# the frozen engine (Python's own libraries and the bundled ffmpeg/ffprobe) is
+# checked against it, because a binary built for a newer macOS, e.g. Homebrew's
+# ffmpeg on a macOS 15 build machine, is present but cannot start on an older Mac.
+MACOS_MIN = os.environ.get("VINGEST_MACOS_MIN", "12.0")
+
+
+def _version_tuple(text: str) -> tuple:
+    return tuple(int(part) for part in text.split(".")[:2])
+
+
+def macos_too_new(binary: Path, limit: str = MACOS_MIN) -> list:
+    """Entries in a frozen engine whose Mach-O needs a newer macOS than `limit`."""
+    import tempfile
+
+    from macholib import mach_o                 # ships with PyInstaller on macOS
+    from macholib.MachO import MachO
+    from PyInstaller.archive.readers import CArchiveReader
+
+    ceiling = _version_tuple(limit)
+    archive = CArchiveReader(str(binary))
+    offenders = []
+    magics = (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xce\xfa\xed\xfe")
+    with tempfile.TemporaryDirectory() as tmp:
+        for index, name in enumerate(archive.toc):
+            data = archive.extract(name)
+            if not data or data[:4] not in magics:
+                continue
+            path = Path(tmp) / str(index)
+            path.write_bytes(data)
+            for header in MachO(str(path)).headers:
+                for lc, cmd, _ in header.commands:
+                    if lc.cmd == mach_o.LC_BUILD_VERSION:
+                        raw = cmd.minos
+                    elif lc.cmd == mach_o.LC_VERSION_MIN_MACOSX:
+                        raw = cmd.version
+                    else:
+                        continue
+                    needs = (raw >> 16, (raw >> 8) & 0xFF)
+                    if needs > ceiling:
+                        offenders.append(f"{name} needs macOS {needs[0]}.{needs[1]}")
+    return offenders
+
 
 def _has_tools(directory: Path) -> bool:
     """True when `directory` holds both ffprobe and ffmpeg executables."""
@@ -128,9 +171,21 @@ def main() -> int:
     size = produced.stat().st_size / 1024 / 1024
     print(f"\nBuilt {produced} ({size:.1f} MB)")
 
+    if sys.platform == "darwin":
+        offenders = macos_too_new(produced)
+        if offenders:
+            print(f"macOS compatibility check FAILED: the app must run on macOS "
+                  f"{MACOS_MIN}, but these bundled binaries need newer:\n  "
+                  + "\n  ".join(offenders)
+                  + "\nBundle a self-contained ffmpeg built for an older macOS "
+                    "(scripts/macos.sh build fetches one).", file=sys.stderr)
+            return 1
+        print(f"macOS compatibility check passed (every binary runs on {MACOS_MIN}+).")
+
     print("Smoke-testing the frozen binary…")
-    proc = subprocess.run([str(produced)], input='{"id":1,"method":"ping"}\n',
-                          capture_output=True, text=True, timeout=60)
+    proc = subprocess.run([str(produced)],
+                          input='{"id":1,"method":"ping"}\n{"id":2,"method":"selftest"}\n',
+                          capture_output=True, text=True, timeout=120)
     replies = []
     for line in proc.stdout.splitlines():
         try:
@@ -146,6 +201,13 @@ def main() -> int:
         if not all(result.get(tool) for tool in ("ffmpeg", "ffprobe")):
             print("Smoke test FAILED: bundled media tools were not found.", file=sys.stderr)
             return 1
+        # Being present is not enough: run them, as a scan will.
+        selftest = next((r for r in replies if r.get("id") == 2), {}).get("result", {})
+        if not selftest.get("ok"):
+            print("Smoke test FAILED: bundled media tools do not run:\n"
+                  + json.dumps(selftest, indent=2), file=sys.stderr)
+            return 1
+        print("Bundled " + selftest["ffprobe"].get("version", "ffprobe") + " runs.")
     print("Smoke test passed.")
     return 0
 

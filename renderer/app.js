@@ -2163,6 +2163,7 @@ async function importCameraCards() {
 
     const probed = await call('add_files', { paths, session_date: sessionDate() },
       { label: 'Reading card clips' });
+    warnIfUnprobed(probed);
 
     const currentKeys = new Set(probed.files.map((f) => pathKey(f.path)));
     state.selection = [...new Set([...state.selection, ...previousSelection.filter((p) => currentKeys.has(pathKey(p)))])];
@@ -2212,6 +2213,7 @@ async function addFootage(kind, target = null) {
   try {
     const r = await call('add_files', { paths, session_date: sessionDate() },
       { label: 'Reading footage' });
+    warnIfUnprobed(r);
     if (!r.count) {
       toast(r.rejected_count
         ? `Refused ${r.rejected_count} file(s) from an operating-system trash folder.`
@@ -2712,6 +2714,14 @@ async function enterFolderStep() {
   }
 }
 
+// The engine lists files without length/codec when ffprobe cannot run here
+// (e.g. a build made for a newer macOS) and says why, instead of stalling.
+function warnIfUnprobed(result) {
+  if (result && result.warning) {
+    toast(`${result.warning} Clip lengths and codecs are blank — use Locate ffprobe, or install a build made for this macOS.`, 'warn');
+  }
+}
+
 async function scanSource(src, force = false, deep = false) {
   if (!src || (state.scans[src.path] && !force)) return;
   try {
@@ -2721,6 +2731,7 @@ async function scanSource(src, force = false, deep = false) {
       { root: src.path, session_date: sessionDate(), max_depth: deep ? 8 : 0 },
       { label: `Reading ${src.label}${deep ? ' — whole drive' : ''}` });
     state.scans[src.path] = r;
+    warnIfUnprobed(r);
     if (!r.files.length) toast(`No video files found on ${src.label}.`, 'err');
     else { await applyDateSuggestion(src); pruneAssignments(); ensureDefaultAssignments(); }
     render();

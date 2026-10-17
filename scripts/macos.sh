@@ -65,24 +65,60 @@ else
   export PATH="$("$BREW" --prefix node@22)/bin:$PATH"
 fi
 
-# ffmpeg + ffprobe: use existing installs; otherwise install ffmpeg via Homebrew.
-if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
-  echo "Using ffmpeg: $(command -v ffmpeg)"
+# ffmpeg + ffprobe. A release always bundles the pinned, self-contained builds
+# below: they need only macOS 12 (Monterey) and no Homebrew. Homebrew's ffmpeg is
+# built for the build Mac's own macOS (the CI runner is macOS 15), so bundling it
+# shipped an ffprobe that cannot start on older Macs and stalled every drive scan.
+# Running from source uses an ffmpeg already on PATH, else the same pinned build.
+FFMPEG_VERSION=9.0.2
+fetch_static_ffmpeg() {
+  local base sum_ffprobe sum_ffmpeg dir tool sum zip
+  case "$(uname -m)" in
+    arm64)
+      base=https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2
+      sum_ffprobe=fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6
+      sum_ffmpeg=c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924 ;;
+    x86_64)
+      base=https://ffmpeg.martin-riedl.de/download/macos/amd64/1789931006_9.0.2
+      sum_ffprobe=2322438ed2f6319a691291b247d09c69dcaa3a982460d1f269a7e1af335cfdfd
+      sum_ffmpeg=7c6b4125b191cbf773832dc51f424cf2b6bb7da43007d1e066f95909e47cacd4 ;;
+    *) echo "Unsupported Mac architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  dir="$ROOT/.ffmpeg-mac/$(uname -m)-$FFMPEG_VERSION"
+  mkdir -p "$dir"
+  for tool in ffprobe ffmpeg; do
+    [ -x "$dir/$tool" ] && continue
+    if [ "$tool" = ffprobe ]; then sum="$sum_ffprobe"; else sum="$sum_ffmpeg"; fi
+    zip="$dir/$tool.zip"
+    echo "Downloading self-contained $tool $FFMPEG_VERSION for $(uname -m) (macOS 12+)..."
+    curl --fail --show-error --location --retry 5 --retry-delay 5       --connect-timeout 30 -o "$zip" "$base/$tool.zip"
+    if ! echo "$sum  $zip" | shasum -a 256 -c - >/dev/null; then
+      rm -f "$zip"
+      echo "Checksum mismatch for $tool.zip; refusing to use it." >&2
+      exit 1
+    fi
+    unzip -o -q "$zip" "$tool" -d "$dir"
+    rm -f "$zip"
+    chmod +x "$dir/$tool"
+    xattr -d com.apple.quarantine "$dir/$tool" 2>/dev/null || true
+  done
+  FFMPEG_BIN="$dir"
+}
+if [ "$MODE" = build ]    || ! { command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; }; then
+  fetch_static_ffmpeg
+  export PATH="$FFMPEG_BIN:$PATH"
 else
-  echo 'ffmpeg/ffprobe not found; installing ffmpeg via Homebrew.'
-  ensure_brew
-  "$BREW" list --versions ffmpeg >/dev/null 2>&1 || "$BREW" install ffmpeg
-  export PATH="$("$BREW" --prefix ffmpeg)/bin:$PATH"
+  FFMPEG_BIN="$(cd "$(dirname "$(command -v ffmpeg)")" && pwd)"
 fi
-FFMPEG_BIN="$(cd "$(dirname "$(command -v ffmpeg)")" && pwd)"
+echo "Using ffmpeg: $FFMPEG_BIN/ffmpeg"
 
 "$PYTHON" -m venv .venv-mac
 export VINGEST_PYTHON="$ROOT/.venv-mac/bin/python"
 "$VINGEST_PYTHON" -m pip install -r requirements.txt
 node --version
 "$VINGEST_PYTHON" --version
-ffmpeg -version
-ffprobe -version
+"$FFMPEG_BIN/ffmpeg" -version
+"$FFMPEG_BIN/ffprobe" -version
 # Always install on this OS: node_modules copied from Windows is not usable.
 npm ci
 case "$MODE" in

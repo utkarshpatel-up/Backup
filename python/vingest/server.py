@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import traceback
@@ -48,6 +49,29 @@ def m_ping(_p, _id):
     return {"version": __version__, "python": sys.version.split()[0],
             "digest": algorithm(), **tools,
             "ready": bool(tools.get("ffprobe"))}
+
+
+def m_selftest(_p, _id):
+    """Actually run the ffprobe/ffmpeg this engine will use — the release build
+    calls this so a binary that is present but cannot execute fails the build."""
+    tools = probe.configure()
+    results = {}
+    for tool in ("ffprobe", "ffmpeg"):
+        path = tools.get(tool)
+        if not path:
+            results[tool] = {"ok": False, "error": "not found"}
+            continue
+        try:
+            res = subprocess.run([path, "-version"], capture_output=True,
+                                 text=True, timeout=30)
+            first = (res.stdout or res.stderr or "").strip().splitlines()[:1]
+            results[tool] = {"ok": res.returncode == 0, "path": path,
+                             "version": first[0] if first else "",
+                             "error": "" if res.returncode == 0
+                             else (res.stderr or "").strip()[-300:]}
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            results[tool] = {"ok": False, "path": path, "error": str(exc)}
+    return {"ok": all(r["ok"] for r in results.values()), **results}
 
 
 def m_configure(p, _id):
@@ -121,13 +145,21 @@ def m_scan(p, req_id):
     emit = _progress(req_id)
     paths = probe.scan_videos(p["root"], p.get("max_depth", 8))
     out = []
+    warning = None
     for n, path in enumerate(paths, 1):
         if req_id in _CANCELLED:
             return {"cancelled": True, "files": out}
         emit({"stage": "scan", "done": n, "total": len(paths), "name": path.name})
-        out.append(probe.probe(path).to_dict())
+        try:
+            info = probe.probe(path)
+        except RuntimeError as exc:
+            # ffprobe is missing or cannot run here. List the file without
+            # duration/codec rather than stall or fail the whole scan.
+            warning = warning or str(exc)
+            info = probe.light_info(path)
+        out.append(info.to_dict())
     out.sort(key=lambda f: (f.get("mtime") or 0))
-    return {"root": p["root"], "files": out, "count": len(out),
+    return {"root": p["root"], "files": out, "count": len(out), "warning": warning,
             "by_date": ingest.group_by_date(out, p.get("session_date")),
             "suggestion": ingest.suggest_cam_groups(out)}
 
@@ -165,6 +197,7 @@ def m_add_files(p, req_id):
             unique.append(item)
 
     out = []
+    warning = None
     for n, item in enumerate(unique, 1):
         if req_id in _CANCELLED:
             return {"cancelled": True, "files": out}
@@ -173,11 +206,12 @@ def m_add_files(p, req_id):
         # text) or media with no ffprobe available is recorded without a probe.
         try:
             info = probe.probe(item) if probe.is_media(item) else probe.light_info(item)
-        except RuntimeError:
+        except RuntimeError as exc:
+            warning = warning or str(exc)
             info = probe.light_info(item)
         out.append(info.to_dict())
     out.sort(key=lambda f: (f.get("mtime") or 0))
-    return {"files": out, "count": len(out), "rejected": rejected,
+    return {"files": out, "count": len(out), "rejected": rejected, "warning": warning,
             "rejected_count": len(rejected),
             "by_date": ingest.group_by_date(out, p.get("session_date"))}
 

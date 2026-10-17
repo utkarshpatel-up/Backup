@@ -1,6 +1,6 @@
 {
   "name": "av-backup",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Organise camera-original footage into the house folder structure",
   "main": "electron/main.js",
   "scripts": {
@@ -32,6 +32,7 @@
     ],
     "mac": {
       "category": "public.app-category.video",
+      "minimumSystemVersion": "12.0",
       "target": [
         "dmg",
         "zip"

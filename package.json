@@ -34,8 +34,7 @@
       "category": "public.app-category.video",
       "minimumSystemVersion": "12.0",
       "target": [
-        "dmg",
-        "zip"
+        "dmg"
       ],
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
       "icon": "renderer/assets/icon.icns"

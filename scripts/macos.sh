@@ -130,7 +130,7 @@ case "$MODE" in
     "$VINGEST_PYTHON" -m pytest tests/ -q
     npm run test:renderer
     npm run bundle:python -- --with-ffmpeg "$FFMPEG_BIN"
-    npx --no-install electron-builder --mac dmg zip "--$ARCH" --publish never
-    echo "DMG and ZIP created in $ROOT/dist ($ARCH)."
+    npx --no-install electron-builder --mac dmg "--$ARCH" --publish never
+    echo "DMG created in $ROOT/dist ($ARCH)."
     ;;
 esac

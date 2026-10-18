@@ -33,7 +33,7 @@ bash scripts/macos.sh build
 
 The script installs dependencies, runs Python and renderer tests, freezes the
 engine with FFmpeg/ffprobe and their dependencies through PyInstaller, smoke-tests
-the engine, and builds a DMG and ZIP in `dist/`. `npm run dist:mac` uses the same
+the engine, and builds a DMG in `dist/`. `npm run dist:mac` uses the same
 flow once Node is installed. Each build targets the Mac's native architecture:
 
 - Apple Silicon: `AV Backup-1.0.0-mac-arm64.dmg`

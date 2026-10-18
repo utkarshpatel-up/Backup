@@ -32,8 +32,12 @@ bash scripts/macos.sh build
 ```
 
 The script installs dependencies, runs Python and renderer tests, freezes the
-engine with FFmpeg/ffprobe and their dependencies through PyInstaller, smoke-tests
-the engine, and builds a DMG in `dist/`. `npm run dist:mac` uses the same
+engine with a pinned, self-contained FFmpeg/ffprobe through PyInstaller,
+smoke-tests the engine, and builds a DMG in `dist/`.
+
+Every build must run on **macOS 12 (Monterey)**. The build fails if any binary in
+the app or the engine needs a newer macOS (`scripts/check_macos_min.py`). Never
+bundle Homebrew's ffmpeg: it is built for the build Mac's own macOS. `npm run dist:mac` uses the same
 flow once Node is installed. Each build targets the Mac's native architecture:
 
 - Apple Silicon: `AV Backup-1.0.0-mac-arm64.dmg`

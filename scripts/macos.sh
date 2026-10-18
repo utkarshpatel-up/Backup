@@ -131,6 +131,9 @@ case "$MODE" in
     npm run test:renderer
     npm run bundle:python -- --with-ffmpeg "$FFMPEG_BIN"
     npx --no-install electron-builder --mac dmg "--$ARCH" --publish never
+    # Every binary in the finished app must run on the oldest supported macOS
+    # (12, Monterey); fail here rather than ship a DMG that cannot start there.
+    "$VINGEST_PYTHON" scripts/check_macos_min.py dist
     echo "DMG created in $ROOT/dist ($ARCH)."
     ;;
 esac

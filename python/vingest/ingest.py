@@ -228,8 +228,8 @@ def build_plan(spec: dict, progress=None) -> dict:
                             or ([t["master"]] if t.get("master") else []))
         missing = [str(mp) for mp in master_paths if not Path(mp).is_file()]
         if missing:
-            raise ValueError("Selected master is unavailable. Reconnect or reselect it: "
-                             + ", ".join(missing))
+            raise ValueError("Master not found: " + ", ".join(missing)
+                             + ". Reconnect the drive or choose it again.")
         masters = sorted((get(mp) for mp in master_paths),
                          key=lambda m: (m.mtime, m.name))
         timed = [m.duration for m in masters if m.duration is not None]
@@ -353,9 +353,9 @@ def build_plan(spec: dict, progress=None) -> dict:
             if not override:
                 return generated
             if override != naming.sanitize(override) or override in (".", ".."):
-                raise ValueError(f"Invalid output filename: {override}")
+                raise ValueError(f"“{override}” isn't a valid filename.")
             if Path(override).suffix.lower() != Path(source).suffix.lower():
-                raise ValueError("Keep the original file extension when renaming: " + override)
+                raise ValueError(f"Keep the original extension in “{override}”.")
             return override
 
         ceremony_names = t.get("ceremony_names") or {}
@@ -385,11 +385,10 @@ def build_plan(spec: dict, progress=None) -> dict:
                 # so say plainly what will be missing rather than just "probe failed".
                 detail = f" ({master.error})" if master.error else ""
                 plan.warnings.append(
-                    f"Could not read the duration of {Path(master.path).name}{detail}, "
-                    f"so the folder's Dur- total will be wrong. Check the file plays, "
-                    f"or drop it from the masters.")
+                    f"Can't read the length of {Path(master.path).name}{detail}, "
+                    f"so Dur- will be wrong. Check the file or remove it from the masters.")
             elif master.error:
-                plan.warnings.append(f"Master probed with a warning: {master.error}")
+                plan.warnings.append(f"Master {Path(master.path).name}: {master.error}")
 
         if (not t.get("allow_no_master") and not masters
                 and not (existing and not master_paths and Path(existing).exists())):
@@ -397,8 +396,7 @@ def build_plan(spec: dict, progress=None) -> dict:
             # an already-named folder legitimately has no master to file.
             if not existing:
                 plan.warnings.append(
-                    f"No master file for the {plan.role} target, so its folder gets no "
-                    f"Dur- token. Check that drive's footage is loaded and mirrored.")
+                    f"No master selected for {plan.role}, so its folder gets no Dur-.")
 
         clips_root = staging_path if direct_camera_folders \
             else staging_path / naming.CLIPS_DIRNAME
@@ -462,19 +460,19 @@ def build_plan(spec: dict, progress=None) -> dict:
                 candidate = Path(p)
                 if is_junk(candidate):
                     plan.warnings.append(
-                        f"{candidate.name} is inside an operating-system trash folder — skipped.")
+                        f"Skipped {candidate.name}: it's in a trash folder.")
                     continue
                 if os.path.normcase(os.path.abspath(str(candidate))) in designated_masters:
                     plan.warnings.append(
-                        f"{candidate.name} is selected as a master clip — it cannot also be "
-                        f"filed into {cam_folder_name(cam_index) or 'the session root'} and was skipped.")
+                        f"Skipped {candidate.name} in "
+                        f"{cam_folder_name(cam_index) or 'the session root'}: it's already a master.")
                     continue
                 if not Path(p).exists():
                     # A clip whose card was already ejected (its footage is filed
                     # from an earlier pass). Skip it rather than crashing the build.
                     plan.warnings.append(
-                        f"{Path(p).name} is no longer on any connected drive — skipped. "
-                        f"It was likely filed from an earlier card.")
+                        f"Skipped {Path(p).name}: it's no longer connected, "
+                        f"probably from an earlier card.")
                     continue
                 info = get(p)
                 matching_destinations = available_by_size.get(info.size, [])
@@ -518,9 +516,9 @@ def build_plan(spec: dict, progress=None) -> dict:
                      for i in plan.items if i.kind == "clip"}
         if len(clip_days) > 1:
             plan.warnings.append(
-                "These clips were shot on more than one day ("
+                "Clips span more than one day ("
                 + ", ".join(sorted(clip_days))
-                + "). A session is normally one day's footage — check the day filter.")
+                + "). Check the day filter.")
 
         # In place, a clip already filed in the right cam folder needs no copy.
         plan.items = [i for i in plan.items
@@ -617,34 +615,33 @@ def build_plan(spec: dict, progress=None) -> dict:
                          if not _same_volume(Path(i.src).parent, dest_vol))
         if plan.free_bytes and copy_bytes > plan.free_bytes * 0.98:
             plan.warnings.append(
-                f"Not enough free space on {dest_root}: needs "
-                f"{human(copy_bytes)} to copy, has {human(plan.free_bytes)} free.")
+                f"Not enough space on {dest_root}: needs "
+                f"{human(copy_bytes)}, has {human(plan.free_bytes)} free.")
 
         if in_place and plan.rename_to:
             clash = session_path
             if clash.exists() and os.path.normcase(str(clash)) != os.path.normcase(str(staging_path)):
                 plan.warnings.append(
-                    f"A folder called “{session_folder}” already exists here, so the "
-                    f"rename would collide. Move or remove it first.")
+                    f"Can't rename: “{session_folder}” already exists here.")
 
         # Two different sources must never write into one session folder.
         if from_template and session_path.exists():
             plan.warnings.append(
-                f"“{session_folder}” already exists at {dest_root}. Files will be added "
-                f"to it and matching ones skipped, rather than a second folder being made.")
+                f"“{session_folder}” already exists at {dest_root}. New files will be "
+                f"added; matching files are skipped.")
 
         for other in targets_out:
             if os.path.normcase(other.session_path) == os.path.normcase(plan.session_path):
                 plan.warnings.append(
-                    f"Destination collides with the {other.role} target. "
-                    "Give each source its own destination drive.")
+                    f"Same destination as the {other.role} drive. "
+                    "Use a separate drive for each.")
         long_names = [name for name in [session_folder, job_folder,
                       *(Path(i.final_dst or i.dst).name for i in plan.items)]
                       if len(name) > 150]
         if long_names:
             plan.warnings.append(
-                f"{len(long_names)} folder/file name(s) exceed 150 characters. "
-                "Shorten them in Folder / Filename preview before copying.")
+                f"{len(long_names)} names are over 150 characters. "
+                "Shorten them on the Folder step.")
         targets_out.append(plan)
 
     return {
@@ -761,10 +758,10 @@ def validate_destination_paths(plan: dict) -> None:
         for path in paths:
             for part in path.parts[1:]:
                 if len(part.encode("utf-16-le")) // 2 > 255 or len(part.encode("utf-8")) > 255:
-                    raise ValueError(f"Destination name is too long. Shorten it before copying: {path}")
+                    raise ValueError(f"Name too long: {path}. Shorten it before copying.")
             if plan.get("windows_compatible") and len(str(path.absolute()).encode("utf-16-le")) // 2 >= 260:
-                raise ValueError(f"Destination path is too long for Windows compatibility. "
-                                 f"Shorten the folder or filename, or choose a shorter output root: {path}")
+                raise ValueError(f"Path is over the 260-character Windows limit: {path}. "
+                                 f"Shorten the folder or filename.")
 
 
 def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:

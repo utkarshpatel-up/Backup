@@ -73,7 +73,7 @@ def ffprobe_path() -> str:
         configure()
     if not _FFPROBE:
         raise RuntimeError(
-            "ffprobe was not found. Install ffmpeg, or set its location in Settings.")
+            "ffprobe not found. Click Locate ffprobe.")
     return _FFPROBE
 
 
@@ -182,7 +182,7 @@ def probe(path: str | Path, timeout: int = 60) -> MediaInfo:
         # The loader refused the binary: built for a newer macOS, or a library
         # is missing. Every later file would fail the same way.
         line = next((l for l in stderr.splitlines() if "dyld" in l), stderr)
-        _BROKEN = f"ffprobe cannot run on this Mac: {line.strip()[:300]}"
+        _BROKEN = f"ffprobe can't run on this Mac ({line.strip()[:300]})."
         raise RuntimeError(_BROKEN)
     if res.returncode < 0:
         # Killed by a signal. One odd file can do that; three in a row means
@@ -382,8 +382,8 @@ def assign_roles(reports: list[VolumeReport]) -> dict:
         # roughly an order of magnitude larger than H.265 for the same footage.
         a, b = sorted(reports, key=lambda r: r.total_bytes, reverse=True)
         result.update(prores=a.root, h265=b.root,
-                      reason="Codec unclear — guessed from size (ProRes is much larger). "
-                             "Confirm before copying.")
+                      reason="The codecs couldn't be read, so ProRes and H.265 were "
+                             "guessed from file size.")
     else:
         if len(prores) == 1:
             result["prores"] = prores[0].root
@@ -391,5 +391,5 @@ def assign_roles(reports: list[VolumeReport]) -> dict:
             result["h265"] = h265[0].root
         assigned = {result["prores"], result["h265"]}
         result["unassigned"] = [r.root for r in reports if r.root not in assigned]
-        result["reason"] = "Could not assign every source automatically — set the rest by hand."
+        result["reason"] = "Some drives still need a role. Set them below."
     return result

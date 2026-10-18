@@ -291,3 +291,38 @@ test('a suffixed camera folder like "Cam-05 (Audio)" counts as occupied', () => 
   assert.deepEqual(occupied, [1, 2, 3, 4, 5]);
   assert.deepEqual(rules.lowestAvailableCams(1, occupied), [6]);
 });
+
+test('a repeated word from the structure zip is dropped unless kept', () => {
+  const name = 'Sydney Garba Garba and Informal Satsang with Pujyashree E. Dt-28-Sep-26';
+  const auto = rules.cleanSessionName(name);
+  assert.equal(auto.name, 'Sydney Garba and Informal Satsang with Pujyashree E. Dt-28-Sep-26');
+  assert.deepEqual(auto.repeat, ['Garba']);
+  assert.equal(rules.cleanSessionName(name, { keepRepeat: true }).name, name);
+});
+
+test('repeats are matched case-insensitively and only as whole words', () => {
+  assert.equal(rules.cleanSessionName('Garba garba Night E.').name, 'Garba Night E.');
+  assert.equal(rules.cleanSessionName('Satsang Satsangi E.').repeat, null);
+});
+
+test('a topic over 20 characters after "Satsang on Topic" is dropped unless kept', () => {
+  const name = '01 Sydney Shibir Satsang on Topic Bhut Bhavishya Bhuli Varto Vartmaanma'
+    + ' (Dadavani June 2024) E. Dt-29-Sep-26';
+  const auto = rules.cleanSessionName(name);
+  assert.equal(auto.name, '01 Sydney Shibir Satsang on Topic E. Dt-29-Sep-26');
+  assert.equal(auto.topic, 'Bhut Bhavishya Bhuli Varto Vartmaanma (Dadavani June 2024)');
+  assert.equal(rules.cleanSessionName(name, { keepTopic: true }).name, name);
+});
+
+test('a short topic, or a name with no topic, is left alone', () => {
+  const short = 'Adalaj Satsang on Topic Seva M2. Dt-01-Oct-26';
+  assert.deepEqual(rules.cleanSessionName(short), { name: short, repeat: null, topic: null });
+  const none = '02 Sydney Shibir Bhakti by Australian Youth Mahatmas E2. Dt-29-Sep-26';
+  assert.equal(rules.cleanSessionName(none).name, none);
+});
+
+test('a topic with no session tag runs to the date token', () => {
+  assert.equal(rules.cleanSessionName(
+    'Adalaj Satsang on Topic A Very Long Topic Name Here Dt-01-Oct-26').name,
+  'Adalaj Satsang on Topic Dt-01-Oct-26');
+});

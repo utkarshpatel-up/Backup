@@ -9,7 +9,7 @@ from vingest.probe import MediaInfo
 
 
 def test_missing_selected_master_stops_plan(tmp_path):
-    with pytest.raises(ValueError, match='Selected master is unavailable'):
+    with pytest.raises(ValueError, match='Master not found'):
         ingest.build_plan({'targets': [{'masters': [str(tmp_path / 'missing.mov')]}]})
 
 
@@ -28,10 +28,10 @@ def test_edit_clip_filename_preserves_extension_and_changes_plan(tmp_path, monke
     plan = ingest.build_plan({'targets': [target]})
     assert Path(plan['targets'][0]['items'][0]['dst']).name == 'Short Event.MP4'
     target['clip_names'][str(clip)] = '../escape.MP4'
-    with pytest.raises(ValueError, match='Invalid output filename'):
+    with pytest.raises(ValueError, match="isn't a valid filename"):
         ingest.build_plan({'targets': [target]})
     target['clip_names'][str(clip)] = 'Wrong.mov'
-    with pytest.raises(ValueError, match='original file extension'):
+    with pytest.raises(ValueError, match='Keep the original extension'):
         ingest.build_plan({'targets': [target]})
 
 
@@ -60,6 +60,6 @@ def test_unsupported_name_fails_before_any_directory_is_created(tmp_path):
 
 def test_windows_full_path_limit_includes_parent_folders(tmp_path):
     long_path = tmp_path / ('a' * 100) / ('b' * 100) / ('c' * 100)
-    with pytest.raises(ValueError, match='Windows compatibility'):
+    with pytest.raises(ValueError, match='260-character Windows limit'):
         ingest.validate_destination_paths({'windows_compatible': True,
             'targets': [{'session_path': str(long_path), 'items': []}]})

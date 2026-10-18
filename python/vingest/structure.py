@@ -118,10 +118,10 @@ def detect(root: str | Path, probe_masters: bool = True,
             root_resolved, candidate_resolved = root, candidate
         if (candidate_resolved != root_resolved
                 and root_resolved not in candidate_resolved.parents):
-            out.reason = "Selected session is outside the structure source"
+            out.reason = "That folder isn't part of the imported structure."
             return out
         if not candidate.is_dir():
-            out.reason = "Selected session folder no longer exists"
+            out.reason = "That session folder is no longer there."
             return out
         session = candidate
         clips = _clips_child(session)
@@ -169,7 +169,7 @@ def detect(root: str | Path, probe_masters: bool = True,
             out.reason = "Video files sit directly in this folder."
 
     if session is None:
-        out.reason = "No session folder recognised — pick one by hand."
+        out.reason = "No session folder found."
         return out
 
     parent = session.parent

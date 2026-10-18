@@ -192,7 +192,7 @@ class TestUnsafeCameraInputs:
 
         items = plan["targets"][0]["items"]
         assert [item["kind"] for item in items] == ["master"]
-        assert any("cannot also be filed" in warning for warning in plan["warnings"])
+        assert any("already a master" in warning for warning in plan["warnings"])
 
     @needs_ffmpeg
     def test_recycle_bin_clip_is_rejected_even_if_sent_in_a_plan(self, tmp_path):
@@ -645,7 +645,7 @@ class TestPlan:
                   "master": str(src / "M.mov"), "cams": {}}
         plan = ingest.build_plan({"title": "T", "date": "2026-08-16", "mode": "copy",
                                   "targets": [target, {**target, "role": "h265"}]})
-        assert any("collides" in w for w in plan["warnings"])
+        assert any("Same destination" in w for w in plan["warnings"])
 
     def test_execute_then_reexecute_skips(self, tmp_path):
         src = tmp_path / "SSD"; src.mkdir()
@@ -815,7 +815,7 @@ class TestStructureDetection:
         (tmp_path / "a").mkdir()
         (tmp_path / "b").mkdir()
         d = structure.detect(tmp_path, probe_masters=False)
-        assert d.session_path is None and "by hand" in d.reason
+        assert d.session_path is None and "No session folder found" in d.reason
 
     @needs_ffmpeg
     def test_master_is_the_longest_file_at_the_session_root(self, tmp_path):
@@ -1053,7 +1053,7 @@ class TestStructureTemplate:
         outside.mkdir()
         detected = structure.detect(root, preferred_session=outside)
         assert detected.session_path is None
-        assert "outside" in detected.reason.lower()
+        assert "isn't part of the imported structure" in detected.reason
 
     def test_a_zip_escape_attempt_is_refused(self, tmp_path):
         zpath = tmp_path / "evil.zip"
@@ -2393,7 +2393,7 @@ class TestUnusableFfprobe:
         res = server.m_scan({"root": str(self._drive(tmp_path)), "max_depth": 0}, 1)
         assert res["count"] == 5                       # every file still listed
         assert len(calls) == 1                         # ffprobe launched once, not 5 times
-        assert "cannot run on this Mac" in res["warning"]
+        assert "can't run on this Mac" in res["warning"]
         assert all(f["duration"] is None for f in res["files"])
 
     def test_one_crash_on_an_odd_file_does_not_disable_ffprobe(self, tmp_path, monkeypatch):

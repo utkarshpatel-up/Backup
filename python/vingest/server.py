@@ -298,7 +298,7 @@ def m_frappe_sync(p, req_id):
     config = p["config"]
     problems = frappe_sync.config_problems(config)
     if problems:
-        raise ValueError("Frappe settings incomplete: " + ", ".join(problems))
+        raise ValueError("Frappe settings missing: " + ", ".join(problems))
 
     emit = _progress(req_id)
     emit({"stage": "frappe", "name": "Reading session durations…"})

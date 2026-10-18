@@ -241,6 +241,29 @@
     return { entry: shorts[0], exit: shorts[shorts.length - 1] };
   }
 
+  // Structure zips sometimes repeat a word ("Sydney Garba Garba and …") and
+  // carry a long topic after "Satsang on Topic" that won't fit the naming
+  // limits. Both are dropped by default; `keepRepeat` / `keepTopic` put them back.
+  // The topic runs to the session tag (E., M., E2., M1.), the Dt- token, or the
+  // end, and is dropped only when longer than `topicLimit` characters.
+  function cleanSessionName(name, { keepRepeat = false, keepTopic = false } = {},
+                            topicLimit = 20) {
+    const original = String(name || '');
+    let out = original;
+
+    const repeatRe = /(?<![\p{L}\p{N}])([\p{L}\p{N}]+)((?:\s+\1)+)(?![\p{L}\p{N}])/giu;
+    const repeats = [...original.matchAll(repeatRe)].map((m) => m[1]);
+    if (repeats.length && !keepRepeat) out = out.replace(repeatRe, '$1');
+
+    const topicRe = /(\bSatsang on Topic)\s+(.+?)(?=\s+[ME]\d*\.?(?=\s|$)|\s+Dt-|\s*$)/i;
+    const found = topicRe.exec(out);
+    const topic = found && found[2].trim().length > topicLimit ? found[2].trim() : null;
+    if (topic && !keepTopic) out = out.replace(topicRe, '$1');
+
+    out = out.replace(/\s{2,}/g, ' ').trim();
+    return { name: out, repeat: repeats.length ? repeats : null, topic };
+  }
+
   function lowestAvailableCams(count, occupied = []) {
     const filled = new Set((occupied || []).map(Number).filter(Number.isFinite));
     const available = [];
@@ -287,6 +310,6 @@
            cameraGroups, filterCameraFiles, camsForAssignments, removeCardImports,
            importedCamCount, informalSetupReady, normalizedTemplateDirs,
            cameraCountAfterDetection, occupiedCamNumbers, existingCamCounts,
-           entryExitCeremonyClips,
+           entryExitCeremonyClips, cleanSessionName,
            lowestAvailableCams, emptyCamNumbers, unexpectedPlanClips };
 });

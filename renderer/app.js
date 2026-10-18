@@ -39,6 +39,7 @@ const state = {
   cameraSort: 'camera-time',
   skipExistingBySize: true,
   renameBase: null,     // operator's replacement for the session folder's base name
+  nameCleanup: null,    // automatic fixes to that name: {original, repeat, topic, keepRepeat, keepTopic}
   jobNameOverride: null,// operator's replacement for an imported template's job folder
   plan: null,
   runResult: null,
@@ -743,8 +744,8 @@ function renderSources() {
   if (state.engine.error) {
     c.push(`<div class="note err"><b>Engine problem.</b> ${esc(state.engine.error)}</div>`);
   } else if (state.engine.info && !state.engine.info.ffprobe) {
-    c.push(`<div class="note err"><b>ffprobe not found.</b> Durations and codec detection
-      need it. Install ffmpeg, then press “Locate ffprobe”.</div>`);
+    c.push(`<div class="note err"><b>ffprobe not found,</b> so clip lengths and codecs
+      can't be read. Click Locate ffprobe.</div>`);
   }
 
   if (isInformal()) {
@@ -1105,6 +1106,7 @@ async function activateTemplateSession(index, announce = true) {
   if (!next) return;
   state.template = next;
   state.renameBase = null;
+  adoptFolderName(stripClipsToken(next.base_name || next.session_name || ''));
   state.jobNameOverride = null;
   state.clipNames = {}; state.ceremonyNames = {}; state.clipTitle = ''; state.namingPreview = null;
   state.camNames = {};
@@ -1379,10 +1381,9 @@ function renderSession() {
 
   if (!d.session_path) {
     return `<div class="card">
-      <h3>No session folder recognised</h3>
+      <h3>No session folder found</h3>
       <div class="note warn">${esc(d.reason)}</div>
-      <p class="hint">Point the app at the folder yourself, or build a new one from a
-        name you type.</p>
+      <p class="hint">Choose the folder, or create a new one.</p>
       <div class="row">
         <button class="primary" id="btnPickSession">Choose the session folder…</button>
         <button id="btnCreateMode">Create a new folder instead</button>
@@ -1426,6 +1427,7 @@ function renderSession() {
           placeholder="${esc(diskBase)}" /></label>
       ${renamed ? '<button class="sm ghost" id="btnRenameReset">Reset to disk name</button>' : ''}
     </div>
+    ${nameCleanupControls(diskBase)}
     <p class="hint" style="margin:8px 0 0">${isInformal()
       ? 'No mixer master or Dur- calculation is used. Every camera clip is renamed from this event name after assignment.'
       : `The bold <b>Dur-${esc(durLabel)}</b> is the only part the app adds. Edit the name above
@@ -1436,8 +1438,8 @@ function renderSession() {
       ${unchanged
         ? `This folder already reads <b>Dur-${esc(fmtDurLike(d.current_dur, d.session_name))}</b> and matches the
            master, so its name will not change.`
-        : `This folder currently reads <b>Dur-${esc(fmtDurLike(d.current_dur, d.session_name))}</b>, but the master
-           is <b>${esc(durLabel)}</b>. The token will be corrected.`}
+        : `Dur- will change from <b>${esc(fmtDurLike(d.current_dur, d.session_name))}</b> to
+           <b>${esc(durLabel)}</b> to match the master.`}
     </div>` : ''}
     <div class="row" style="margin-top:12px">
       <button class="sm ghost" id="btnRedetect">Look again</button>
@@ -1466,9 +1468,8 @@ function renderSession() {
         ${masters.map((m) => esc(fmtDurAuto(m.duration))).join(' + ')} =
         <b>${esc(durLabel)}</b> on the folder, with <b>Clips-${
           String(masters.length).padStart(2, '0')}</b>.</p>` : ''}`
-      : `<div class="note err">No video file sits directly in the session folder, so
-         there is nothing to read a duration from. Put the program recording there,
-         or choose a different folder.</div>`}
+      : `<div class="note err">No master recording in this folder, so Dur- can't be set.
+         Add it here or choose another folder.</div>`}
   </div>`}
 
   <div class="card">
@@ -1712,9 +1713,12 @@ function renderDriveColumn(f) {
             ? 'likely masters only' : 'show all'}</a></p>` : ''}
       ${masters.filter((m) => offSessionDate(m)).length ? `
         <div class="note warn" style="margin:8px 0 0">
-          ${masters.filter((m) => offSessionDate(m)).map((m) => esc(m.name)).join(', ')}
-          — not from ${esc(fmtDay(sessionDate()))}. Master clips should be this session's
-          recording.</div>` : ''}
+          ${(() => {
+            const off = masters.filter((m) => offSessionDate(m));
+            return `${off.map((m) => esc(m.name)).join(', ')} ${off.length > 1 ? "weren't" : "wasn't"}
+              recorded on ${esc(fmtDay(sessionDate()))}. Check ${off.length > 1
+                ? "they're the right masters" : "it's the right master"}.`;
+          })()}</div>` : ''}
       ${masters.length ? `
         <p class="hint" style="margin:10px 0 4px">Renamed after the folder:</p>
         <div class="preview-name" style="font-size:11px">${masters.map((m, i) => {
@@ -1727,7 +1731,7 @@ function renderDriveColumn(f) {
           <b>${esc(fmtDurAuto(total))}</b>, Clips-${String(masters.length).padStart(2, '0')}.</p>` : ''}`
         : '<p class="hint" style="margin:8px 0 0">Tick the program recording above.</p>'}
       ${ceremonySection(f)}`
-      : `<div class="note warn" style="margin:0">Nothing loaded — Scan or Add files.</div>`}
+      : `<div class="note warn" style="margin:0">No files loaded. Click Scan or Add files.</div>`}
   </div>`;
 }
 
@@ -1805,6 +1809,45 @@ function renderTemplateSessionChoices() {
   </div>`;
 }
 
+// Clean up a session name read from a structure zip or from disk: drop a
+// repeated word and a long "Satsang on Topic" topic. The result becomes the
+// session name (as if typed), which the master filenames follow. Tick boxes
+// under the name field put either part back.
+function adoptFolderName(original) {
+  const info = selectionRules.cleanSessionName(original);
+  if (!info.repeat && !info.topic) {
+    state.nameCleanup = null;
+    return;
+  }
+  state.nameCleanup = { original, repeat: info.repeat, topic: info.topic,
+                        keepRepeat: false, keepTopic: false };
+  state.renameBase = info.name !== original ? info.name : null;
+}
+
+function applyNameCleanup() {
+  const c = state.nameCleanup;
+  if (!c) return;
+  const name = selectionRules.cleanSessionName(
+    c.original, { keepRepeat: c.keepRepeat, keepTopic: c.keepTopic }).name;
+  state.renameBase = name !== c.original ? name : null;
+  state.plan = null; state.namingPreview = null;
+}
+
+function nameCleanupControls(original) {
+  const c = state.nameCleanup;
+  if (!c || c.original !== original) return '';
+  const box = (key, checked, label) => `<label class="row" style="gap:8px;align-items:center;margin:4px 0;cursor:pointer">
+      <input type="checkbox" style="width:auto" data-namekeep="${key}" ${checked ? 'checked' : ''} />
+      <span>${label}</span></label>`;
+  return `<div class="note info" style="margin:10px 0 0">
+    <div style="font-weight:600;margin-bottom:4px">Name shortened automatically</div>
+    ${c.repeat ? box('repeat', c.keepRepeat,
+      `Keep repeated word <b>${esc(c.repeat.join(', '))}</b>`) : ''}
+    ${c.topic ? box('topic', c.keepTopic,
+      `Keep topic <span class="mono">${esc(c.topic)}</span> (${Array.from(c.topic).length} characters)`) : ''}
+  </div>`;
+}
+
 function renderTemplateFolder(src) {
   const t = state.template;
   const masters = chosenMasters();
@@ -1847,6 +1890,7 @@ function renderTemplateFolder(src) {
         <input type="text" id="fRename" value="${esc(base)}"
           placeholder="${esc(templateBase)}" /></label>
     </div>
+    ${nameCleanupControls(templateBase)}
     <div class="row" style="margin-top:10px">
       ${(renamed || jobRenamed)
         ? '<button class="sm ghost" id="btnFolderNamesReset">Reset folder names</button>' : ''}
@@ -1979,6 +2023,7 @@ function wireSession() {
     const diskBase = fRename.placeholder;
     const commit = () => {
       const v = fRename.value.trim();
+      if (v !== (state.renameBase ?? diskBase)) state.nameCleanup = null;
       state.renameBase = (v && v !== diskBase) ? v : null;
       state.plan = null; state.namingPreview = null;
     };
@@ -1988,7 +2033,18 @@ function wireSession() {
       if (e.key === 'Enter') { commit(); render(); }
     });
   }
+  document.querySelectorAll('[data-namekeep]').forEach((box) => box.addEventListener('change', () => {
+    if (!state.nameCleanup) return;
+    state.nameCleanup[box.dataset.namekeep === 'repeat' ? 'keepRepeat' : 'keepTopic'] = box.checked;
+    applyNameCleanup();
+    render();
+  }));
+  // Resetting restores the original name, which is the same as keeping both parts.
+  const keepAllCleanup = () => {
+    if (state.nameCleanup) Object.assign(state.nameCleanup, { keepRepeat: true, keepTopic: true });
+  };
   $('btnRenameReset')?.addEventListener('click', () => {
+    keepAllCleanup();
     state.renameBase = null; state.plan = null; state.namingPreview = null; render();
   });
 
@@ -2007,6 +2063,7 @@ function wireSession() {
   }
 
   $('btnFolderNamesReset')?.addEventListener('click', () => {
+    keepAllCleanup();
     state.renameBase = null;
     state.jobNameOverride = null;
   state.clipNames = {}; state.clipTitle = ''; state.namingPreview = null;
@@ -2131,8 +2188,9 @@ async function importCameraCards() {
       await applyDateSuggestion(src);
       state.plan = null; state.namingPreview = null;
       render();
-      return toast(`No camera cards mounted. Removed ${refreshed.removedCount} stale clip(s); looked for ${
-        r.searched.join(' and ')}.`, 'err');
+      return toast(`No camera cards found.${refreshed.removedCount
+        ? ` Removed ${refreshed.removedCount} clip${refreshed.removedCount === 1 ? '' : 's'}`
+          + ' from cards that are no longer connected.' : ''}`, 'err');
     }
 
     // Each distinct card is a distinct camera. Compare every card's name against
@@ -2158,7 +2216,8 @@ async function importCameraCards() {
       await applyDateSuggestion(src);
       state.plan = null; state.namingPreview = null;
       render();
-      return toast(`Found ${r.card_count} card(s) but no clips inside them.`, 'err');
+      return toast(`No clips on the ${r.card_count === 1 ? 'connected card'
+        : `${r.card_count} connected cards`}.`, 'err');
     }
 
     const probed = await call('add_files', { paths, session_date: sessionDate() },
@@ -2216,7 +2275,7 @@ async function addFootage(kind, target = null) {
     warnIfUnprobed(r);
     if (!r.count) {
       toast(r.rejected_count
-        ? `Refused ${r.rejected_count} file(s) from an operating-system trash folder.`
+        ? `Skipped ${r.rejected_count} file${r.rejected_count === 1 ? '' : 's'} in a trash folder.`
         : 'No video files found there.', 'err');
       return render();
     }
@@ -2232,8 +2291,8 @@ async function addFootage(kind, target = null) {
 
     toast(added.length
       ? `Added ${added.length} clip(s) from ${src.label} — selected and ready to assign.${
-          r.rejected_count ? ` Refused ${r.rejected_count} trash file(s).` : ''}`
-      : `Those ${r.count} clip(s) were already loaded from ${src.label}.`,
+          r.rejected_count ? ` Skipped ${r.rejected_count} in a trash folder.` : ''}`
+      : `Already loaded: ${r.count} clip${r.count === 1 ? '' : 's'} from ${src.label}.`,
       added.length ? 'ok' : 'warn');
     render();
   } catch (e) { toast(e.message, 'err'); }
@@ -2282,20 +2341,18 @@ function dateSuggestion() {
   if (g.date_mismatch) {
     return `
       <div class="note warn">
-        <b>Nothing here carries a timestamp from ${esc(fmtDay(g.session_date))}</b>, the date
-        the folder states — drives often lose the original times when footage is copied.
-        Everything is loaded and selected; choose a day below to narrow it, or just use the
-        Cameras page.${buttons}
+        <b>No files are dated ${esc(fmtDay(g.session_date))}</b>, the folder's date.
+        All files are selected; pick a day below to narrow them.${buttons}
       </div>`;
   }
   if (!suggested || g.dates.length < 2) return '';
 
   return `
     <div class="note ${g.matched_session_date ? 'ok' : 'warn'}">
-      <b>${suggested.count} clip(s) carry ${esc(fmtDay(g.suggested_date))}</b>
-      — ${esc(g.suggestion_basis)} — and are selected. The other
-      ${g.other_count} are loaded but set to Skip.
-      Clicking a day selects that day and skips the rest; nothing is ever hidden.${buttons}
+      <b>${suggested.count} clip${suggested.count === 1 ? '' : 's'} from
+      ${esc(fmtDay(g.suggested_date))}</b> ${suggested.count === 1 ? 'is' : 'are'} selected;
+      the other ${g.other_count} ${g.other_count === 1 ? 'is' : 'are'} set to Skip.
+      Click a day to switch.${buttons}
     </div>`;
 }
 
@@ -2328,6 +2385,8 @@ async function detectStructure(src, force = false, overrideRoot = null) {
       // A rename is tied to the specific folder it was typed for; a different
       // folder starts from its own name.
       state.renameBase = null;
+      state.nameCleanup = null;
+      if (d.session_path) adoptFolderName(stripClipsToken(d.base_name || d.session_name || ''));
       state.camNames = {};
       // Existing cam clips stay on disk and are used only to find the next free
       // camera number. They must never be re-added to the copy plan.
@@ -2695,7 +2754,7 @@ function wireCameras() {
         ? `All ${clips.length} clip(s) look like one camera — assigned to ${camLabel(suggestedCams[0])}.${placement}`
         : `Grouped ${clips.length} clip(s) into ${groups.length} available cameras by source card/drive.${placement}`);
       render();
-    } catch (e) { toast(`Could not check existing camera folders: ${e.message}`, 'err'); }
+    } catch (e) { toast(`Couldn't read the existing camera folders: ${e.message}`, 'err'); }
   });
 
 }
@@ -2718,7 +2777,7 @@ async function enterFolderStep() {
 // (e.g. a build made for a newer macOS) and says why, instead of stalling.
 function warnIfUnprobed(result) {
   if (result && result.warning) {
-    toast(`${result.warning} Clip lengths and codecs are blank — use Locate ffprobe, or install a build made for this macOS.`, 'warn');
+    toast(`${result.warning} Clip lengths and codecs are blank. Click Locate ffprobe to fix.`, 'warn');
   }
 }
 
@@ -2871,11 +2930,8 @@ function renderCopy() {
       <div class="note warn">
         <b>${empties.map((n) => esc((p.targets[0].cam_names || {})[n]
           || `Cam-${String(n).padStart(2, '0')}`)).join(', ')}
-        ${empties.length > 1 ? 'are' : 'is'} empty.</b>
-        ${empties.length > 1 ? 'These folders' : 'This folder'} will be created with no clips
-        inside. Add clips now if you have footage for ${empties.length > 1 ? 'them' : 'it'},
-        or leave ${empties.length > 1 ? 'them' : 'it'} empty — the ${
-          empties.length > 1 ? 'folders are' : 'folder is'} still created either way.
+        ${empties.length > 1 ? 'have' : 'has'} no clips</b> and will be created empty.
+        Add clips now, or continue.
       </div>
       <div class="row">
         <button class="sm primary" id="btnNoticeImportCard">📇 Import camera card</button>
@@ -2890,8 +2946,8 @@ function renderCopy() {
   const status = state.runResult ? renderRunResult() : '';
 
   return `
-    ${p.warnings.length ? `<div class="note warn"><b>${p.warnings.length} warning(s)</b>
-       — review the details on each drive below.</div>` : ''}
+    ${p.warnings.length ? `<div class="note warn"><b>${p.warnings.length} warning${
+       p.warnings.length === 1 ? '' : 's'}.</b> See each drive below.</div>` : ''}
     <div class="card">
       <div class="row">
         <div>${(() => {
@@ -3025,7 +3081,7 @@ function renderRunResult() {
       safely resumes only the remaining work before you swap another card.</div>` : ''}
     ${(r.renames || []).map((rn) => `<div class="note ${rn.done ? 'ok' : 'warn'}">
       ${rn.done ? `Folder renamed to <span class="mono">${esc(rn.to)}</span>`
-                : `Folder not renamed — ${esc(rn.message)}`}</div>`).join('')}
+                : `Folder not renamed: ${esc(rn.message)}`}</div>`).join('')}
     ${r.errors.map((e) => `<div class="note err mono">${esc(e)}</div>`).join('')}
     <div class="row">
       <button class="primary" id="btnOpenAll">📂 Open ${isInformal() ? 'session folder' : 'both Clips for Insert folders'}</button>
@@ -3121,7 +3177,7 @@ function wireCopy() {
   // the folders already on disk (buildSpec targets the filed session, no master).
   const importThenReplan = async () => {
     if (state.runResult && (state.runResult.failed || state.runResult.cancelled)) {
-      toast('Resume the incomplete copy before swapping or refreshing camera cards.', 'warn');
+      toast('Resume the unfinished copy before changing cards.', 'warn');
       return;
     }
     const before = selected(primarySource()).length;
@@ -3146,8 +3202,8 @@ function wireCopy() {
   $('btnOpenAll')?.addEventListener('click', async () => {
     const res = await window.api.openFolderGroups(finderGroups());
     if (res.missing && res.missing.length) {
-      toast(`${res.opened.length} opened; ${res.missing.length} folder(s) not found `
-        + `(a card may have been ejected).`, 'warn');
+      toast(`Opened ${res.opened.length} folder${res.opened.length === 1 ? '' : 's'}. `
+        + `${res.missing.length} not found; a card may be ejected.`, 'warn');
     } else {
       toast(`Opened ${res.opened.length} folder(s) — destinations and cards in separate windows.`, 'ok');
     }
@@ -3363,8 +3419,7 @@ function renderVerify() {
         <button class="primary" id="btnVerifyPairs">Verify (size, fast)</button>
         <button class="sm" id="btnVerifyPairsHash">Checksum verify (bit-exact)</button>
       </div>`
-      : `<div class="note warn">No camera-card clips were copied, or no copy has run yet.
-         Run the copy first.</div>`}
+      : `<div class="note warn">Nothing to check yet. Run the copy first.</div>`}
   </div>
   ${state.pairVerify ? renderPairVerify() : ''}
 
@@ -3401,7 +3456,7 @@ function renderPairVerify() {
   return `<div class="card">
     <div class="note ${v.ok ? 'ok' : 'err'}">
       <b>${v.ok ? 'Every copy matches the camera card.'
-                : `${v.mismatched.length} of ${v.checked} copy(ies) do not match the card.`}</b>
+                : `${v.mismatched.length} of ${v.checked} ${v.checked === 1 ? 'copy doesn\'t' : 'copies don\'t'} match the card.`}</b>
       Checked by ${esc(v.algorithm)}.
     </div>
     <div class="scroll" style="max-height:420px"><table>
@@ -3418,7 +3473,7 @@ function renderPairVerify() {
 function renderCompareResult() {
   const c = state.compare;
   if (c.error) {
-    return `<div class="card"><div class="note err"><b>Comparison could not run.</b>
+    return `<div class="card"><div class="note err"><b>Comparison failed:</b>
       ${esc(c.error)}</div></div>`;
   }
   return c.pairs.map((p) => {
@@ -3429,7 +3484,7 @@ function renderCompareResult() {
       <div class="note ${p.ok ? 'ok' : 'err'}">
         <b>${p.ok ? 'These folders match.' : 'Differences found.'}</b>
         ${p.matched} matched · ${p.missing_from_other.length} missing · ${p.extra_in_other.length} extra
-        · ${errs.length} mismatched · folder tree ${p.tree_equal ? 'identical' : 'DIFFERENT'}
+        · ${errs.length} mismatched · folder structure ${p.tree_equal ? 'identical' : 'differs'}
       </div>
       ${p.missing_from_other.length ? `<div class="note err">
         <b>Missing from the second folder:</b><br>
@@ -3474,7 +3529,7 @@ function wireVerify() {
           labels: checks.map((c) => `${c.name} → ${c.role}`) },
         { label: mode === 'hash' ? 'Checksumming against the card' : 'Verifying against the card' });
       toast(state.pairVerify.ok ? 'Every copy matches the camera card.'
-        : `${state.pairVerify.mismatched.length} copy(ies) do not match the card.`,
+        : `${state.pairVerify.mismatched.length} ${state.pairVerify.mismatched.length === 1 ? "copy doesn't" : "copies don't"} match the card.`,
         state.pairVerify.ok ? 'ok' : 'err');
       render();
     } catch (e) { toast(e.message, 'err'); }
@@ -3534,13 +3589,13 @@ const WIRERS = [wireSources, wireSession, wireCameras, wireCopy, wireVerify];
 
 function goStep(i) {
   if (state.busy) {
-    toast('A task is still running. Wait for it to finish or press Cancel.', 'warn');
+    toast('Wait for the current task to finish, or press Cancel.', 'warn');
     return;
   }
   if (!stepReady(i)) return;
   if (state.step === 3 && i < 3 && state.runResult
       && (state.runResult.failed || state.runResult.cancelled)) {
-    toast('This copy is incomplete. Resume it before changing sources or assignments.', 'warn');
+    toast('Resume the unfinished copy first.', 'warn');
     return;
   }
   // A review plan is a snapshot. Once the operator leaves Copy, always rebuild
@@ -3887,7 +3942,7 @@ async function syncFrappe(root) {
   }
   if (!frappeConfigComplete()) {
     state.frappeUI = { open: true, view: 'settings', pendingRoot: root };
-    toast('Enter your Frappe connection and field names first.', 'warn');
+    toast('Fill in the Frappe settings first.', 'warn');
     render();
     return;
   }
@@ -3975,7 +4030,7 @@ function renderFrappeModal() {
     body = `<div class="empty"><div class="big">☁️</div>
       <div>Reading durations and updating Frappe…</div></div>`;
   } else if (ui.error) {
-    body = `<div class="note err"><b>Failed.</b> ${esc(ui.error)}</div>`;
+    body = `<div class="note err"><b>Frappe sync failed:</b> ${esc(ui.error)}</div>`;
   } else if (ui.result) {
     const r = ui.result;
     const list = (rows) => `<table class="rename-table">${rows.map((x) => `<tr>
@@ -4138,7 +4193,7 @@ function renderVerifyModal() {
     body = `<div class="empty"><div class="big">🔎</div>
       <div>Reading durations and comparing to the CSV…</div></div>`;
   } else if (v.error) {
-    body = `<div class="note err"><b>Failed.</b> ${esc(v.error)}</div>`;
+    body = `<div class="note err"><b>CSV check failed:</b> ${esc(v.error)}</div>`;
   } else if (v.result) {
     const c = v.result.counts;
     const rows = v.result.rows || [];
@@ -4267,7 +4322,7 @@ async function locateFfprobe() {
     const r = await call('configure', { ffprobe: p });
     state.engine.info = { ...state.engine.info, ...r };
     await window.api.setSettings({ ffprobe: p });
-    toast(r.ffprobe ? 'ffprobe set.' : 'That file did not work as ffprobe.', r.ffprobe ? 'ok' : 'err');
+    toast(r.ffprobe ? 'ffprobe set.' : 'That file isn\'t a working ffprobe.', r.ffprobe ? 'ok' : 'err');
     render();
   } catch (e) { toast(e.message, 'err'); }
 }

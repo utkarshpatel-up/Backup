@@ -26,3 +26,6 @@ jobs:
           name: AV-Backup-mac-${{ matrix.arch }}
           path: dist/*.dmg
           if-no-files-found: error
+          # Download the DMG right after the build. Storage is billed for as long
+          # as it's kept, and the free plan includes only 0.5 GB.
+          retention-days: 7

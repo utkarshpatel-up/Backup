@@ -42,7 +42,8 @@
     },
     "win": {
       "target": [
-        "nsis"
+        "nsis",
+        "zip"
       ],
       "signAndEditExecutable": true,
       "icon": "renderer/assets/icon.ico"

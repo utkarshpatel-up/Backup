@@ -90,10 +90,17 @@ python -m pip install pyinstaller xxhash
 npm run dist:win
 ```
 
-Output: **`dist\AV Backup Setup 1.0.0.exe`** — copy that to the other PC and run
-it to install. Nothing else needs to be installed on the target machine: the
-Python engine **and ffmpeg/ffprobe** are frozen inside the installer. (The
-version number matches `version` in `package.json`.)
+Output (the version number matches `version` in `package.json`):
+
+- **`dist\AV Backup Setup <version>.exe`** — the installer. Copy it to the other
+  PC and run it. It installs for the current user only, so it needs no admin rights.
+- **`dist\AV Backup-<version>-win.zip`** — the portable copy. Nothing is installed:
+  unzip it anywhere you can write (Desktop, Documents, a USB drive) and run
+  `AV Backup.exe` inside. Use this where installers are blocked. Settings are
+  kept in `%APPDATA%\AV Backup` either way.
+
+Nothing else needs to be installed on the target machine: the Python engine
+**and ffmpeg/ffprobe** are frozen inside both.
 
 ### ffmpeg is bundled automatically
 
@@ -137,7 +144,7 @@ Helper scripts for macOS live in `scripts/macos.sh` (`setup:mac`, `dist:mac`).
 | --- | --- |
 | `npm start` | Run the app from source (dev). |
 | `npm run bundle:python` | Freeze the Python engine to `dist-python/` (auto-includes ffmpeg; `-- --with-ffmpeg "<dir>"` to force a folder, `-- --no-ffmpeg` to skip). |
-| `npm run dist:win` | Bundle the engine (with ffmpeg) **and** build the self-contained Windows installer. |
+| `npm run dist:win` | Bundle the engine (with ffmpeg) **and** build the Windows installer plus the portable ZIP. |
 | `npm run dist:mac` | Same, for macOS. |
 | `python -m pytest tests/ -q` | Run the engine test suite. |
 

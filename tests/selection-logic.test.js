@@ -326,3 +326,13 @@ test('a topic with no session tag runs to the date token', () => {
     'Adalaj Satsang on Topic A Very Long Topic Name Here Dt-01-Oct-26').name,
   'Adalaj Satsang on Topic Dt-01-Oct-26');
 });
+
+test('a zip session with no Clips for Insert and no cameras gets no empty folder', () => {
+  assert.deepEqual(rules.normalizedTemplateDirs({ tree: [] }, 0), []);
+  // ...but it is still created as soon as a camera folder needs it.
+  assert.deepEqual(rules.normalizedTemplateDirs({ tree: [] }, 1),
+    ['Clips for Insert', 'Clips for Insert/Cam-01']);
+  // A zip that has it keeps it, even with no cameras.
+  assert.deepEqual(rules.normalizedTemplateDirs({ tree: ['Clips for Insert'] }, 0),
+    ['Clips for Insert']);
+});

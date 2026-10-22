@@ -331,6 +331,22 @@ CARD_LAYOUTS = [
         "exts": AUDIO_EXTS,
         "require_files": True,        # an empty DJI_Audio folder is not a card
     },
+    # A DJI drone (or Osmo) card keeps its video under DCIM/DJI_<n>; older
+    # models use DCIM/100MEDIA. The .LRF proxies and .SRT telemetry beside the
+    # clips are not video, so only the real footage is picked up. The drone's
+    # volume name is whatever the operator called the card, so any name matches.
+    {
+        "name": "DJI drone",
+        "volume_prefix": "",
+        "inner": ["DCIM", "DJI_*"],
+        "require_files": True,
+    },
+    {
+        "name": "DJI drone",
+        "volume_prefix": "",
+        "inner": ["DCIM", "100MEDIA"],
+        "require_files": True,
+    },
 ]
 
 

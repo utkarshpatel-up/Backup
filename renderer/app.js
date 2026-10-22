@@ -29,6 +29,8 @@ const state = {
   camCount: 3,
   clipNames: {},
   ceremonyNames: {},    // master path -> "Pujyashree's Entry"/"Exit" tag (topic swap)
+  filedMasterInfo: {},  // pathKey -> probed details of a master already filed in its session folder
+  sessionNumbering: [], // earlier session folders missing their "01 " number: [{path, new_path, number}]
   clipTitle: '',
   namingPreview: null,
   selection: [],        // paths ticked for a batch assign (shift/ctrl on the Cameras page)
@@ -501,9 +503,10 @@ function mastersFor(src) {
   if (!src) return [];
   const raw = state.masters[src.path];
   const picks = Array.isArray(raw) ? raw : (raw ? [raw] : []);
-  const pool = ((state.detected[src.path] || {}).master_candidates || []).concat(filePool(src));
+  const pool = ((state.detected[src.path] || {}).master_candidates || []).concat(filePool(src))
+    .concat(Object.values(state.filedMasterInfo));
   return picks
-    .map((path) => pool.find((f) => f.path === path))
+    .map((path) => pool.find((f) => pathKey(f.path) === pathKey(path)))
     .filter(Boolean)
     .sort((a, b) => (a.mtime || 0) - (b.mtime || 0));
 }
@@ -786,7 +789,7 @@ function renderSources() {
 
     c.push(clipsOnlyCardHtml());
 
-    c.push(`<div class="card">
+    c.push(`<div class="card" id="renameDrop">
       <h3>Rename &amp; fix clip counts</h3>
       <p class="hint">A standalone cleanup for footage that is <b>already filed</b>. Point it at a
         drive or folder holding informal sessions and it renames raw camera clips to
@@ -795,7 +798,8 @@ function renderSources() {
         preview every change before anything is written.</p>
       <div class="row">
         <button class="sm primary" id="btnRenameTool">Choose folder to rename…</button>
-        <span class="hint" style="margin:0">Works independently of the backup steps above.</span>
+        <span class="hint" style="margin:0">or drop a folder on this card. Works independently
+          of the backup steps above.</span>
       </div>
     </div>`);
 
@@ -974,6 +978,7 @@ function wireSources() {
     render();
   });
   $('btnRenameTool')?.addEventListener('click', () => openRenameTool());
+  makeFolderDropTarget($('renameDrop'), (folder) => openRenameTool(folder));
   $('btnClipsOnly')?.addEventListener('click', enterClipsOnly);
   $('btnClipsOnlyExit')?.addEventListener('click', exitClipsOnly);
   $('btnFrappeSync')?.addEventListener('click', () => syncFrappe(null));
@@ -1109,6 +1114,7 @@ async function activateTemplateSession(index, announce = true) {
   adoptFolderName(stripClipsToken(next.base_name || next.session_name || ''));
   state.jobNameOverride = null;
   state.clipNames = {}; state.ceremonyNames = {}; state.clipTitle = ''; state.namingPreview = null;
+  state.filedMasterInfo = {};
   state.camNames = {};
   // Both modes now mirror the structure exactly — a 2-cam structure gets 2 cam
   // folders, no phantom third, and a 0-cam structure gets none. Informal then
@@ -1411,7 +1417,7 @@ function renderSession() {
       ${d.job_name ? `📁 ${esc(d.job_name)}<br>` : ''}
       <span class="${d.job_name ? 'indent1' : ''}" style="display:inline-block">📁
         ${esc(base)}${isInformal() ? '' : ` <b>Dur-${esc(durLabel)}</b>`} ${nameCount(isInformal() ? base : `${base} Dur-${durLabel}`)}</span>
-      ${isInformal() ? ''
+      ${isInformal() || !cams.length ? ''
         : '<div class="indent2" style="color:var(--muted)">📁 Clips for Insert</div>'}
       ${cams.map((n) => `<div class="${isInformal() ? 'indent2' : 'indent3'}" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
       ${isInformal() && state.camCount === 0
@@ -1848,6 +1854,48 @@ function nameCleanupControls(original) {
   </div>`;
 }
 
+// A day's first session is usually filed before the zip has a second one, so
+// it lands without "01 ". When the zip numbers its sessions, look in the job
+// folder on every destination for such folders and offer to number them.
+async function refreshSessionNumbering() {
+  state.sessionNumbering = [];
+  const t = state.template;
+  if (!t) return;
+  const sep = window.api.platform === 'win32' ? '\\' : '/';
+  const job = state.jobNameOverride != null ? state.jobNameOverride : (t.job_name || '');
+  const roots = isInformal() ? [destOf(primarySource())] : footageSources().map(destOf);
+  const jobDirs = [...new Set(roots.filter(Boolean)
+    .map((root) => (job ? root.replace(/[\\/]+$/, '') + sep + job : root)))];
+  const sessions = (state.templates.length ? state.templates : [t])
+    .map((x) => x.session_name).filter(Boolean);
+  if (!jobDirs.length || !sessions.length) return;
+  try {
+    const r = await call('find_unnumbered_sessions', { job_dirs: jobDirs, sessions });
+    state.sessionNumbering = r.renames || [];
+  } catch {
+    // Only a suggestion; without it the backup works exactly as before.
+  }
+  render();
+}
+
+function sessionNumberingNote() {
+  const list = state.sessionNumbering || [];
+  if (!list.length) return '';
+  const leaf = (path) => String(path).split(/[\\/]/).pop();
+  const drive = (path) => String(path).split(/[\\/]/)[0] || '/';
+  return `<div class="card">
+    <div class="note warn">
+      <b>${list.length === 1 ? 'An earlier session has' : `${list.length} earlier session folders have`}
+        no session number.</b> It was filed before this day had a second session.
+      ${list.map((r) => `<div class="mono" style="margin-top:8px">${esc(drive(r.path))} ${esc(leaf(r.path))}
+        <br>↳ ${esc(leaf(r.new_path))}</div>`).join('')}
+      <div class="row" style="margin-top:10px">
+        <button class="sm primary" id="btnNumberSessions">Add the number${list.length === 1 ? '' : 's'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderTemplateFolder(src) {
   const t = state.template;
   const masters = chosenMasters();
@@ -1863,6 +1911,7 @@ function renderTemplateFolder(src) {
 
   return `
   ${renderTemplateSessionChoices()}
+  ${sessionNumberingNote()}
   <div class="card">
     <h3>Edit job and session folders</h3>
     <p class="hint">Edit the imported job and session names here before copying. The preview updates
@@ -1871,7 +1920,8 @@ function renderTemplateFolder(src) {
       ${jobName ? `📁 ${esc(jobName)} ${nameCount(jobName)}<br>` : ''}
       <span class="${jobName ? 'indent1' : ''}" style="display:inline-block">📁
         ${esc(base)}${isInformal() ? '' : ` <b>Dur-${esc(durLabel)}</b>`} ${nameCount(isInformal() ? base : `${base} Dur-${durLabel}`)}</span>
-      ${isInformal() ? ''
+      ${isInformal() || !(cams.length || (t.tree || []).some((e) =>
+          /^clips for insert\/?$/i.test(String(e).replace(/\\/g, '/')))) ? ''
         : '<div class="indent2" style="color:var(--muted)">📁 Clips for Insert</div>'}
       ${cams.map((n) => `<div class="${isInformal() ? 'indent2' : 'indent3'}" style="color:var(--muted)">📁 ${esc(camLabel(n))}</div>`).join('')}
       ${isInformal() && state.camCount === 0
@@ -2061,6 +2111,24 @@ function wireSession() {
       if (event.key === 'Enter') { commit(); render(); }
     });
   }
+
+  $('btnNumberSessions')?.addEventListener('click', async () => {
+    const list = state.sessionNumbering || [];
+    if (!list.length) return;
+    const ok = await window.api.confirm({
+      message: `Rename ${list.length} folder${list.length === 1 ? '' : 's'} to add the session number?`,
+      detail: list.map((r) => `${r.path}\n  -> ${String(r.new_path).split(/[\\/]/).pop()}`).join('\n'),
+      confirmLabel: 'Rename',
+    });
+    if (!ok) return;
+    try {
+      const r = await call('apply_session_numbers', { renames: list },
+        { label: 'Numbering earlier sessions' });
+      if (r.errors.length) toast(r.errors.join(' '), 'warn');
+      else toast(`Renamed ${r.renamed.length} folder${r.renamed.length === 1 ? '' : 's'}.`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    await refreshSessionNumbering();
+  });
 
   $('btnFolderNamesReset')?.addEventListener('click', () => {
     keepAllCleanup();
@@ -2767,6 +2835,7 @@ function wireCameras() {
 // (or having pressed Scan by hand) costs nothing.
 async function enterFolderStep() {
   if (!state.template) await detectStructure(primarySource());
+  else refreshSessionNumbering();
   if (isInformal()) return;
   for (const src of footageSources()) {
     await scanSource(src);
@@ -2819,7 +2888,11 @@ function buildSpec() {
     const role = isInformal() ? 'informal' : src.role;
     const filed = state.filedSessions[filedKeyFor(src.path)];
     const masterAlreadyFiled = Boolean(filed);
-    const masters = masterAlreadyFiled ? [] : masterList;
+    // Once filed, only masters that now sit in that session folder are sent:
+    // each maps to itself (skipped) unless its name was edited, in which case it
+    // is renamed in place. Originals that have moved away are never looked for.
+    const inFiled = (path) => pathKey(parentDir(path)) === pathKey(filed);
+    const masters = masterAlreadyFiled ? masterList.filter(inFiled) : masterList;
     // An operator-typed replacement for the session folder's base name, applied
     // when completing a folder already on the drive.
     const rename = state.renameBase ? { session_rename: state.renameBase } : {};
@@ -2918,8 +2991,14 @@ function renderCopy() {
         ${isInformal() ? '' : (t.master_present && !t.items.some((i) => i.kind === 'master')
           ? '<div class="ren indent2">🎬 <span style="color:var(--ok)">master already filed, kept</span></div>'
           : masterRows(t))}
-        ${isInformal() ? '' : '<div class="dir indent2">📁 Clips for Insert</div>'}
+        ${isInformal() || !((t.ensure_dirs || []).some((d) => /^clips for insert(\/|$)/i.test(d))
+          || t.items.some((i) => i.kind === 'clip')
+          || Object.keys(t.existing_cams || {}).length)
+          ? '' : '<div class="dir indent2">📁 Clips for Insert</div>'}
         ${camGroups(t)}
+        ${t.items.filter((i) => i.kind === 'renumber').map((i) => `<div class="ren indent2">
+          <b>${esc(i.original_name)}</b> <span style="color:var(--muted)">· already filed, renamed to
+          ${esc(String(i.dst).split(/[\\/]/).pop())} now that more clips are joining it</span></div>`).join('')}
       </div>
     </div>`).join('');
 
@@ -3027,7 +3106,10 @@ function camGroups(t) {
     (byCam[i.cam] = byCam[i.cam] || []).push(i);
   });
   const names = t.cam_names || {};
-  const fname = (n) => (names[n] || names[String(n)] || `Cam-${String(n).padStart(2, '0')}`);
+  // Root clips (informal cam 0) sit in the session folder itself, not a "Cam-00".
+  const ROOT_KEY = '<root>';
+  const fname = (n) => (Number(n) === ROOT_CAM ? ROOT_KEY
+    : names[n] || names[String(n)] || `Cam-${String(n).padStart(2, '0')}`);
   const existing = t.existing_cams || {};      // folder name -> clips already on disk
   const folderIndent = t.direct_camera_folders ? 'indent2' : 'indent3';
   const filePadding = t.direct_camera_folders ? 48 : 72;
@@ -3042,13 +3124,15 @@ function camGroups(t) {
     shown.set(folder, cur);
   }
 
-  return [...shown.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([folder, info]) => {
+  const order = (a, b) => (a[0] === ROOT_KEY ? -1 : b[0] === ROOT_KEY ? 1 : a[0].localeCompare(b[0]));
+  return [...shown.entries()].sort(order).map(([folder, info]) => {
     const already = info.existing
       ? ` <span style="color:var(--ok)">· ${info.existing} already filed, kept</span>` : '';
     const emptyTag = (!info.newItems.length && !info.existing)
       ? ' <span style="color:var(--warn)">· empty</span>' : '';
     const folderBytes = info.newItems.reduce((sum, i) => sum + (i.size || 0), 0);
-    const head = `<div class="dir ${folderIndent}">📁 ${esc(folder)}${already}${
+    const label = folder === ROOT_KEY ? '📄 In the session folder (no camera folder)' : `📁 ${esc(folder)}`;
+    const head = `<div class="dir ${folderIndent}">${label}${already}${
       info.newItems.length ? ` <span style="color:var(--accent)">· +${info.newItems.length} new</span> ${
         sizeBadge(folderBytes, 'total')}` : ''}${emptyTag}</div>`;
     return head + info.newItems.map((i) => `<div class="ren ${folderIndent}" style="padding-left:${filePadding}px">
@@ -3091,6 +3175,7 @@ function renderRunResult() {
         : `one window with each drive's Clips for Insert folder as a tab${cardFolders().length
             ? `, and a second window with ${cardFolders().length} camera card${
                 cardFolders().length > 1 ? 's' : ''} as tabs` : ''}`}</span>
+      ${cardFolders().length ? `<button class="sm" id="btnOpenCards">📇 Open copied cards only</button>` : ''}
     </div>
     <div class="row" style="margin-top:8px">
       ${(r.manifests || []).map((m) => `<button class="sm" data-open="${esc(m.json)}">
@@ -3208,6 +3293,17 @@ function wireCopy() {
       toast(`Opened ${res.opened.length} folder(s) — destinations and cards in separate windows.`, 'ok');
     }
   });
+  // The destination drives are often already open from the last card, so this
+  // opens just the cards that were copied, as tabs in one window.
+  $('btnOpenCards')?.addEventListener('click', async () => {
+    const res = await window.api.openFolderGroups([[...new Set(cardFolders())]]);
+    if (res.missing && res.missing.length) {
+      toast(`Opened ${res.opened.length} card${res.opened.length === 1 ? '' : 's'}. `
+        + `${res.missing.length} not found; a card may be ejected.`, 'warn');
+    } else {
+      toast(`Opened ${res.opened.length} copied card${res.opened.length === 1 ? '' : 's'}.`, 'ok');
+    }
+  });
   document.querySelectorAll('[data-reveal]').forEach((b) =>
     b.addEventListener('click', () => window.api.reveal(b.dataset.reveal)));
   document.querySelectorAll('[data-open]').forEach((b) =>
@@ -3263,10 +3359,29 @@ async function doPlan() {
  * are reserved immediately for the next card.
  */
 async function reconcileRunState(plan, result) {
+  const moved = new Map();                 // pathKey(original) -> filed path
   for (const item of result.items || []) {
     const present = item.status === 'done'
       || (item.status === 'skipped' && /already present/i.test(item.message || ''));
     if (present && item.kind === 'clip') state.completedCams.add(Number(item.cam));
+    if (present && item.kind === 'master' && item.src && item.dst
+        && pathKey(item.src) !== pathKey(item.dst)) {
+      moved.set(pathKey(item.src), item.dst);
+    }
+  }
+  // Masters now live in the session folder. Point the selection, and any edited
+  // or ceremony names, at the filed files so a later plan can rename them.
+  if (moved.size) {
+    for (const [src, raw] of Object.entries(state.masters)) {
+      const list = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+      state.masters[src] = list.map((path) => moved.get(pathKey(path)) || path);
+    }
+    for (const names of [state.clipNames, state.ceremonyNames]) {
+      for (const [oldPath, value] of Object.entries(names)) {
+        const filedPath = moved.get(pathKey(oldPath));
+        if (filedPath) { delete names[oldPath]; names[filedPath] = value; }
+      }
+    }
   }
 
   for (const target of plan.targets || []) {
@@ -3282,6 +3397,9 @@ async function reconcileRunState(plan, result) {
       const detected = await call('detect_structure', { root });
       for (const [cam, paths] of Object.entries(detected.cams || {})) {
         if ((paths || []).length) state.completedCams.add(Number(cam));
+      }
+      for (const file of detected.master_candidates || []) {
+        if (file && file.path) state.filedMasterInfo[pathKey(file.path)] = file;
       }
       if (detected.session_path && (isInformal()
           || (detected.master_candidates || []).length)) {
@@ -3737,8 +3855,43 @@ function footerHint() {
 // preview the clip renames and Clips-NN count fixes, then apply. It runs
 // outside the five-step backup wizard so it never touches that flow's state.
 
-async function openRenameTool() {
-  const root = await window.api.pickFolder(
+// The folder a drop carries: a dropped folder itself, or a dropped file's folder.
+// Must run inside the drop event, while the browser still exposes the items.
+function droppedFolder(event) {
+  const dt = event.dataTransfer;
+  if (!dt || !dt.files || !dt.files.length) return null;
+  const entry = dt.items && dt.items[0] && dt.items[0].webkitGetAsEntry
+    ? dt.items[0].webkitGetAsEntry() : null;
+  const file = dt.files[0];
+  const path = window.api.pathForFile ? window.api.pathForFile(file) : file.path;
+  if (!path) return null;
+  return entry && !entry.isDirectory ? parentDir(path) : path;
+}
+
+// Highlight `el` while a folder is dragged over it, and hand the dropped folder
+// to `onFolder`.
+function makeFolderDropTarget(el, onFolder) {
+  if (!el) return;
+  const hasFiles = (e) => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files');
+  el.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    el.classList.add('dropping');
+  });
+  el.addEventListener('dragleave', (e) => {
+    if (!el.contains(e.relatedTarget)) el.classList.remove('dropping');
+  });
+  el.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    el.classList.remove('dropping');
+    const folder = droppedFolder(e);
+    if (folder) onFolder(folder);
+  });
+}
+
+async function openRenameTool(folder) {
+  const root = folder || await window.api.pickFolder(
     'Choose a drive or folder holding informal sessions to rename');
   if (!root) return;
   state.rename = { open: true, root, plan: null, scanning: false,
@@ -3849,7 +4002,7 @@ function renderRenameModal() {
       </div>`;
   } else if (!plan) {
     bodyHtml = `<div class="empty"><div class="big">📂</div>
-      <div>Choose a folder to preview the renames.</div></div>`;
+      <div>Drop a folder here, or choose one, to preview the renames.</div></div>`;
   } else if (nothing) {
     bodyHtml = `<div class="note ok"><b>Nothing to change.</b> Every clip already
       follows the naming scheme and every Clips-NN count is correct.</div>`;
@@ -3888,6 +4041,11 @@ function renderRenameModal() {
   });
   $('btnRenameClose')?.addEventListener('click', closeRenameTool);
   $('btnRenameChoose')?.addEventListener('click', chooseRenameFolder);
+  makeFolderDropTarget(host.querySelector('.modal-panel'), async (folder) => {
+    if (r.scanning || r.applying) return;
+    state.rename.root = folder;
+    await previewRename();          // starts from an empty list for the new folder
+  });
   $('btnRenamePreview')?.addEventListener('click', previewRename);
   $('btnRenameApply')?.addEventListener('click', applyRename);
   $('btnRenameFrappe')?.addEventListener('click', () => syncFrappe(r.root));
@@ -4325,6 +4483,13 @@ async function locateFfprobe() {
     toast(r.ffprobe ? 'ffprobe set.' : 'That file isn\'t a working ffprobe.', r.ffprobe ? 'ok' : 'err');
     render();
   } catch (e) { toast(e.message, 'err'); }
+}
+
+// A file dropped outside a drop target must not navigate the window away.
+if (typeof window.addEventListener === 'function') {
+  ['dragover', 'drop'].forEach((type) => window.addEventListener(type, (e) => {
+    if ([...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files')) e.preventDefault();
+  }));
 }
 
 (async function boot() {

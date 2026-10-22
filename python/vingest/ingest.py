@@ -29,6 +29,52 @@ from .probe import MediaInfo, VIDEO_EXTS, is_junk, probe, scan_videos
 CLIP_COUNT_EXTS = VIDEO_EXTS | {".wav", ".mp3", ".aac", ".m4a", ".wma", ".flac"}
 
 
+def _clip_files(folder) -> list:
+    """Every media file beneath `folder`, by the same rule as _count_clip_files."""
+    out = []
+    for dirpath, _dirnames, filenames in os.walk(folder):
+        for f in filenames:
+            if not f.startswith(".") and os.path.splitext(f)[1].lower() in CLIP_COUNT_EXTS:
+                out.append(Path(dirpath) / f)
+    return out
+
+
+def _apply_lone_clip_rule(plan, session: Path, title: str, overrides: dict) -> None:
+    """A session's only clip carries no number ("Event Name.mp4", no "Clip-001"),
+    matching its folder, which carries no Clips- count. When later clips join a
+    lone clip filed on an earlier pass, that clip is renumbered to Clip-001 in
+    place (the new ones were already numbered from 002)."""
+    new = [i for i in plan.items if i.kind == "clip"]
+    existing = _clip_files(session) if session.is_dir() else []
+
+    if not existing and len(new) == 1 and str(new[0].src) not in overrides:
+        item = new[0]
+        name = Path(item.dst).name
+        if naming.informal_clip_index(name) == 1:
+            lone = naming.informal_clip_name(
+                title, Path(item.dst).parent.name if Path(item.dst).parent != session else "",
+                None, Path(name).suffix)
+            item.dst = str(Path(item.dst).with_name(lone))
+            item.final_dst = str(Path(item.final_dst).with_name(lone))
+        return
+
+    if len(existing) == 1 and new:
+        filed = existing[0]
+        cam_folder = filed.parent.name if filed.parent != session else ""
+        if filed.stem.lower() == naming.informal_clip_name(title, cam_folder, None).lower():
+            numbered = naming.informal_clip_name(title, cam_folder, 1, filed.suffix)
+            target = filed.with_name(numbered)
+            if not target.exists():
+                try:
+                    size = filed.stat().st_size
+                except OSError:
+                    size = 0
+                plan.items.append(PlanItem(
+                    src=str(filed), dst=str(target), final_dst=str(target),
+                    size=size, kind="renumber", cam=None, duration=None,
+                    codec="", original_name=filed.name))
+
+
 def _count_clip_files(folder) -> int:
     """Total media files (video + audio) anywhere beneath `folder`.
 
@@ -437,7 +483,7 @@ def build_plan(spec: dict, progress=None) -> dict:
             on_disk: dict[str, int] = {}
             if cam_dir.is_dir():
                 for f in cam_dir.iterdir():
-                    if f.is_file() and f.suffix.lower() in VIDEO_EXTS:
+                    if f.is_file() and f.suffix.lower() in CLIP_COUNT_EXTS:
                         try:
                             on_disk[f.name.lower()] = f.stat().st_size
                         except OSError:
@@ -454,6 +500,13 @@ def build_plan(spec: dict, progress=None) -> dict:
                         available_by_size.setdefault(size, []).append(cam_dir / filename)
             existing_sequences = [naming.informal_clip_index(name)
                                   for name in on_disk]
+            # A session's only clip was filed without a number; it becomes
+            # Clip-001 once more clips join it, so new ones here start at 002.
+            lone_stem = naming.informal_clip_name(
+                t.get("clip_title") or session_folder, cam_folder_name(cam_index),
+                None).lower()
+            if rename_camera_clips and any(Path(name).stem == lone_stem for name in on_disk):
+                existing_sequences.append(1)
             next_sequence = max((number for number in existing_sequences
                                  if number is not None), default=0) + 1
             for p in ordered_paths:
@@ -575,6 +628,11 @@ def build_plan(spec: dict, progress=None) -> dict:
                 for f in Path(staging_path).iterdir())
         except OSError:
             plan.master_present = False
+
+        if rename_camera_clips:
+            _apply_lone_clip_rule(plan, Path(staging_path),
+                                  t.get("clip_title") or session_folder,
+                                  t.get("clip_names") or {})
 
         # Informal session folders record how many clips they hold in their
         # "Clips-NN" name. Predict that count for the preview — clips already on

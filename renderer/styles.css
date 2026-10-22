@@ -307,6 +307,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Offline verify: a wider panel and colour-coded comparison rows. */
 .modal-panel.wide { width: min(1080px, 100%); }
+/* A folder being dragged over a drop target (the rename tool). */
+.dropping { outline: 2px dashed var(--accent); outline-offset: -6px; }
 .verify-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .verify-table th {
   position: sticky; top: 0; background: var(--panel); text-align: left;

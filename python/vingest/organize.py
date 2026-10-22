@@ -32,17 +32,24 @@ def _cam_label(folder_name: str):
 
 
 def _find_event_folder(dirpath: str, root: str) -> str:
+    return os.path.basename(_find_event_path(dirpath))
+
+
+def _find_event_path(dirpath: str) -> str:
     """Walk up from a clip-group directory to the folder that names the event,
-    skipping any Cam-NN folder the clips sit inside."""
-    current = dirpath
-    while True:
-        base = os.path.basename(current)
-        if not _cam_label(base):
-            return base
+    skipping any Cam-NN folder the clips sit inside.
+
+    The walk may pass the chosen root: when the operator picks the session
+    folder itself, its Cam-NN sub-folders must still take the session's name,
+    not their own "Cam-02".
+    """
+    current = os.path.normpath(dirpath)
+    while _cam_label(os.path.basename(current)):
         parent = os.path.dirname(current)
-        if parent == current or os.path.normpath(parent) == os.path.normpath(root):
-            return base
+        if parent == current:              # reached the top of the drive
+            break
         current = parent
+    return current
 
 
 def _clip_groups(root: str, extensions):
@@ -74,11 +81,20 @@ def plan_rename(root: str, extensions=None) -> dict:
     root = os.path.abspath(root)
     exts = set(extensions) if extensions else set(CLIP_COUNT_EXTS)
 
+    groups = list(_clip_groups(root, exts))
+    # A session (event folder) holding a single clip names it without a number,
+    # just as its folder carries no Clips- count; count across its Cam folders.
+    per_event: dict[str, int] = {}
+    for dirpath, filenames in groups:
+        key = os.path.normcase(_find_event_path(dirpath))
+        per_event[key] = per_event.get(key, 0) + len(filenames)
+
     files = []
-    for dirpath, filenames in _clip_groups(root, exts):
+    for dirpath, filenames in groups:
         folder_base = os.path.basename(dirpath)
         cam = folder_base if _cam_label(folder_base) else ""
         event_folder = _find_event_folder(dirpath, root)
+        lone = per_event[os.path.normcase(_find_event_path(dirpath))] == 1
 
         # Clips are sequenced by their date modified — the "Date" column shown in
         # Explorer, i.e. when each clip was recorded — oldest first. The original
@@ -95,7 +111,7 @@ def plan_rename(root: str, extensions=None) -> dict:
 
         for index, (fname, _mtime) in enumerate(with_mtime, start=1):
             ext = os.path.splitext(fname)[1]
-            new_name = naming.informal_clip_name(event_folder, cam, index, ext)
+            new_name = naming.informal_clip_name(event_folder, cam, None if lone else index, ext)
             if new_name == fname:
                 continue                    # already correctly named
             old_path = os.path.join(dirpath, fname)

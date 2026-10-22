@@ -156,10 +156,6 @@
       return /^Cam-\d+(?:\/|$)/i.test(clean) ? `Clips for Insert/${clean}` : clean;
     }).filter(Boolean);
     const dirs = [...new Set(imported)];
-    if (!directCameraFolders
-        && !dirs.some((entry) => entry.toLowerCase() === 'clips for insert')) {
-      dirs.unshift('Clips for Insert');
-    }
     const kept = dirs.filter((entry) => {
       const match = /(?:^|\/)Cam-(\d+)(?:\/|$)/i.exec(entry);
       return !match || Number(match[1]) <= camCount;
@@ -173,6 +169,13 @@
         const camera = `Cam-${String(number).padStart(2, '0')}`;
         kept.push(directCameraFolders ? camera : `Clips for Insert/${camera}`);
       }
+    }
+    // Formal camera folders live in "Clips for Insert". Create it when the zip
+    // has it or a camera folder needs it, never as an empty folder of its own.
+    if (!directCameraFolders
+        && !kept.some((entry) => entry.toLowerCase() === 'clips for insert')
+        && kept.some((entry) => /^clips for insert\//i.test(entry))) {
+      kept.unshift('Clips for Insert');
     }
     return kept;
   }

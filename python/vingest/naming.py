@@ -133,8 +133,9 @@ def session_folder_name(folder_name: str, total_seconds: float | None,
 def set_clips_count(name: str, count: int | None) -> str:
     """Set (or clear) the 'Clips-NN' token on a session folder name.
 
-    An existing Clips- token is replaced; a `count` of None or below 1 removes
-    it. The number keeps at least two digits (the house 'Clips-02' form) and
+    An existing Clips- token is replaced; a `count` of None or below 2 removes
+    it, because a folder holding a single clip carries no count (there is no
+    "Clips-01"; the count starts at "Clips-02"). The number keeps at least two digits (the house 'Clips-02' form) and
     widens for larger tallies ('Clips-109'). Any other tokens on the name are
     left untouched, and the Clips- token is written last, as the reference
     folders show it.
@@ -145,7 +146,7 @@ def set_clips_count(name: str, count: int | None) -> str:
     """
     base = CLIPS_TOKEN_RE.sub("", name)
     base = re.sub(r"\s{2,}", " ", base).strip()
-    if not count or int(count) < 1:
+    if not count or int(count) < 2:
         return sanitize(base)
     count = int(count)
     width = max(2, len(str(count)))
@@ -231,13 +232,18 @@ def informal_event_name(folder_name: str) -> str:
 
 
 def informal_clip_name(folder_name: str, camera_folder: str,
-                       index: int, ext: str = "") -> str:
-    """Build ``Cam-01 Event Name Clip-001.MP4`` for an informal backup."""
+                       index: int | None, ext: str = "") -> str:
+    """Build ``Cam-01 Event Name Clip-001.MP4`` for an informal backup.
+
+    An `index` of None names a session's only clip, which carries no number
+    (``Cam-01 Event Name.MP4``), just as its folder carries no Clips- count.
+    """
     match = CAM_PREFIX_RE.match(camera_folder or "")
     prefix = f"{match.group(1)} " if match else ""
     suffix = ext if not ext or ext.startswith(".") else f".{ext}"
+    clip = f" Clip-{int(index):03d}" if index else ""
     return sanitize(
-        f"{prefix}{informal_event_name(folder_name)} Clip-{int(index):03d}") + suffix
+        f"{prefix}{informal_event_name(folder_name)}{clip}") + suffix
 
 
 def informal_clip_index(name: str) -> int | None:

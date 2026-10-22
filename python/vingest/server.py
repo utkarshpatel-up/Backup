@@ -129,6 +129,16 @@ def m_detect_structure(p, _id):
         p["root"], preferred_session=p.get("session_path")))
 
 
+def m_find_unnumbered_sessions(p, _id):
+    """Earlier session folders that need the "01 " the zip now numbers them with."""
+    return {"renames": structure.find_unnumbered_sessions(
+        p.get("job_dirs", []), p.get("sessions", []))}
+
+
+def m_apply_session_numbers(p, _id):
+    return structure.apply_session_numbers(p.get("renames", []))
+
+
 def m_detect_structures(p, _id):
     """Return every selectable session in an imported structure."""
     sessions = [_detected_payload(d) for d in structure.detect_all(p["root"])]

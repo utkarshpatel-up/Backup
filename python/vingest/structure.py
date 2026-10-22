@@ -15,6 +15,7 @@ finds that folder so the app can complete its name instead of asking for it.
 
 from __future__ import annotations
 
+import datetime as _dt
 import os
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -319,3 +320,104 @@ def planned_rename(detected: dict, seconds: float | None) -> dict:
             naming.DUR_TOKEN_RE.search(current).group(0).strip()[4:])
         if naming.DUR_TOKEN_RE.search(current) else "s",
     }
+
+
+# ------------------------------------------------- numbering earlier sessions
+
+def _session_key(name: str) -> str:
+    """A session folder's name without its leading number or Dur-/Clips- tokens."""
+    base = naming.LEADING_INDEX_RE.sub("", naming.session_base(name))
+    return " ".join(base.split()).lower()
+
+
+def _date_and_tag(name: str):
+    """(Dt- date, session tag such as "M" / "E2") from a session folder name."""
+    base = naming.session_base(name)
+    date = naming.DATE_TOKEN_RE.search(base)
+    head = base[:date.start()] if date else base
+    tag = naming.SESSION_INDICATOR_RE.search(head.strip())
+    return (naming.parse_date_token(base), tag.group(1).upper() if tag else None)
+
+
+def _session_order(name: str):
+    when, tag = _date_and_tag(name)
+    rank = {"M": 0, "E": 1}.get((tag or "")[:1], 2)
+    return (when or _dt.date.max, rank, tag or "", name.lower())
+
+
+def find_unnumbered_sessions(job_dirs: list, session_names: list) -> list:
+    """Earlier session folders that were filed before the day had a second
+    session, so they lack the "01 " the structure zip now numbers them with.
+
+    A folder is matched to a numbered zip session by name, or by its date and
+    session tag (M./E.) if the name was edited since. Any left over take the
+    numbers the zip does not use (e.g. 01 when the zip only carries 02), but
+    only when that pairing is unambiguous. Nothing is renamed here.
+    """
+    numbered = {}
+    for name in session_names or []:
+        m = naming.LEADING_INDEX_RE.match(name or "")
+        if m:
+            numbered[name] = int(m.group(0))
+    if not numbered:
+        return []
+
+    out = []
+    for job in job_dirs or []:
+        job_path = Path(job)
+        if not job_path.is_dir():
+            continue
+        sessions = [c for c in job_path.iterdir()
+                    if c.is_dir() and naming.DATE_TOKEN_RE.search(c.name)]
+        used = {int(naming.LEADING_INDEX_RE.match(c.name).group(0))
+                for c in sessions if naming.LEADING_INDEX_RE.match(c.name)}
+        loose = [c for c in sessions if not naming.LEADING_INDEX_RE.match(c.name)]
+        proposals = {}
+
+        for name, number in sorted(numbered.items(), key=lambda kv: kv[1]):
+            if number in used:
+                continue
+            hits = [c for c in loose if c not in proposals
+                    and _session_key(c.name) == _session_key(name)]
+            if not hits:
+                when_tag = _date_and_tag(name)
+                if when_tag[0] and when_tag[1]:
+                    hits = [c for c in loose if c not in proposals
+                            and _date_and_tag(c.name) == when_tag]
+            if len(hits) == 1:
+                proposals[hits[0]] = number
+
+        left = sorted((c for c in loose if c not in proposals),
+                      key=lambda c: _session_order(c.name))
+        taken = used | set(numbered.values()) | set(proposals.values())
+        top = max(taken) if taken else 0
+        missing = [n for n in range(1, top + 1) if n not in taken]
+        if left and len(left) == len(missing):
+            proposals.update(zip(left, missing))
+
+        for folder, number in proposals.items():
+            target = folder.with_name(f"{number:02d} {folder.name}")
+            if not target.exists():
+                out.append({"path": str(folder), "new_path": str(target),
+                            "number": f"{number:02d}"})
+    out.sort(key=lambda r: (r["new_path"].lower()))
+    return out
+
+
+def apply_session_numbers(renames: list) -> dict:
+    """Rename the folders proposed by find_unnumbered_sessions."""
+    done, errors = [], []
+    for r in renames or []:
+        src, dst = Path(r["path"]), Path(r["new_path"])
+        if src.parent != dst.parent:
+            errors.append(f"Skipped {src.name}: not a rename in place.")
+            continue
+        if dst.exists():
+            errors.append(f"Skipped {src.name}: {dst.name} already exists.")
+            continue
+        try:
+            os.rename(src, dst)
+            done.append(str(dst))
+        except OSError as exc:
+            errors.append(f"Couldn't rename {src.name}: {exc.strerror or exc}")
+    return {"renamed": done, "errors": errors}

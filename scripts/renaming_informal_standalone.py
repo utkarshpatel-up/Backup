@@ -102,18 +102,22 @@ def cam_label(folder_name: str):
     return m.group(1) if m else None
 
 
-def find_event_name(dirpath: str, root: str) -> str:
-    """Walk up from dirpath (a clip-group directory) to find the folder
-    whose name describes the event, skipping any Cam-NN folder."""
-    current = dirpath
-    while True:
-        base = os.path.basename(current)
-        if not cam_label(base):
-            return clean_event_name(base)
+def find_event_path(dirpath: str) -> str:
+    """Walk up from dirpath (a clip-group directory) to the folder whose name
+    describes the event, skipping any Cam-NN folder. The walk may pass the
+    chosen root, so picking the session folder itself still names its Cam-NN
+    clips after the session rather than "Cam-02"."""
+    current = os.path.normpath(dirpath)
+    while cam_label(os.path.basename(current)):
         parent = os.path.dirname(current)
-        if parent == current or os.path.normpath(parent) == os.path.normpath(root):
-            return clean_event_name(base)
+        if parent == current:
+            break
         current = parent
+    return current
+
+
+def find_event_name(dirpath: str, root: str) -> str:
+    return clean_event_name(os.path.basename(find_event_path(dirpath)))
 
 
 def collect_clip_groups(root: str, extensions):
@@ -130,10 +134,18 @@ def collect_clip_groups(root: str, extensions):
 
 def build_rename_plan(root: str, extensions):
     plan = []  # list of (old_path, new_path)
-    for dirpath, filenames in collect_clip_groups(root, extensions):
+    groups = list(collect_clip_groups(root, extensions))
+    # A session holding a single clip names it without a number (no
+    # "Clip-001"), as its folder carries no Clips- count; count across Cam-NN.
+    per_event = {}
+    for dirpath, filenames in groups:
+        key = os.path.normcase(find_event_path(dirpath))
+        per_event[key] = per_event.get(key, 0) + len(filenames)
+    for dirpath, filenames in groups:
         folder_base = os.path.basename(dirpath)
         cam = cam_label(folder_base)
         event_name = find_event_name(dirpath, root)
+        lone = per_event[os.path.normcase(find_event_path(dirpath))] == 1
 
         # sort by modified time ascending
         files_with_mtime = [
@@ -144,7 +156,8 @@ def build_rename_plan(root: str, extensions):
         for idx, (fname, _mtime) in enumerate(files_with_mtime, start=1):
             ext = fname.rsplit(".", 1)[-1]
             prefix = f"{cam} " if cam else ""
-            new_name = f"{prefix}{event_name} Clip-{idx:03d}.{ext}"
+            clip = "" if lone else f" Clip-{idx:03d}"
+            new_name = f"{prefix}{event_name}{clip}.{ext}"
             old_path = os.path.join(dirpath, fname)
             new_path = os.path.join(dirpath, new_name)
             plan.append((old_path, new_path))
@@ -179,11 +192,15 @@ def build_folder_rename_plan(root: str, extensions):
                 continue
             folder_path = os.path.join(dirpath, d)
             count = count_media_recursive(folder_path, extensions)
-            old_digits = m.group(2)
-            # Preserve zero-padding width of the original number.
-            width = max(len(old_digits), len(str(count)))
-            new_suffix = f"{m.group(1)}{count:0{width}d}{m.group(3)}"
-            new_name = d[: m.start()] + new_suffix
+            if count < 2:
+                # A single clip carries no count: there is no "Clips-01".
+                new_name = d[: m.start()].rstrip() + m.group(3)
+            else:
+                old_digits = m.group(2)
+                # Preserve zero-padding width of the original number.
+                width = max(len(old_digits), len(str(count)))
+                new_suffix = f"{m.group(1)}{count:0{width}d}{m.group(3)}"
+                new_name = d[: m.start()] + new_suffix
             if new_name != d:
                 plan.append((folder_path, os.path.join(dirpath, new_name)))
     return plan

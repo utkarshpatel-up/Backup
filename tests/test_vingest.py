@@ -139,6 +139,15 @@ class TestNaming:
             "01 Willingen Lunch Dt-16-Apr-26", 3) == \
             "01 Willingen Lunch Dt-16-Apr-26 Clips-03"
 
+    def test_a_single_clip_carries_no_count_and_two_start_at_clips_02(self):
+        # There is no "Clips-01": the count appears once a second clip arrives.
+        assert naming.set_clips_count("Hong Kong Satsang Dt-10-Oct-26", 1) == \
+            "Hong Kong Satsang Dt-10-Oct-26"
+        assert naming.set_clips_count("Hong Kong Satsang Dt-10-Oct-26 Clips-01", 1) == \
+            "Hong Kong Satsang Dt-10-Oct-26"
+        assert naming.set_clips_count("Hong Kong Satsang Dt-10-Oct-26", 2) == \
+            "Hong Kong Satsang Dt-10-Oct-26 Clips-02"
+
     def test_set_clips_count_of_zero_or_none_removes_the_token(self):
         assert naming.set_clips_count("01 Event Dt-16-Apr-26 Clips-04", 0) == \
             "01 Event Dt-16-Apr-26"
@@ -570,6 +579,42 @@ class TestPlan:
         folders = [p.name for p in destination.rglob("*") if p.is_dir()]
         assert any(f.endswith("Clips-05") for f in folders), folders
         assert not any(f.endswith("Clips-18") for f in folders), folders
+
+    def test_one_root_clip_adds_no_count_and_a_second_card_adds_clips_02(self, tmp_path):
+        """Cards arrive one at a time: after the first single clip the folder has
+        no count, and filing a second clip into it adds "Clips-02"."""
+        import os
+        raw = tmp_path / "RAW"
+        raw.mkdir()
+        clips = []
+        for i in (1, 2):
+            c = raw / f"card{i}.mp4"
+            c.write_bytes(b"x")
+            os.utime(c, (100 + i, 100 + i))
+            clips.append(str(c))
+        destination = tmp_path / "DEST"
+        spec = {"role": "informal", "source_root": str(raw), "dest_root": str(destination),
+                "masters": [], "allow_no_master": True, "rename_camera_clips": True,
+                "direct_camera_folders": True}
+
+        first = ingest.build_plan({"mode": "copy", "targets": [{
+            **spec, "session_name": "Hong Kong Satsang Dt-10-Oct-26", "cams": {"0": clips[:1]}}]})
+        assert first["targets"][0]["session_folder"] == "Hong Kong Satsang Dt-10-Oct-26"
+        assert ingest.execute_plan(first)["failed"] == 0
+        session = destination / "Hong Kong Satsang Dt-10-Oct-26"
+        assert session.is_dir()
+        # A session's only clip carries no number either.
+        assert [f.name for f in session.iterdir()] == ["Hong Kong Satsang.mp4"]
+
+        second = ingest.build_plan({"mode": "copy", "targets": [{
+            **spec, "session_source": str(session), "cams": {"0": clips[1:]}}]})
+        assert second["targets"][0]["session_folder"].endswith("Clips-02")
+        assert ingest.execute_plan(second)["failed"] == 0
+        filed = destination / "Hong Kong Satsang Dt-10-Oct-26 Clips-02"
+        assert filed.is_dir()
+        # The earlier lone clip became Clip-001; the new one follows as Clip-002.
+        assert sorted(f.name for f in filed.iterdir()) == [
+            "Hong Kong Satsang Clip-001.mp4", "Hong Kong Satsang Clip-002.mp4"]
 
     def test_informal_count_updates_when_clips_are_added_in_place(self, tmp_path):
         """Filing more clips into an existing informal folder re-tallies its
@@ -1406,6 +1451,27 @@ class TestCameraCards:
             for p in sorted(tmp_path.iterdir()) if p.is_dir()])
         return sources.find_camera_cards()
 
+    def test_a_dji_drone_card_is_found_with_only_its_video(self, tmp_path, monkeypatch):
+        # Drone 128GB: DCIM/DJI_001 holds the .MOV clips beside .LRF proxies and
+        # .SRT telemetry; only the video counts. Older DJI cards use DCIM/100MEDIA.
+        clips = tmp_path / "Drone 128GB" / "DCIM" / "DJI_001"
+        clips.mkdir(parents=True)
+        for stem in ("DJI_20261018213534_0005_D_AV", "DJI_20261018213548_0006_D_AV"):
+            for ext in (".MOV", ".LRF", ".SRT"):
+                (clips / f"{stem}{ext}").write_bytes(b"x")
+        old = tmp_path / "Drone 64GB" / "DCIM" / "100MEDIA"
+        old.mkdir(parents=True)
+        (old / "DJI_0001.MP4").write_bytes(b"x")
+        r = self._find(tmp_path, monkeypatch)
+        found = {c["label"]: c for c in r["cards"]}
+        assert set(found) == {"Drone 128GB", "Drone 64GB"}
+        assert found["Drone 128GB"]["layout"] == "DJI drone"
+        assert sorted(Path(f).suffix for f in found["Drone 128GB"]["files"]) == [".MOV", ".MOV"]
+
+    def test_an_empty_dcim_folder_is_not_a_card(self, tmp_path, monkeypatch):
+        (tmp_path / "SSD-06" / "DCIM" / "DJI_001").mkdir(parents=True)
+        assert self._find(tmp_path, monkeypatch)["card_count"] == 0
+
     def test_cards_are_found_whatever_their_number(self, tmp_path, monkeypatch):
         self._mount(tmp_path, "CanonA_0006", "0006")
         self._mount(tmp_path, "CanonB_0021", "0021", count=3)
@@ -1638,6 +1704,40 @@ class TestMasterClipNaming:
         clip_name = Path(t["items"][0]["dst"]).name
         assert folder_dur in clip_name, "a lone master must carry the folder's duration"
         assert "Clip-" not in clip_name and "Clips-" not in t["session_folder"]
+
+    @needs_ffmpeg
+    def test_rerunning_a_filed_session_renames_only_the_edited_master(self, tmp_path):
+        # After a copy the operator fixes one master's name and runs again. The
+        # filed masters are sent from the session folder itself: the edited one
+        # is renamed in place, the other maps to its own name and is untouched.
+        import os
+        import datetime as _dt
+        session = (tmp_path / "SSD" / "3053 Dt-21 Oct 2026"
+                   / "Bhadran Satsang M. Dt-21-Oct-26 Dur-1m35s Clips-02")
+        session.mkdir(parents=True)
+        first = session / "Bhadran Satsang M. Dt-21-Oct-26 Dur-30s Clip-01.MOV"
+        second = session / "Bhadran Satsang M. Dt-21-Oct-26 Dur-1m5s Clip-02.MOV"
+        for clip, secs, hour in ((first, 30, 6), (second, 65, 7)):
+            make_clip(clip, secs)
+            stamp = _dt.datetime(2026, 10, 21, hour).timestamp()
+            os.utime(clip, (stamp, stamp))
+        fixed = "Bhadran New Hall Opening M. Dt-21-Oct-26 Dur-30s Clip-01.MOV"
+
+        plan = ingest.build_plan({"mode": "copy", "targets": [{
+            "role": "prores", "source_root": str(tmp_path / "SSD"),
+            "dest_root": str(session.parent), "session_source": str(session),
+            "masters": [str(first), str(second)],
+            "clip_names": {str(first): fixed}, "cams": {}}]})
+
+        t = plan["targets"][0]
+        masters = [i for i in t["items"] if i["kind"] == "master"]
+        assert [(Path(i["src"]).name, Path(i["dst"]).name) for i in masters] == [
+            (first.name, fixed)]
+        assert t["session_folder"] == session.name, "the folder name is unchanged"
+
+        ingest.execute_plan(plan)
+        assert sorted(f.name for f in session.iterdir() if f.is_file()) == sorted(
+            [fixed, second.name])
 
     @needs_ffmpeg
     def test_a_ceremony_master_swaps_the_topic_and_counts_toward_dur(self, tmp_path):
@@ -1940,6 +2040,30 @@ class TestOrganizeRenameTool:
         assert plan["file_count"] == 3
         assert {os.path.splitext(f["new_path"])[1].lower()
                 for f in plan["files"]} == {".crm", ".mp4"}
+
+    def test_a_session_with_one_clip_is_renamed_without_a_number(self, tmp_path):
+        folder = tmp_path / "Hong Kong Dimplebhai's Satsang Dt-10-Oct-26"
+        folder.mkdir()
+        (folder / "Amba-Maa-Aarti.mp4").write_bytes(b"x")
+        plan = organize.plan_rename(str(tmp_path))
+        assert [os.path.basename(f["new_path"]) for f in plan["files"]] == [
+            "Hong Kong Dimplebhai's Satsang.mp4"]
+        organize.apply_rename(plan)
+        assert organize.plan_rename(str(tmp_path))["file_count"] == 0   # stable
+
+    def test_choosing_the_session_folder_itself_keeps_its_event_name(self, tmp_path):
+        # Picking (or dropping) the session folder, not its parent, must not
+        # name the clips after their Cam-NN folder ("Cam-02 Cam-02 Clip-004").
+        job, lunch, dinner = self._make_session(tmp_path)
+        plan = organize.plan_rename(str(lunch))
+        names = sorted(os.path.basename(f["new_path"]) for f in plan["files"])
+        assert names == [
+            "Cam-01 Willingen Lunch Clip-001.MP4",
+            "Cam-01 Willingen Lunch Clip-002.mov",
+            "Cam-01 Willingen Lunch Clip-003.mts",
+            "Cam-02 Willingen Lunch Clip-001.MP4",
+            "Cam-02 Willingen Lunch Clip-002.mp3",
+        ]
 
     def test_the_rpc_methods_are_registered(self):
         assert "plan_rename" in server.METHODS
@@ -2431,3 +2555,57 @@ class TestUnusableFfprobe:
         assert probe._BROKEN
         probe.configure(ffprobe=str(clip))             # operator picks another binary
         assert probe._BROKEN is None
+
+
+class TestNumberingEarlierSessions:
+    """A day's first session is filed before a second exists, so it has no "01 "."""
+
+    def _job(self, tmp_path, *names):
+        job = tmp_path / "3053 Dt-21 Oct 2026"
+        for n in names:
+            (job / n).mkdir(parents=True)
+        return job
+
+    def test_the_evening_zip_numbers_the_morning_folder(self, tmp_path):
+        # The evening zip carries only session 02; the morning one is on disk unnumbered.
+        morning = "Bhadran MBA - Bhaio Shibir Satsang on Topic, New Hall Opening M. Dt-21-Oct-26 Dur-1h27m Clips-03"
+        job = self._job(tmp_path, morning)
+        found = structure.find_unnumbered_sessions(
+            [str(job)], ["02 Bhadran MBA - Bhaio Shibir Samayik Vidhi E. Dt-21-Oct-26 Dur-5m32s"])
+        assert [Path(r["new_path"]).name for r in found] == [f"01 {morning}"]
+
+    def test_a_zip_listing_both_sessions_matches_by_name(self, tmp_path):
+        job = self._job(tmp_path, "Sydney Satsang E1. Dt-29-Sep-26 Dur-1h52m Clips-04",
+                        "02 Sydney Bhakti E2. Dt-29-Sep-26 Dur-1h19m")
+        found = structure.find_unnumbered_sessions([str(job)], [
+            "01 Sydney Satsang E1. Dt-29-Sep-26 Dur-1h50m Clips-04",
+            "02 Sydney Bhakti E2. Dt-29-Sep-26 Dur-1h19m"])
+        assert [Path(r["new_path"]).name for r in found] == [
+            "01 Sydney Satsang E1. Dt-29-Sep-26 Dur-1h52m Clips-04"]
+
+    def test_an_edited_name_still_matches_by_date_and_session_tag(self, tmp_path):
+        job = self._job(tmp_path, "Sydney Shortened E1. Dt-29-Sep-26 Dur-1h52m")
+        found = structure.find_unnumbered_sessions([str(job)], [
+            "01 Sydney Satsang on Topic Long Name Here E1. Dt-29-Sep-26",
+            "02 Sydney Bhakti E2. Dt-29-Sep-26"])
+        assert [r["number"] for r in found] == ["01"]
+
+    def test_left_over_folders_are_numbered_morning_before_evening(self, tmp_path):
+        job = self._job(tmp_path, "Adalaj Talk E. Dt-01-Oct-26", "Adalaj Puja M. Dt-01-Oct-26")
+        found = structure.find_unnumbered_sessions([str(job)], ["03 Adalaj Garba E2. Dt-01-Oct-26"])
+        assert sorted(Path(r["new_path"]).name for r in found) == [
+            "01 Adalaj Puja M. Dt-01-Oct-26", "02 Adalaj Talk E. Dt-01-Oct-26"]
+
+    def test_ambiguous_or_unnumbered_zips_propose_nothing(self, tmp_path):
+        job = self._job(tmp_path, "A M. Dt-01-Oct-26", "B E. Dt-01-Oct-26")
+        # Two loose folders but only one missing number: leave them alone.
+        assert structure.find_unnumbered_sessions([str(job)], ["02 C E2. Dt-01-Oct-26"]) == []
+        # A zip whose sessions carry no numbers implies nothing.
+        assert structure.find_unnumbered_sessions([str(job)], ["C E2. Dt-01-Oct-26"]) == []
+
+    def test_apply_renames_the_folder_in_place(self, tmp_path):
+        job = self._job(tmp_path, "Morning M. Dt-21-Oct-26")
+        found = structure.find_unnumbered_sessions([str(job)], ["02 Evening E. Dt-21-Oct-26"])
+        result = structure.apply_session_numbers(found)
+        assert result["errors"] == []
+        assert sorted(c.name for c in job.iterdir()) == ["01 Morning M. Dt-21-Oct-26"]

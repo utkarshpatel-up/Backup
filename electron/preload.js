@@ -1,5 +1,5 @@
 'use strict';
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 /** The renderer gets this narrow surface only — no Node, no fs, no spawn. */
 contextBridge.exposeInMainWorld('api', {
@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld('api', {
   setBusy: (busy) => ipcRenderer.invoke('app:setBusy', busy),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
+
+  // A dropped File no longer carries .path (Electron 32+); ask for it here.
+  pathForFile: (file) => webUtils.getPathForFile(file),
 
   platform: process.platform,
 });

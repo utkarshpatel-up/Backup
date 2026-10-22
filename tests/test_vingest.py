@@ -2609,3 +2609,36 @@ class TestNumberingEarlierSessions:
         result = structure.apply_session_numbers(found)
         assert result["errors"] == []
         assert sorted(c.name for c in job.iterdir()) == ["01 Morning M. Dt-21-Oct-26"]
+
+
+class TestPickingASessionFolderDirectly:
+    """Adding clips the next day: the operator picks the session folder itself
+    ("02 Bhadran …") because the job holds two sessions. It must be taken as the
+    session, never its _manifest log folder."""
+
+    def _session(self, tmp_path):
+        session = (tmp_path / "3053 Dt-21 Oct 2026"
+                   / "02 Bhadran MBA - Bhaio Shibir Samayik Vidhi E. Dt-21-Oct-26 Dur-5m32s")
+        (session / "_manifest").mkdir(parents=True)
+        (session / "_manifest" / "manifest 21-Oct-26 192611.json").write_text("{}")
+        (session / "Bhadran MBA - Bhaio Shibir Samayik Vidhi E. Dt-21-Oct-26 Dur-5m32s.MOV"
+         ).write_bytes(b"x")
+        return session
+
+    def test_the_picked_session_folder_is_the_session(self, tmp_path):
+        session = self._session(tmp_path)
+        d = structure.detect(session, probe_masters=False)
+        assert d.session_path == str(session)
+        assert d.job_name == "3053 Dt-21 Oct 2026"
+
+    def test_manifest_is_never_a_session_even_when_alone(self, tmp_path):
+        # An undated folder whose only child is _manifest must not adopt it.
+        folder = tmp_path / "Some Folder"
+        (folder / "_manifest").mkdir(parents=True)
+        d = structure.detect(folder, probe_masters=False)
+        assert d.session_path != str(folder / "_manifest")
+
+    def test_picking_the_job_folder_still_finds_the_session(self, tmp_path):
+        session = self._session(tmp_path)
+        d = structure.detect(session.parent, probe_masters=False)
+        assert d.session_path == str(session)

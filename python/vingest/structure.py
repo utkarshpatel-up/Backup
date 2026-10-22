@@ -22,6 +22,7 @@ from pathlib import Path
 
 from . import naming
 from .probe import is_junk, is_video, probe, scan_videos
+from .report import MANIFEST_DIR
 
 CLIPS_ALIASES = {"clips for insert", "clips", "inserts", "insert clips"}
 
@@ -87,8 +88,10 @@ def _candidate_folders(root: Path, max_depth: int = 3):
         if len(d.parts) - base >= max_depth:
             dirnames[:] = []
             continue
+        # The app's own copy log (_manifest) is never a session folder.
         dirnames[:] = sorted(x for x in dirnames
                              if not is_junk(d / x) and x.lower() not in CLIPS_ALIASES
+                             and x != MANIFEST_DIR
                              and not naming.CAM_FOLDER_RE.match(x))
         for name in dirnames:
             yield d / name
@@ -145,6 +148,14 @@ def detect(root: str | Path, probe_masters: bool = True,
                               "Found camera folders directly inside this folder.")
                 break
 
+    # The chosen folder is itself a session when its own name carries the
+    # session's Dt- token (e.g. the operator picked "02 Bhadran … Dt-21-Oct-26"
+    # because the job holds two sessions). Never look inside it for another.
+    if session is None and naming.DATE_TOKEN_RE.search(root.name):
+        session = root
+        out.confidence = "weak"
+        out.reason = "This folder's name carries a Dt- token."
+
     # Next best: a folder already carrying a Dt- token.
     if session is None:
         for folder in _candidate_folders(root):
@@ -157,7 +168,8 @@ def detect(root: str | Path, probe_masters: bool = True,
     # Last resort: a zip that unpacked to exactly one folder.
     if session is None:
         try:
-            children = [c for c in root.iterdir() if c.is_dir() and not is_junk(c)]
+            children = [c for c in root.iterdir()
+                        if c.is_dir() and not is_junk(c) and c.name != MANIFEST_DIR]
         except OSError:
             children = []
         if len(children) == 1:
@@ -188,7 +200,8 @@ def detect(root: str | Path, probe_masters: bool = True,
     if token:
         out.current_dur = naming.parse_duration(token.group(0).strip()[4:])
 
-    if session != root and parent != session:
+    # A picked session folder (named with its Dt- date) still sits in its job.
+    if parent != session and (session != root or naming.DATE_TOKEN_RE.search(root.name)):
         out.job_path, out.job_name = str(parent), parent.name
 
     if clips is None:

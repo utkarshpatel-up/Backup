@@ -2642,3 +2642,31 @@ class TestPickingASessionFolderDirectly:
         session = self._session(tmp_path)
         d = structure.detect(session.parent, probe_masters=False)
         assert d.session_path == str(session)
+
+
+class TestEverySessionInAZip:
+    """Every session in a structure zip is offered, including master-only ones
+    that carry no camera folders."""
+
+    def test_sessions_without_camera_folders_are_all_listed(self, tmp_path):
+        # 3055: two sessions, neither with camera folders.
+        job = tmp_path / "3055 Dt-23 Oct 2026"
+        (job / "01 Bhadran MBA - Bhaio Shibir Brahmacharya Purvardh Parayan M. Dt-23-Oct-26 Dur-1h43m Clips-02").mkdir(parents=True)
+        (job / "02 Bhadran MBA - Bhaio Shibir General Satsang E. Dt-23-Oct-26 Dur-1h10m").mkdir()
+        found = [Path(d.session_path).name[:2] for d in structure.detect_all(tmp_path, probe_masters=False)]
+        assert found == ["01", "02"]
+
+    def test_a_master_only_session_beside_camera_sessions_is_listed(self, tmp_path):
+        # 3056: three sessions with cameras and a fourth, 04, with none.
+        job = tmp_path / "3056 Dt-24 Oct 2026"
+        for n, tag in (("01", "M1"), ("02", "M2"), ("03", "E1")):
+            (job / f"{n} Bhadran Session {tag}. Dt-24-Oct-26 Dur-0m1s" / "Clips for Insert" / "Cam-01").mkdir(parents=True)
+        (job / "04 Bhadran MBA - Bhaio Shibir Garba, Informal Satsang E2. Dt-24-Oct-26 Dur-0m1s Clips-41").mkdir()
+        found = [Path(d.session_path).name[:2] for d in structure.detect_all(tmp_path, probe_masters=False)]
+        assert found == ["01", "02", "03", "04"]
+
+    def test_the_job_folder_itself_is_not_a_session(self, tmp_path):
+        job = tmp_path / "3055 Dt-23 Oct 2026"          # spaced job date, no Dt-DD-Mon-YY
+        (job / "01 Event M. Dt-23-Oct-26").mkdir(parents=True)
+        found = [Path(d.session_path).name for d in structure.detect_all(tmp_path, probe_masters=False)]
+        assert found == ["01 Event M. Dt-23-Oct-26"]

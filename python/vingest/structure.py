@@ -251,9 +251,11 @@ def detect(root: str | Path, probe_masters: bool = True,
 def detect_all(root: str | Path, probe_masters: bool = True) -> list[Detected]:
     """Return every session represented below a structure root.
 
-    A session containing ``Clips for Insert`` or direct ``Cam-NN`` folders is
-    authoritative. If no such folder exists, retain the legacy weak
-    single-folder detection as a fallback.
+    A session is a folder containing ``Clips for Insert`` or direct ``Cam-NN``
+    folders, or one named with a session date token (``Dt-24-Oct-26``) — a
+    master-only session in the zip has no camera folders at all, yet is still
+    a session. If neither is found, retain the legacy weak single-folder
+    detection as a fallback.
     """
     root = Path(root)
     if not root.is_dir():
@@ -261,7 +263,8 @@ def detect_all(root: str | Path, probe_masters: bool = True) -> list[Detected]:
     sessions: list[Path] = []
     seen: set[str] = set()
     for folder in _candidate_folders(root):
-        if _clips_child(folder) is None and not _camera_children(folder):
+        if (_clips_child(folder) is None and not _camera_children(folder)
+                and not naming.DATE_TOKEN_RE.search(folder.name)):
             continue
         key = os.path.normcase(os.path.abspath(str(folder)))
         if key not in seen:

@@ -1,13 +1,15 @@
 'use strict';
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { PythonBridge } = require('./python-bridge');
 const { openFolderGroups } = require('./open-folders');
+const { ScheduleOcr } = require('./schedule-ocr');
 app.setName('AV Backup');
 
 let win = null;
 let bridge = null;
+let scheduleOcr = null;   // started on the first schedule picture
 
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
 
@@ -91,6 +93,10 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // Keep working when the window is minimised or behind another app: Chromium
+      // otherwise slows its timers to a crawl, and pdf.js stalls drawing a
+      // schedule's pages until the window comes back.
+      backgroundThrottling: false,
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -133,6 +139,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (bridge) bridge.stop();
+  if (scheduleOcr) scheduleOcr.close();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -264,3 +271,50 @@ ipcMain.handle('shell:openFolderGroups', (_e, groups) =>
 
 ipcMain.handle('settings:get', () => loadSettings());
 ipcMain.handle('settings:set', (_e, patch) => saveSettings(patch));
+
+// ------------------------------------------------------- event schedules
+
+const SCHEDULE_IMAGES = ['png', 'jpg', 'jpeg'];
+
+ipcMain.handle('dialog:pickSchedule', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: 'Choose the event schedule',
+    message: 'Choose the event schedule',   // macOS shows `message`, not `title`
+    defaultPath: app.getPath('downloads'),
+    filters: [
+      { name: 'Schedule (picture, PDF, Word, Excel, CSV)',
+        extensions: [...SCHEDULE_IMAGES, 'pdf', 'docx', 'xlsx', 'xlsm', 'csv'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+  });
+  return r.canceled ? null : r.filePaths[0];
+});
+
+ipcMain.handle('dialog:saveXlsx', async (_e, defaultName) => {
+  const r = await dialog.showSaveDialog(win, {
+    title: "Save the event's sheet",
+    message: "Save the event's sheet",
+    defaultPath: path.join(app.getPath('downloads'), defaultName || 'Event_Schedule.xlsx'),
+    filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }],
+  });
+  return r.canceled ? null : r.filePath;
+});
+
+/** Read one schedule picture (a file path, or a PDF page rendered by the renderer). */
+async function readSchedulePicture(image) {
+  if (image.isEmpty()) {
+    throw new Error('That picture could not be opened. Save it as a JPG or PNG and try again.');
+  }
+  const { width, height } = image.getSize();
+  if (!scheduleOcr) scheduleOcr = new ScheduleOcr(app.getPath('userData'));
+  return scheduleOcr.read(image.toPNG(), { width, height, data: image.toBitmap(), order: 'bgra' });
+}
+
+ipcMain.handle('schedule:ocrFile', (_e, file) => readSchedulePicture(nativeImage.createFromPath(file)));
+ipcMain.handle('schedule:ocrImage', (_e, dataUrl) => readSchedulePicture(nativeImage.createFromDataURL(dataUrl)));
+// The PDF's bytes for pdf.js in the renderer, which has no file access of its own.
+ipcMain.handle('schedule:readPdf', (_e, file) => {
+  if (!/\.pdf$/i.test(String(file))) throw new Error('Not a PDF.');
+  return new Uint8Array(fs.readFileSync(file));
+});

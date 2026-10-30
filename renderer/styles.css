@@ -338,3 +338,33 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .v-filters { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 2px 0 10px; }
 .v-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; user-select: none; }
 .v-filter input { margin: 0; }
+
+/* Event schedule -> master sheet: a near-full-width panel and an editable grid. */
+.modal-panel.full { width: min(1560px, 100%); }
+.sch-settings { gap: 14px; align-items: flex-end; flex-wrap: wrap; }
+.sch-settings .field { margin: 0; }
+.sch-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.sch-table { border-collapse: collapse; font-size: 12px; min-width: 100%; }
+.sch-table th {
+  position: sticky; top: 0; z-index: 1; background: var(--panel-2); text-align: left;
+  padding: 6px; font-weight: 600; color: var(--muted); white-space: nowrap;
+}
+.sch-table td { padding: 3px 4px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.sch-table tr.sch-off td { opacity: .45; }
+.sch-table .sch-id { white-space: nowrap; font-size: 11px; }
+.sch-in {
+  width: 100%; font: inherit; font-size: 12px; padding: 3px 5px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+}
+.sch-in.flag { border-color: var(--warn); background: var(--warn-soft); }
+.sch-in.w-date { width: 128px; }
+.sch-in.w-num, .sch-settings .w-num { width: 74px; }
+.sch-in.w-small { width: 46px; }
+.sch-in.w-type { width: 92px; }
+.sch-in.w-fmt { width: 62px; }
+.sch-in.w-dur { width: 92px; }
+.sch-in.w-lang { width: 110px; }
+.sch-in.w-mid { width: 150px; }
+.sch-in.w-wide { width: 230px; }
+.sch-source { margin-top: 14px; }
+.sch-source summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 8px; }

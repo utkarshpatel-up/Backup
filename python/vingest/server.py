@@ -18,8 +18,8 @@ import threading
 import traceback
 from pathlib import Path
 
-from . import (__version__, compare, frappe_sync, ingest, naming, organize,
-               probe, report, sources, structure, verify_csv)
+from . import (__version__, compare, frappe_sync, ingest, master_sheet, naming,
+               organize, probe, report, sources, structure, verify_csv)
 from .hashing import algorithm
 
 _LOCK = threading.Lock()
@@ -364,6 +364,25 @@ def m_verify_csv(p, req_id):
     result["root"] = os.path.abspath(root)
     result["csv_path"] = os.path.abspath(csv_path)
     return result
+
+
+def m_schedule_read_table(p, _id):
+    """A Word, Excel or CSV event schedule as rows of cell texts."""
+    return {"rows": master_sheet.read_table(p["path"])}
+
+
+def m_schedule_scan(p, req_id):
+    """Durations, clip and camera counts of every session folder under `root`,
+    for filling in the master rows drafted from a schedule."""
+    if not os.path.isdir(p["root"]):
+        raise ValueError(f"Folder not found: {p['root']}")
+    return {"root": os.path.abspath(p["root"]),
+            "sessions": master_sheet.scan(p["root"], progress=_progress(req_id))}
+
+
+def m_schedule_write(p, _id):
+    """Save one schedule's rows as a new .xlsx in the Raw Satsang Master layout."""
+    return {"path": master_sheet.write_xlsx(p["path"], p.get("rows") or [])}
 
 
 def m_snapshot(p, req_id):

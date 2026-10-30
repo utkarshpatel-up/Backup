@@ -100,7 +100,13 @@ Output (the version number matches `version` in `package.json`):
   kept in `%APPDATA%\AV Backup` either way.
 
 Nothing else needs to be installed on the target machine: the Python engine
-**and ffmpeg/ffprobe** are frozen inside both.
+**and ffmpeg/ffprobe** are frozen inside both. The event-schedule reader is too:
+its OCR (tesseract.js with the English and Gujarati language files) and PDF
+reader (pdf.js) are npm `dependencies`, so `npm install` / `npm ci` fetches them
+on the build machine and electron-builder packs them into the app. The OCR files
+are kept unpacked (`asarUnpack` in `package.json`) because Tesseract reads them
+from disk, and on first use they are copied to `%APPDATA%\AV Backup\ocr`. The
+app needs no internet at any point.
 
 ### ffmpeg is bundled automatically
 

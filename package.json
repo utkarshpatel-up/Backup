@@ -1,6 +1,6 @@
 {
   "name": "av-backup",
-  "version": "1.6.6",
+  "version": "1.6.7",
   "description": "Organise camera-original footage into the house folder structure",
   "main": "electron/main.js",
   "scripts": {
@@ -23,6 +23,11 @@
       "electron/**/*",
       "renderer/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/tesseract.js/**",
+      "node_modules/tesseract.js-core/**",
+      "node_modules/@tesseract.js-data/**"
     ],
     "extraResources": [
       {
@@ -52,5 +57,11 @@
         "AppImage"
       ]
     }
+  },
+  "dependencies": {
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/guj": "1.0.0",
+    "pdfjs-dist": "3.11.174",
+    "tesseract.js": "7.0.0"
   }
 }

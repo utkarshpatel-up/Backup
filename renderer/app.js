@@ -57,6 +57,7 @@ const state = {
   frappe: null,         // Frappe connection/schema settings (loaded from disk)
   frappeUI: null,       // Frappe sync/settings modal: {open, view, busy, result, root}
   verify: null,         // Offline CSV comparison page: {open, root, csv, busy, result, error}
+  schedule: null,       // Event schedule -> master sheet panel (schedule-ui.js)
 };
 
 // Field names the Frappe integration stores in settings.json.
@@ -788,6 +789,7 @@ function renderSources() {
     </div>`);
 
     c.push(clipsOnlyCardHtml());
+    c.push(scheduleCardHtml());
 
     c.push(`<div class="card" id="renameDrop">
       <h3>Rename &amp; fix clip counts</h3>
@@ -919,6 +921,7 @@ function renderSources() {
     c.push(`</div>`);
   }
   c.push(clipsOnlyCardHtml());
+  c.push(scheduleCardHtml());
   return c.join('');
 }
 
@@ -984,6 +987,7 @@ function wireSources() {
   $('btnFrappeSync')?.addEventListener('click', () => syncFrappe(null));
   $('btnFrappeSettingsBtn')?.addEventListener('click', openFrappeSettings);
   $('btnVerifyCsv')?.addEventListener('click', () => openVerifyCsv());
+  wireScheduleCard();
 
   document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
     // The button toggles: "Use as source" adds it, "Added" takes it back off.
@@ -3791,6 +3795,7 @@ function renderModals() {
   if (state.rename && state.rename.open) return renderRenameModal();
   if (state.frappeUI && state.frappeUI.open) return renderFrappeModal();
   if (state.verify && state.verify.open) return renderVerifyModal();
+  if (state.schedule && state.schedule.open) return renderScheduleModal();
   host.innerHTML = '';
   host.classList.remove('show');
 }

@@ -188,6 +188,36 @@ both destination drives, while each drive uses its own selected master recording
 Files on Skip, whole-drive scan results, recycle-bin contents, and selected master
 clips can never enter the camera-copy plan.
 
+## Event schedule → Excel sheet
+
+The **Event schedule → Excel sheet** card on the Sources page turns an event's
+schedule into an Excel file of its own (`Event_Schedule_<dates>.xlsx`), laid out
+exactly like the Raw Satsang Master (ID, folder/session numbers, date, activity,
+place, topic, event type, language). Each schedule gets a new file; the master
+itself is never opened or changed — it was only the reference for the format.
+
+- **Any format, fully offline.** Pictures (JPG/PNG) and PDFs are read with
+  Tesseract on this computer, English + Gujarati; no internet and no AI. The
+  poster's ruled table is found in the pixels and each cell is read on its own,
+  so shaded rows are not lost and each date stays with its title and time.
+  Word, Excel and CSV schedules are read directly.
+- **House rules.** Each day takes the next folder number in its series (Formal
+  and Informal are separate); Formal sessions are M/E (M1, M2 … when a half has
+  several), Informal 1, 2, 3 by time; breaks are left out; a multi-day shibir
+  with no times gets M and E each day. Schedule wording maps to the master's
+  values (સોનેરી સત્સંગ → Soneri Satsang, "પ્રશ્ન - PMHT" → "with PMHT MHTs",
+  ભાદરણ → Trimandir, Bhadran …). A second event type or language goes on its
+  own row underneath, as in the master.
+- **Nothing silent.** Every row is editable before saving; cells the rules could
+  not be sure of are highlighted with the reason. Corrections are remembered and
+  offered next time.
+- **Durations from the drive.** *Fill durations from drive…* reads each filed
+  session's total duration, clip count and camera count (folder number + M/E tag
+  or session number).
+
+Rules live in `renderer/schedule-logic.js`, OCR in `electron/schedule-ocr.js`,
+and the drive scan and .xlsx writer in `python/vingest/master_sheet.py`.
+
 ## Design decisions worth knowing
 
 **Size differences between drives are not errors.** The whole point of the two
@@ -288,6 +318,7 @@ responsive.
 | `python/vingest/compare.py` | Snapshots, fast comparison, checksum verification |
 | `python/vingest/hashing.py` | xxhash with a stdlib blake2b fallback |
 | `python/vingest/report.py` | Session manifests |
+| `python/vingest/master_sheet.py` | Schedule tables, drive scan and the event's .xlsx |
 | `python/vingest/server.py` | JSON-lines RPC loop |
 
 ## Known limits

@@ -173,18 +173,66 @@ function scheduleSet(key, field, value) {
   render();
 }
 
-function scheduleDuplicate(key) {
+/**
+ * An unplanned session, not on the schedule, added by hand below row `key` (or
+ * at the end): it keeps that row's day, type, place and event, since an extra
+ * session is usually held where the planned one was; its topic is left blank.
+ */
+function scheduleAddRow(key) {
   const s = state.schedule;
-  const i = s.sessions.findIndex((x) => x.key === Number(key));
-  if (i < 0) return;
-  const copy = JSON.parse(JSON.stringify(s.sessions[i]));
-  copy.key = Math.max(...s.sessions.map((x) => x.key)) + 1;
+  const i = key == null ? s.sessions.length - 1 : s.sessions.findIndex((x) => x.key === Number(key));
+  const like = s.sessions[i];
+  const copy = like ? JSON.parse(JSON.stringify(like)) : {
+    include: true, date: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10),
+    start: null, end: null, hint: null, type: 'Formal', activity: '', place: '', city: '',
+    events: [], languages: [], author: s.defaults.author || 'DD', format: s.defaults.format || 'HD',
+    folder: null, camPlan: null,
+  };
+  copy.key = s.sessions.reduce((m, x) => Math.max(m, x.key), 0) + 1;
+  copy.include = true;
   copy.session = null;
+  copy.topic = '';
+  copy.title = ''; copy.subtitle = ''; copy.placeText = ''; copy.source = 'Unplanned — added by hand';
   copy.duration = ''; copy.clips = ''; copy.cameras = ''; copy.backedUp = null;
-  copy.flags = { ...copy.flags, session: 'Added by hand — set M/E or the session number.' };
+  copy.flags = {
+    session: 'Unplanned session added by hand — set M/E or the session number.',
+    topic: 'Unplanned session — fill in what it was about.',
+  };
   s.sessions.splice(i + 1, 0, copy);
+  s.saved = null;
   scheduleRemember();
   render();
+  scheduleFocusRow(copy.key);
+}
+
+function scheduleTickAll(on) {
+  for (const row of state.schedule.sessions) row.include = on;
+  state.schedule.saved = null;
+  scheduleRemember();
+  render();
+}
+
+/** Put the keyboard on a row's tick box: ↑/↓ then move between rows, Space ticks. */
+function scheduleFocusRow(key) {
+  const box = $('content').querySelector(`.sch-table input[type=checkbox][data-k="${key}"]`);
+  if (!box) return;
+  box.focus({ preventScroll: true });
+  box.closest('tr').scrollIntoView({ block: 'nearest' });
+}
+
+/** The table's scroll and the focused row, kept across a render of the page. */
+function scheduleSnapshot() {
+  const el = document.activeElement;
+  const box = el && el.matches && el.matches('.sch-table input[type=checkbox][data-k]') ? el.dataset.k : null;
+  const table = document.querySelector('.sch-scroll');
+  return { box, top: table ? table.scrollTop : 0, left: table ? table.scrollLeft : 0, page: $('content').scrollTop };
+}
+
+function scheduleRestore(snap) {
+  const table = document.querySelector('.sch-scroll');
+  if (table) { table.scrollTop = snap.top; table.scrollLeft = snap.left; }
+  $('content').scrollTop = snap.page;
+  if (snap.box != null) scheduleFocusRow(snap.box);
 }
 
 function scheduleApplyDefaults() {
@@ -392,9 +440,9 @@ function scheduleTableHtml(problems) {
     const blocked = row.include && blocksStart(problems.get(row.key)).length;
     const running = state.scheduleRun && state.scheduleRun.key === row.key;
     const startTitle = plan ? `${plan.jobName}\n  ${plan.sessionName}\n  ${plan.cams} camera folder${plan.cams === 1 ? '' : 's'}` : '';
-    return `<tr class="${row.include ? '' : 'sch-off'} ${running ? 'sch-running' : ''}">
+    return `<tr class="${row.include ? '' : 'sch-off'} ${running ? 'sch-running' : ''}" data-row="${row.key}">
       <td><input type="checkbox" data-k="${row.key}" data-f="include" ${row.include ? 'checked' : ''}
-        title="Include this session in the sheet"></td>
+        title="Include this session in the sheet (Space ticks, ↑/↓ moves between rows)"></td>
       <td class="mono sch-id" title="${esc(row.source || '')}">${esc(id)}</td>
       ${cell(row, 'date', SCHEDULE.toIndian(row.date), { cls: 'w-date', placeholder: 'dd/mm/yyyy',
         title: row.start ? `Starts ${row.start}` : 'dd/mm/yyyy' })}
@@ -420,15 +468,17 @@ function scheduleTableHtml(problems) {
       ${cell(row, 'camPlan', row.camPlan ?? '', { cls: 'w-small',
         placeholder: String(SCHEDULE.camsFor(row, s.defaults)),
         title: 'Camera folders the backup creates (more can be added on the Cameras page)' })}
-      <td><button class="sm ghost" data-dup="${row.key}" title="Add another session like this one">＋</button></td>
+      <td><button class="sm ghost" data-add="${row.key}" title="Add an unplanned session below this one (same day, place and event)">＋</button></td>
       <td class="sch-go">${row.include ? `<button class="sm ${row.backedUp ? '' : 'primary'}" data-start="${row.key}"
         ${blocked || state.busy ? 'disabled' : ''} title="${esc(blocked
           ? `Fix the red cells first: ${blocksStart(problems.get(row.key))[0].msg}` : startTitle)}">
         ${row.backedUp ? 'Backed up ✓' : running ? 'In progress…' : 'Start backup'}</button>` : ''}</td>
     </tr>`;
   }).join('');
+  const ticked = s.sessions.filter((x) => x.include).length;
   return `<div class="sch-scroll"><table class="sch-table">
-    <thead><tr><th></th><th>ID</th><th>Date</th><th>Type</th><th>Folder</th><th>Session</th>
+    <thead><tr><th><input type="checkbox" id="schTickAll" ${ticked && ticked === s.sessions.length ? 'checked' : ''}
+      ${ticked && ticked < s.sessions.length ? 'data-some="1"' : ''} title="Tick all / untick all"></th><th>ID</th><th>Date</th><th>Type</th><th>Folder</th><th>Session</th>
       <th>Format</th><th>Activity</th><th>Place</th><th>City</th><th>Topic / description</th><th>Event type</th>
       <th>Language</th><th>Duration</th><th>Clips</th><th>Cams</th><th title="Camera folders to create">Cam folders</th>
       <th></th><th></th></tr></thead>
@@ -515,6 +565,7 @@ function renderSchedulePage() {
         ? ` · <b>${warned}</b> with a yellow cell to check` : ''} — hover a cell to see why.
       <b>Red</b> = required by Frappe (folder, session, type, date, format, author, duration, event type);
       <b>yellow</b> = worth a look, not required.
+      Click a row, then <b>↑/↓</b> to move and <b>Space</b> to tick or untick it.
       Each day gets the next folder in its series; a number typed in a row is kept.
       Formal: <b>M</b> before noon, <b>E</b> from noon till next morning; <b>M1, M2</b> / <b>E1, E2</b> when a half has several.
       Informal: <b>1, 2, 3</b>.
@@ -523,6 +574,9 @@ function renderSchedulePage() {
         ${s.scan.filled} filled${s.scan.missing ? `, ${s.scan.missing} not on the drive` : ''}.` : ''}
       ${s.saved ? `<br>Saved to <span class="mono">${esc(s.saved)}</span>.` : ''}</div>
     ${scheduleTableHtml(problems)}` : ''}
+    <div class="row" style="margin-top:8px">
+      <button class="sm" id="schAddRow" title="A session that was not on the schedule — or use ＋ on a row to add it below that row">＋ Add unplanned session</button>
+    </div>
     ${scheduleSourceHtml()}
     ${scheduleDatalists()}`;
 }
@@ -571,9 +625,40 @@ function wireSchedulePage() {
   }
   host.querySelectorAll('[data-k][data-f]').forEach((el) => el.addEventListener('change', () =>
     scheduleSet(el.dataset.k, el.dataset.f, el.type === 'checkbox' ? el.checked : el.value)));
-  host.querySelectorAll('[data-dup]').forEach((b) => b.addEventListener('click', () => scheduleDuplicate(b.dataset.dup)));
+  host.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => scheduleAddRow(b.dataset.add)));
+  $('schAddRow')?.addEventListener('click', () => scheduleAddRow(null));
+  const all = $('schTickAll');
+  if (all) {
+    all.indeterminate = !!all.dataset.some;
+    all.addEventListener('change', () => scheduleTickAll(all.checked));
+  }
+  wireScheduleKeys(host.querySelector('.sch-table'));
   host.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', () => scheduleStartBackup(b.dataset.start)));
   host.querySelector('details.sch-source')?.addEventListener('toggle', (e) => { s.showSource = e.target.open; });
+}
+
+/**
+ * Row by row from the keyboard: clicking a row (outside its fields) puts the
+ * focus on its tick box; ↑/↓ move to the row above/below and Space ticks it.
+ * Text fields and menus keep their own arrow keys.
+ */
+function wireScheduleKeys(table) {
+  if (!table) return;
+  table.addEventListener('mousedown', (e) => {
+    const tr = e.target.closest('tbody tr');
+    if (!tr || e.target.closest('input, select, button, textarea')) return;
+    e.preventDefault();
+    scheduleFocusRow(tr.dataset.row);
+  });
+  table.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const box = e.target;
+    if (!box.matches('tbody input[type=checkbox][data-k]')) return;
+    const tr = box.closest('tr');
+    const next = e.key === 'ArrowDown' ? tr.nextElementSibling : tr.previousElementSibling;
+    e.preventDefault();
+    if (next) scheduleFocusRow(next.dataset.row);
+  });
 }
 
 function scheduleFooterHtml() {

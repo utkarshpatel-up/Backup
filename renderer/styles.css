@@ -365,6 +365,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .sch-in.w-city { width: 100px; }
 .sch-table td.sch-go { white-space: nowrap; position: sticky; right: 0; background: var(--panel); }
 .sch-table tr.sch-running td { background: var(--accent-soft); }
+.sch-table tbody tr:focus-within td { background: var(--accent-soft); }
+.sch-table tbody tr:focus-within td:first-child { box-shadow: inset 3px 0 var(--accent); }
 .sch-in.w-date { width: 92px; }
 .sch-in.w-num, .sch-settings .w-num { width: 74px; }
 .sch-in.w-small { width: 46px; }

@@ -3785,8 +3785,11 @@ function render() {
   if (onSchedule) {
     $('stepTitle').textContent = 'Event schedule';
     $('stepHint').textContent = 'Read the schedule, check every row, then start each session\'s backup from its row.';
+    // Keep the table's scroll and the row the keyboard is on (Space re-renders).
+    const snap = scheduleSnapshot();
     $('content').innerHTML = renderSchedulePage();
     wireSchedulePage();
+    scheduleRestore(snap);
     renderFooter();
     renderModals();
     return;

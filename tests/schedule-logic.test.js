@@ -160,3 +160,85 @@ test('table cells are found from ruled lines, including a merged cell', () => {
   assert.equal(rows[0][2], rows[1][2], 'the merged cell is shared by both rows');
   assert.notEqual(rows[0][1], rows[1][1]);
 });
+
+const row = (key, over = {}) => ({ key, include: true, type: 'Formal', date: '2026-10-17', start: '21:00',
+  author: 'DD', format: 'HD', activity: 'General', place: 'Dadanagar Hall', city: 'Adalaj', duration: '1h 2m 3s',
+  topic: 'General Satsang', events: ['Soneri Satsang'], languages: ['Gujarati'], flags: {}, ...over });
+
+test('dates are shown and typed the Indian way, dd/mm/yyyy', () => {
+  assert.equal(S.toIndian('2026-10-17'), '17/10/2026');
+  assert.equal(S.fromIndian('17/10/2026'), '2026-10-17');
+  assert.equal(S.fromIndian('1-2-26'), '2026-02-01');
+  assert.equal(S.fromIndian('31/02/2026'), null);
+});
+
+test('M before noon, E from noon till next morning; numbered only when a half has several', () => {
+  const one = [row(1, { start: '10:00' }), row(2, { start: '15:00' })];
+  let n = S.assignNumbers(one, { formal: 3000 });
+  assert.deepEqual([1, 2].map((k) => n.get(k).session), ['M', 'E']);
+  // A 1:30 AM session belongs to the night before: that day's folder, the next E.
+  const late = [row(1, { start: '21:00' }), row(2, { date: '2026-10-18', start: '01:30' })];
+  n = S.assignNumbers(late, { formal: 3000 });
+  assert.deepEqual([1, 2].map((k) => [n.get(k).folder, n.get(k).session]), [[3000, 'E1'], [3000, 'E2']]);
+  assert.equal(S.sheetRows(late, { formal: 3000 })[0][6], '2026-10-17');
+});
+
+test('a row gives the folders a structure zip would carry', () => {
+  const shibir = [
+    row(1, { start: null, hint: 'M', city: 'Bhadran', activity: 'MBA - Bhaio', events: ['Shibir'] }),
+    row(2, { start: null, hint: 'E', city: 'Bhadran', activity: 'MBA - Bhaio', events: ['Shibir'] }),
+  ];
+  const plan = S.folderPlan(shibir, { formal: 3062 });
+  assert.equal(plan.get(1).jobName, '3062 Dt-17 Oct 2026');
+  assert.equal(plan.get(1).sessionName, '01 Bhadran MBA - Bhaio Shibir General Satsang M. Dt-17-Oct-26');
+  assert.equal(plan.get(2).sessionName, '02 Bhadran MBA - Bhaio Shibir General Satsang E. Dt-17-Oct-26');
+  assert.equal(plan.get(1).cams, 3);
+  // One session alone in its folder carries no number; Informal has no M/E.
+  const informal = [row(3, { type: 'Informal', topic: 'Gurupurnima Darshan', events: ['Darshan'] })];
+  const p = S.folderPlan(informal, { informal: 2620 }).get(3);
+  assert.equal(p.sessionName, 'Adalaj Gurupurnima Darshan Dt-17-Oct-26');
+  assert.equal(p.id, 'DD-I-HD-2620-1');
+  assert.equal(p.cams, 1);
+});
+
+test('rows Frappe would refuse are caught before saving or backing up', () => {
+  const vocab = { activities: ['General'], events: ['Soneri Satsang', 'Darshan'], languages: ['Gujarati'] };
+  const hard = (sessions, starts) => {
+    const out = {};
+    for (const [k, v] of S.check(sessions, starts, vocab)) {
+      out[k] = Object.keys(v).filter((f) => v[f].hard);
+    }
+    return out;
+  };
+  assert.deepEqual(hard([row(1), row(2, { start: '09:00' })], { formal: 3000 }), {});
+  // No folder number yet.
+  assert.deepEqual(hard([row(1)], {}), { 1: ['folder'] });
+  // A lone evening typed as E1, and an informal session typed as M.
+  assert.deepEqual(hard([row(1, { session: 'E1' })], { formal: 3000 }), { 1: ['session'] });
+  assert.deepEqual(hard([row(1, { type: 'Informal', session: 'M' })], { informal: 2600 }), { 1: ['session'] });
+  // Two rows with the same ID, and one folder on two days.
+  assert.deepEqual(hard([row(1, { session: 'E' }), row(2, { session: 'E' })], { formal: 3000 }), { 1: ['session'], 2: ['session'] });
+  const twoDays = hard([row(1, { folder: '3000' }), row(2, { folder: '3000', date: '2026-10-18' })], {});
+  assert.ok(twoDays[1].includes('folder') && twoDays[2].includes('folder'));
+  // An event type not in the master list is a warning, not a block.
+  const warn = S.check([row(1, { events: ['Made Up'] })], { formal: 3000 }, vocab).get(1);
+  assert.equal(warn.events.hard, false);
+});
+
+test('only Frappe\'s required fields are red; the rest are yellow', () => {
+  const vocab = { activities: ['General'], events: ['Soneri Satsang'], languages: ['Gujarati'] };
+  const got = (over) => S.check([row(1, over)], { formal: 3000 }, vocab).get(1) || {};
+  // Optional in Frappe: topic, language, city — yellow.
+  const optional = got({ topic: '', languages: [], city: '' });
+  assert.deepEqual(Object.keys(optional).sort(), ['city', 'languages', 'topic']);
+  assert.ok(Object.values(optional).every((p) => !p.hard));
+  // Required: format, author and an event type — red.
+  assert.equal(got({ format: '' }).format.hard, true);
+  assert.equal(got({ author: '' }).author.hard, true);
+  assert.equal(got({ events: [] }).events.hard, true);
+  // Duration is required too, but only known after the backup: red, yet it
+  // does not stop the backup that fills it in.
+  const dur = got({ duration: '' }).duration;
+  assert.deepEqual([dur.hard, dur.after], [true, true]);
+  assert.equal(got({ duration: 'about an hour' }).duration.after, false);
+});

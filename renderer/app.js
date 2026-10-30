@@ -3,6 +3,7 @@
 /* ------------------------------------------------------------------ state */
 
 const state = {
+  view: 'schedule',     // 'schedule' = the Event schedule page; 'steps' = the backup steps below
   step: 0,
   backupType: 'formal', // formal = mixer masters; informal = camera recordings only
   informalDest: '',    // one explicit output; camera cards are imported later on Page 3
@@ -57,7 +58,8 @@ const state = {
   frappe: null,         // Frappe connection/schema settings (loaded from disk)
   frappeUI: null,       // Frappe sync/settings modal: {open, view, busy, result, root}
   verify: null,         // Offline CSV comparison page: {open, root, csv, busy, result, error}
-  schedule: null,       // Event schedule -> master sheet panel (schedule-ui.js)
+  schedule: null,       // Event schedule page and its master rows (schedule-ui.js)
+  scheduleRun: null,    // the schedule row the current backup was started from: {key, id}
 };
 
 // Field names the Frappe integration stores in settings.json.
@@ -789,7 +791,6 @@ function renderSources() {
     </div>`);
 
     c.push(clipsOnlyCardHtml());
-    c.push(scheduleCardHtml());
 
     c.push(`<div class="card" id="renameDrop">
       <h3>Rename &amp; fix clip counts</h3>
@@ -921,35 +922,38 @@ function renderSources() {
     c.push(`</div>`);
   }
   c.push(clipsOnlyCardHtml());
-  c.push(scheduleCardHtml());
   return c.join('');
+}
+
+/** Switch between Formal and Informal, dropping everything chosen for the other. */
+function setBackupType(next) {
+  if (next === state.backupType) return;
+  state.backupType = next;
+  state.assignment = null;
+  state.masters = {};
+  state.ceremonyNames = {};
+  state.masterSource = null;
+  state.mastersFiled = false;
+  state.filedSessions = {};
+  state.clipsOnly = false;
+  state.camSeededKey = null;
+  state.completedCams = new Set();
+  state.assign = {};
+  state.selection = [];
+  state.cardCams = {};
+  state.plan = null; state.namingPreview = null;
+  state.runResult = null;
+  if (isInformal()) {
+    state.sources.forEach((source) => {
+      if (source.role !== 'template') source.role = 'other';
+    });
+  }
 }
 
 function wireSources() {
   document.querySelectorAll('[data-backup-type]').forEach((button) =>
     button.addEventListener('click', () => {
-      const next = button.dataset.backupType;
-      if (next === state.backupType) return;
-      state.backupType = next;
-      state.assignment = null;
-      state.masters = {};
-      state.ceremonyNames = {};
-      state.masterSource = null;
-      state.mastersFiled = false;
-      state.filedSessions = {};
-      state.clipsOnly = false;
-      state.camSeededKey = null;
-      state.completedCams = new Set();
-      state.assign = {};
-      state.selection = [];
-      state.cardCams = {};
-      state.plan = null; state.namingPreview = null;
-      state.runResult = null;
-      if (isInformal()) {
-        state.sources.forEach((source) => {
-          if (source.role !== 'template') source.role = 'other';
-        });
-      }
+      setBackupType(button.dataset.backupType);
       render();
     }));
   $('btnRescan')?.addEventListener('click', rescanVolumes);
@@ -975,6 +979,7 @@ function wireSources() {
   });
   $('btnRemoveTemplate')?.addEventListener('click', () => {
     state.sources = state.sources.filter((source) => source.role !== 'template');
+    state.scheduleRun = null;
     state.template = null;
     state.templates = [];
     state.plan = null; state.namingPreview = null;
@@ -987,7 +992,6 @@ function wireSources() {
   $('btnFrappeSync')?.addEventListener('click', () => syncFrappe(null));
   $('btnFrappeSettingsBtn')?.addEventListener('click', openFrappeSettings);
   $('btnVerifyCsv')?.addEventListener('click', () => openVerifyCsv());
-  wireScheduleCard();
 
   document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
     // The button toggles: "Use as source" adds it, "Added" takes it back off.
@@ -1074,6 +1078,8 @@ async function addZipSource() {
       { label: `Extracting ${info.label}` });
     // “Replace” means exactly one active structure source. Keep footage drives,
     // but remove the prior extracted template before registering the new one.
+    // A zip picked by hand is not a schedule row's backup.
+    state.scheduleRun = null;
     state.sources = state.sources.filter((source) => source.role !== 'template');
     state.template = null;
     state.templates = [];
@@ -3452,6 +3458,8 @@ async function doRun() {
       // camera afterwards goes straight into these folders without re-detection.
       state.mastersFiled = true;
       for (const t of p.targets) state.filedSessions[filedKeyFor(t.source_root)] = t.session_path;
+      // Started from an event schedule row: read its duration back into the row.
+      await scheduleAfterRun(p);
       // Clips that landed are done. Drop them from the pool and the assignment so
       // a later card swap does not try to re-plan them from a now-ejected card.
       const filed = new Set((r.items || [])
@@ -3726,6 +3734,7 @@ function goStep(i) {
     state.plan = null; state.namingPreview = null;
     state.runResult = null;
   }
+  state.view = 'steps';
   state.step = i;
   render();
   // In template mode the ZIP already supplied the structure. Scanning a footage
@@ -3740,14 +3749,48 @@ function goStep(i) {
   if (i === 2) ensureExistingCamNamesSeeded();
 }
 
+/** Open the Event schedule page; the backup steps keep their state underneath. */
+function showSchedule() {
+  if (state.busy) {
+    toast('Wait for the current task to finish, or press Cancel.', 'warn');
+    return;
+  }
+  state.view = 'schedule';
+  render();
+}
+
 function render() {
+  const onSchedule = state.view === 'schedule';
   $('backupMode').textContent = isInformal() ? 'Informal backup' : 'Formal backup';
-  $('steps').innerHTML = STEPS.map((s, i) => `
-    <li class="${i === state.step ? 'active' : ''} ${state.busy || !stepReady(i) ? 'disabled' : ''}
+  const run = state.scheduleRun;
+  $('steps').innerHTML = `
+    <li class="${onSchedule ? 'active' : ''} ${state.busy ? 'disabled' : ''}" data-view="schedule">
+      <span class="num">≡</span><span>Event schedule</span></li>
+    ${run ? `<li class="step-note mono" title="This backup was started from the event schedule">${esc(run.id)}</li>` : ''}`
+    + STEPS.map((s, i) => `
+    <li class="${!onSchedule && i === state.step ? 'active' : ''} ${state.busy || !stepReady(i) ? 'disabled' : ''}
         ${i < state.step && stepReady(i) ? 'done' : ''}" data-step="${i}">
       <span class="num">${i + 1}</span><span>${s.label}</span></li>`).join('');
   document.querySelectorAll('[data-step]').forEach((li) =>
     li.addEventListener('click', () => goStep(Number(li.dataset.step))));
+  document.querySelector('[data-view="schedule"]')?.addEventListener('click', showSchedule);
+
+  $('topActions').innerHTML = `
+    ${state.engine.info && !state.engine.info.ffprobe
+      ? '<button class="sm" id="btnFindFfprobe">Locate ffprobe</button>' : ''}
+    <button class="sm ghost" id="btnRestart">Restart engine</button>`;
+  $('btnRestart').addEventListener('click', restartEngine);
+  $('btnFindFfprobe')?.addEventListener('click', locateFfprobe);
+
+  if (onSchedule) {
+    $('stepTitle').textContent = 'Event schedule';
+    $('stepHint').textContent = 'Read the schedule, check every row, then start each session\'s backup from its row.';
+    $('content').innerHTML = renderSchedulePage();
+    wireSchedulePage();
+    renderFooter();
+    renderModals();
+    return;
+  }
 
   $('stepTitle').textContent = STEPS[state.step].title;
   $('stepHint').textContent = isInformal()
@@ -3759,13 +3802,6 @@ function render() {
         'Check the arranged camera folders and files.',
       ][state.step]
     : STEPS[state.step].hint;
-
-  $('topActions').innerHTML = `
-    ${state.engine.info && !state.engine.info.ffprobe
-      ? '<button class="sm" id="btnFindFfprobe">Locate ffprobe</button>' : ''}
-    <button class="sm ghost" id="btnRestart">Restart engine</button>`;
-  $('btnRestart').addEventListener('click', restartEngine);
-  $('btnFindFfprobe')?.addEventListener('click', locateFfprobe);
 
   // A full re-render rebuilds the content and would reset any scrolled list to
   // the top — jarring when you assign a clip halfway down the Cameras page. Keep
@@ -3795,7 +3831,6 @@ function renderModals() {
   if (state.rename && state.rename.open) return renderRenameModal();
   if (state.frappeUI && state.frappeUI.open) return renderFrappeModal();
   if (state.verify && state.verify.open) return renderVerifyModal();
-  if (state.schedule && state.schedule.open) return renderScheduleModal();
   host.innerHTML = '';
   host.classList.remove('show');
 }
@@ -3817,10 +3852,15 @@ function renderFooter() {
     });
     return;
   }
+  if (state.view === 'schedule') {
+    $('footer').innerHTML = scheduleFooterHtml();
+    wireScheduleFooter();
+    return;
+  }
   const prev = state.step > 0;
   const next = state.step < STEPS.length - 1 && stepReady(state.step + 1);
   $('footer').innerHTML = `
-    <button id="btnPrev" ${prev ? '' : 'disabled'}>← Back</button>
+    <button id="btnPrev">${prev ? '← Back' : '← Event schedule'}</button>
     <div class="spacer"></div>
     <span class="hint" style="margin:0">${esc(footerHint())}</span>
     ${state.step === 3 && state.plan ? `<button class="primary" id="btnRun">
@@ -3828,7 +3868,7 @@ function renderFooter() {
     ${state.step !== 3 || stepReady(4)
       ? `<button class="primary" id="btnNext" ${next ? '' : 'disabled'}>Next →</button>` : ''}`;
   $('btnRun')?.addEventListener('click', doRun);
-  $('btnPrev').addEventListener('click', () => goStep(state.step - 1));
+  $('btnPrev').addEventListener('click', () => (state.step > 0 ? goStep(state.step - 1) : showSchedule()));
   $('btnNext')?.addEventListener('click', () => goStep(state.step + 1));
 }
 
@@ -4502,6 +4542,8 @@ if (typeof window.addEventListener === 'function') {
   try {
     const settings = await window.api.getSettings();
     state.frappe = { ...FRAPPE_DEFAULTS, ...(settings.frappe || {}) };
+    restoreSchedule(settings);
+    render();
     let info = await call('ping');
     if (settings.ffprobe && !info.ffprobe) {
       info = { ...info, ...await call('configure', { ffprobe: settings.ffprobe }) };

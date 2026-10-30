@@ -10,6 +10,8 @@ schedule-logic.js); this module does the parts that need the disk:
   session number).
 * :func:`write_xlsx` — the finished rows as an .xlsx in the master's column
   layout, stdlib only so the frozen build needs no openpyxl.
+* :func:`make_structure` — the empty job/session/camera folders a structure
+  zip would carry, built from one schedule row so a backup can start from it.
 """
 
 from __future__ import annotations
@@ -18,11 +20,13 @@ import csv
 import datetime as _dt
 import os
 import re
+import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from . import structure
+from . import naming, structure
+from .durations import get_duration
 from .frappe_sync import PROJECT_DIR_RE, _is_cam_folder, _scan_one, _session_number
 from .ingest import CLIP_COUNT_EXTS
 from .verify_csv import _read_xlsx_rows
@@ -110,11 +114,27 @@ def _cam_count(session: Path, exts) -> int:
     return n
 
 
+def _master_totals(session: Path, exts):
+    """Seconds and count of the master clips: the videos at the session root.
+    A formal session's Dur- and Clips-NN are written from these alone; the
+    camera clips under Clips for Insert are inserts, not part of the session."""
+    seconds, count = 0.0, 0
+    for f in sorted(session.iterdir()):
+        if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in exts:
+            count += 1
+            seconds += get_duration(str(f)) or 0
+    return seconds, count
+
+
 def scan(root: str, extensions=None, progress=None) -> list[dict]:
     """Every session folder under `root`: {project, tag, number, date, seconds,
     clips, cams, folder, path}. A session is a direct, non-camera child of a
     ``NNNN Dt-<date>`` job folder (the same rule as the Frappe sync); `tag` is its
-    Formal M/E/E2 marker, `number` its Informal leading index (1 when unnumbered)."""
+    Formal M/E/E2 marker, `number` its Informal leading index (1 when unnumbered).
+
+    Duration and clips follow the backup's own naming: a Formal session (one with
+    an M/E marker) counts its master clips only, like its Dur- and Clips-NN; an
+    Informal session counts every clip in it."""
     root = os.path.abspath(root)
     exts = set(extensions) if extensions else set(CLIP_COUNT_EXTS)
     out: list[dict] = []
@@ -136,6 +156,13 @@ def scan(root: str, extensions=None, progress=None) -> list[dict]:
             if not clips:
                 continue
             when, tag = structure._date_and_tag(child.name)
+            if tag:
+                try:
+                    master_seconds, masters = _master_totals(child, exts)
+                except OSError:
+                    masters = 0
+                if masters:
+                    seconds, clips = master_seconds, masters
             try:
                 cams = _cam_count(child, exts)
             except OSError:
@@ -186,7 +213,7 @@ def _cell(ref: str, value, style: int = 0) -> str:
 
 def write_xlsx(path: str, rows: list[list]) -> str:
     """Write `rows` under the master's header. Column G (Full Date) takes ISO
-    'YYYY-MM-DD' strings and is stored as a real Excel date."""
+    'YYYY-MM-DD' strings and is stored as a real Excel date, shown dd/mm/yyyy."""
     widths = [18, 10, 8, 10, 8, 10, 12, 12, 24, 30, 50, 8, 9, 22, 16]
     sheet_rows = ['<row r="1">' + "".join(
         _cell(f"{_col(i)}1", h, 1) for i, h in enumerate(COLUMNS)) + "</row>"]
@@ -208,6 +235,7 @@ def write_xlsx(path: str, rows: list[list]) -> str:
              f"<cols>{cols}</cols><sheetData>{''.join(sheet_rows)}</sheetData></worksheet>")
     styles = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
               '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+              '<numFmts count="1"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/></numFmts>'
               '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
               '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
               '<fills count="2"><fill><patternFill patternType="none"/></fill>'
@@ -216,7 +244,7 @@ def write_xlsx(path: str, rows: list[list]) -> str:
               '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
               '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
               '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
-              '<xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+              '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
               '</cellXfs></styleSheet>')
     files = {
         "[Content_Types].xml": (
@@ -252,3 +280,25 @@ def write_xlsx(path: str, rows: list[list]) -> str:
         for name, data in files.items():
             z.writestr(name, data)
     return path
+
+
+# ---------------------------------------------------------------- structure
+
+def make_structure(job: str, session: str, cams: int = 3) -> str:
+    """Empty folders laid out like a structure zip, in a new working folder:
+    ``<job>/<session>/Clips for Insert/Cam-01 …`` (just ``<job>/<session>`` for
+    no cameras). Returns the working folder, to be loaded as the template."""
+    job, session = naming.sanitize(job.strip()), naming.sanitize(session.strip())
+    if not PROJECT_DIR_RE.match(job):
+        raise ValueError(f"“{job}” is not a job folder name (NNNN Dt-DD Mon YYYY).")
+    if not naming.DATE_TOKEN_RE.search(session):
+        raise ValueError(f"“{session}” has no Dt- date.")
+    cams = int(cams or 0)
+    if not 0 <= cams <= 20:
+        raise ValueError("Camera folders must be between 0 and 20.")
+    root = Path(tempfile.mkdtemp(prefix="vingest-schedule-"))
+    folder = root / job / session
+    folder.mkdir(parents=True)
+    for n in range(1, cams + 1):
+        (folder / naming.CLIPS_DIRNAME / naming.cam_folder(n)).mkdir(parents=True)
+    return str(root)

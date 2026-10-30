@@ -76,10 +76,38 @@ def test_scan_reports_tag_number_duration_clips_and_cameras(tmp_path):
 
     found = {s["project"]: s for s in master_sheet.scan(str(tmp_path))}
     f = found["3017"]
-    assert (f["tag"], f["clips"], f["cams"], round(f["seconds"])) == ("E", 3, 2, 65)
+    # Formal: the master alone, like the folder's Dur- and Clips-NN; the camera
+    # clips are inserts. Cameras still count every cam folder holding a clip.
+    assert (f["tag"], f["clips"], f["cams"], round(f["seconds"])) == ("E", 1, 2, 60)
     assert f["date"] == "2026-08-16"
     i = found["2600"]
-    assert (i["number"], i["clips"], i["cams"]) == (2, 1, 1)
+    # Informal: every clip in the session.
+    assert (i["number"], i["clips"], i["cams"], round(i["seconds"])) == (2, 1, 1, 4)
+
+
+def test_make_structure_lays_out_folders_like_a_structure_zip(tmp_path):
+    from vingest import structure
+    root = master_sheet.make_structure(
+        "3062 Dt-21 Oct 2026",
+        "01 Bhadran MBA - Bhaio Shibir General Satsang M. Dt-21-Oct-26", 3)
+    found = structure.detect_all(root, probe_masters=False)
+    assert len(found) == 1
+    d = found[0]
+    assert d.job_name == "3062 Dt-21 Oct 2026"
+    assert d.session_name.startswith("01 Bhadran") and d.session_date == "2026-10-21"
+    assert sorted(d.cams) == ["1", "2", "3"] and d.is_template
+    # No cameras: just the session folder, still found by its Dt- date.
+    bare = structure.detect_all(master_sheet.make_structure(
+        "2625 Dt-23 Aug 2026", "Adalaj Gurupurnima Darshan Dt-23-Aug-26", 0), probe_masters=False)
+    assert bare[0].session_name == "Adalaj Gurupurnima Darshan Dt-23-Aug-26" and not bare[0].cams
+
+
+def test_make_structure_refuses_names_the_drive_scan_could_not_read():
+    import pytest
+    with pytest.raises(ValueError):
+        master_sheet.make_structure("Job", "Session Dt-23-Aug-26", 1)
+    with pytest.raises(ValueError):
+        master_sheet.make_structure("2625 Dt-23 Aug 2026", "Session without a date", 1)
 
 
 def test_xlsx_has_master_header_real_dates_and_continuation_rows(tmp_path):
@@ -97,8 +125,10 @@ def test_xlsx_has_master_header_real_dates_and_continuation_rows(tmp_path):
     assert back[2][13] == "Garba" and not any(back[2][:13])
     with zipfile.ZipFile(out) as z:
         assert 's="2"' in z.read("xl/worksheets/sheet1.xml").decode()
+        # Shown the Indian way, dd/mm/yyyy.
+        assert 'formatCode="dd/mm/yyyy"' in z.read("xl/styles.xml").decode()
 
 
 def test_rpc_methods_are_registered():
-    for name in ("schedule_read_table", "schedule_scan", "schedule_write"):
+    for name in ("schedule_read_table", "schedule_scan", "schedule_write", "schedule_structure"):
         assert name in server.METHODS

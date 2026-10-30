@@ -60,6 +60,11 @@ body {
 }
 .steps li.active .num { background: var(--accent); color: #fff; }
 .steps li.done .num { background: var(--ok-soft); color: var(--ok); }
+.steps li[data-view] { margin-bottom: 4px; }
+.steps li.step-note {
+  cursor: default; font-size: 10px; padding: 0 10px 8px 40px; margin-top: -4px; color: var(--accent);
+}
+.steps li.step-note:hover { background: none; color: var(--accent); }
 .engine {
   margin: 0 14px; padding: 9px 11px; border-radius: 8px; background: var(--panel-2);
   font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 7px;
@@ -339,8 +344,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .v-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; user-select: none; }
 .v-filter input { margin: 0; }
 
-/* Event schedule -> master sheet: a near-full-width panel and an editable grid. */
-.modal-panel.full { width: min(1560px, 100%); }
+/* Event schedule page: an editable grid of master rows, each able to start its backup. */
 .sch-settings { gap: 14px; align-items: flex-end; flex-wrap: wrap; }
 .sch-settings .field { margin: 0; }
 .sch-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
@@ -357,7 +361,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   border: 1px solid var(--line); background: var(--panel); color: var(--text);
 }
 .sch-in.flag { border-color: var(--warn); background: var(--warn-soft); }
-.sch-in.w-date { width: 128px; }
+.sch-in.flag.err { border-color: var(--err); background: var(--err-soft); }
+.sch-in.w-city { width: 100px; }
+.sch-table td.sch-go { white-space: nowrap; position: sticky; right: 0; background: var(--panel); }
+.sch-table tr.sch-running td { background: var(--accent-soft); }
+.sch-in.w-date { width: 92px; }
 .sch-in.w-num, .sch-settings .w-num { width: 74px; }
 .sch-in.w-small { width: 46px; }
 .sch-in.w-type { width: 92px; }

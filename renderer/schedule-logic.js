@@ -53,10 +53,35 @@
   const monthNum = (s) => MONTH_OF.get(String(s).toLowerCase());
   const pad2 = (n) => String(n).padStart(2, '0');
   const iso = (y, m, d) => `${y}-${pad2(m)}-${pad2(d)}`;
+  const RE_ISO = /^(\d{4})-(\d{2})-(\d{2})$/;
 
   function validDay(y, m, d) {
     const dt = new Date(Date.UTC(y, m - 1, d));
     return dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  }
+
+  /** '2026-10-17' -> '17/10/2026', the Indian way the page shows dates. */
+  function toIndian(date) {
+    const m = RE_ISO.exec(String(date || ''));
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : String(date || '');
+  }
+
+  /** '17/10/2026' (or 17-10-26, 17.10.2026, or ISO) -> '2026-10-17'; null if not a real day. */
+  function fromIndian(text) {
+    const t = String(text || '').trim();
+    let m = RE_ISO.exec(t);
+    if (m) return validDay(+m[1], +m[2], +m[3]) ? t : null;
+    m = /^(\d{1,2})[./-](\d{1,2})[./-](\d{2}|\d{4})$/.exec(t);
+    if (!m) return null;
+    const y = m[3].length === 2 ? 2000 + +m[3] : +m[3];
+    return validDay(y, +m[2], +m[1]) ? iso(y, +m[2], +m[1]) : null;
+  }
+
+  /** The day before an ISO date. */
+  function dayBefore(date) {
+    const d = new Date(`${date}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().slice(0, 10);
   }
 
   /** Every day from `a` to `b` (ISO strings), inclusive. */
@@ -380,16 +405,24 @@
     { t: /સત્સંગ|સત્સગ|satsang|सत्संग/i, topic: 'General Satsang', events: ['General'], type: 'Formal' },
   ];
 
-  // Venue wording -> master place, with the language the session is usually in.
+  // Venue wording -> master place, with the language the session is usually in
+  // and the city that starts the session folder's name ("Adalaj Soneri …").
   const PLACE_RULES = [
-    { t: /[ભમ]ાદરણ|bhadran/i, place: 'Trimandir, Bhadran' },
-    { t: /dcc\s*hall|દાદાનગર|dada\s*nagar|dadanagar/i, place: 'Dadanagar Hall' },
-    { t: /રુદ્રાક્ષ|rudraksh/i, place: 'Rudraksh International Cooperation and Convention Centre', languages: ['Hindi'] },
+    { t: /[ભમ]ાદરણ|bhadran/i, place: 'Trimandir, Bhadran', city: 'Bhadran' },
+    { t: /dcc\s*hall|દાદાનગર|dada\s*nagar|dadanagar/i, place: 'Dadanagar Hall', city: 'Adalaj' },
+    { t: /રુદ્રાક્ષ|rudraksh/i, place: 'Rudraksh International Cooperation and Convention Centre',
+      city: 'Varanasi', languages: ['Hindi'] },
     { t: /વાત્સલ્ય|vatsalya/i, place: 'Vatsalya' },
-    { t: /સીમંધર\s*સિટી|simandhar\s*city/i, place: 'Simandhar City' },
-    { t: /અડાલજ|adalaj/i, place: 'Dadanagar Hall' },
-    { t: /વારાણસી|varanasi|banaras/i, place: 'Varanasi', guess: true, languages: ['Hindi'] },
+    { t: /સીમંધર\s*સિટી|simandhar\s*city/i, place: 'Simandhar City', city: 'Adalaj' },
+    { t: /અડાલજ|adalaj/i, place: 'Dadanagar Hall', city: 'Adalaj' },
+    { t: /વારાણસી|varanasi|banaras/i, place: 'Varanasi', city: 'Varanasi', guess: true, languages: ['Hindi'] },
   ];
+
+  /** A city read off an English place ("Hotel Venue, Allentown" -> "Allentown"); '' if unsure. */
+  function cityOf(place) {
+    const last = String(place || '').split(',').pop().trim();
+    return /^[A-Za-z][A-Za-z .'-]{1,30}$/.test(last) ? last : '';
+  }
 
   const pick = (v, e) => (typeof v === 'function' ? v(e) : v);
 
@@ -412,7 +445,7 @@
   function classify(entry, memory = {}) {
     const flags = {};
     const out = { topic: '', events: ['General'], type: 'Formal', activity: 'General',
-      place: '', languages: ['Gujarati'], allDay: false, flags };
+      place: '', city: '', languages: ['Gujarati'], allDay: false, flags };
     const text = `${entry.title} ${entry.subtitle}`;
     const rule = TITLE_RULES.find((r) => r.t.test(text));
     if (rule) {
@@ -443,9 +476,11 @@
     const prule = PLACE_RULES.find((r) => r.t.test(placeText));
     if (place) {
       out.place = place.place;
+      out.city = place.city || '';
       if (place.languages && !(remembered && remembered.languages)) out.languages = place.languages.slice();
     } else if (prule) {
       out.place = prule.place;
+      out.city = prule.city || '';
       if (prule.guess) flags.place = 'Only the city is known — add the venue.';
       if (prule.languages && !(remembered && remembered.languages)) out.languages = prule.languages.slice();
     } else {
@@ -453,6 +488,8 @@
       if (placeText) flags.place = 'Write the place in English.';
       else flags.place = 'The schedule does not name a place.';
     }
+    if (!out.city) out.city = (prule && prule.city) || cityOf(out.place);
+    if (!out.city) flags.city = 'Which city? It starts the session folder name.';
     return out;
   }
 
@@ -487,6 +524,7 @@
             type: c.type,
             activity: c.activity,
             place: c.place,
+            city: c.city,
             topic: c.topic,
             events: c.events.slice(),
             languages: c.languages.slice(),
@@ -497,6 +535,8 @@
             cameras: '',
             folder: null,          // null = numbered automatically
             session: null,         // null = numbered automatically
+            camPlan: null,         // camera folders to create; null = the default for its type
+            backedUp: null,        // when a backup started from this row finished
             title: entry.title,
             subtitle: entry.subtitle,
             placeText: entry.place,
@@ -509,12 +549,24 @@
     return sessions;
   }
 
-  /** Morning or evening from a 'HH:MM' start (or the shibir hint). */
+  // A session starting before this hour belongs to the night before: it is that
+  // day's evening, filed in that day's folder ("till next day morning").
+  const NIGHT_ENDS = 5;
+  const afterMidnight = (s) => !!s.start && +s.start.slice(0, 2) < NIGHT_ENDS;
+
+  /** Morning (before noon) or evening (noon until next morning) from a 'HH:MM' start, or the shibir hint. */
   function half(s) {
-    if (s.start) return +s.start.slice(0, 2) < 12 ? 'M' : 'E';
+    if (s.start) return +s.start.slice(0, 2) < 12 && !afterMidnight(s) ? 'M' : 'E';
     return s.hint || 'E';
   }
   const HALF_RANK = { M: 0, E: 1 };
+
+  /** The day a session is filed under: its date, or the day before for an after-midnight start. */
+  function sessionDay(s) {
+    return afterMidnight(s) && RE_ISO.test(s.date || '') ? dayBefore(s.date) : s.date;
+  }
+  /** Start time for ordering within a day; after midnight sorts after the evening. */
+  const clock = (s) => (s.start ? (afterMidnight(s) ? `${+s.start.slice(0, 2) + 24}${s.start.slice(2)}` : s.start) : '');
 
   /** Sort key of a session label within its folder: M < M1 < M2 < E < E1 …; 1 < 2 < 10. */
   function sessionRank(label) {
@@ -532,17 +584,20 @@
    */
   function assignNumbers(sessions, starts = {}) {
     const out = new Map();
-    const order = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)
-      || HALF_RANK[half(a)] - HALF_RANK[half(b)]
-      || String(a.start || '').localeCompare(String(b.start || ''))
-      || a.key - b.key;
+    const order = (a, b) => {
+      const x = sessionDay(a), y = sessionDay(b);
+      return (x < y ? -1 : x > y ? 1 : 0)
+        || HALF_RANK[half(a)] - HALF_RANK[half(b)]
+        || clock(a).localeCompare(clock(b))
+        || a.key - b.key;
+    };
     for (const type of ['Formal', 'Informal']) {
       const list = sessions.filter((s) => s.include && s.type === type).sort(order);
       const start = Number(type === 'Formal' ? starts.formal : starts.informal);
-      const days = [...new Set(list.map((s) => s.date))];
+      const days = [...new Set(list.map(sessionDay))];
       const folderOf = new Map(days.map((d, i) => [d, Number.isFinite(start) && start > 0 ? start + i : null]));
       for (const day of days) {
-        const group = list.filter((s) => s.date === day);
+        const group = list.filter((s) => sessionDay(s) === day);
         const folder = (s) => (s.folder != null && s.folder !== '' ? Number(s.folder) : folderOf.get(day));
         if (type === 'Informal') {
           group.forEach((s, i) => out.set(s.key, { folder: folder(s), session: s.session || String(i + 1) }));
@@ -567,6 +622,201 @@
     return `${author}-${String(s.type || '').charAt(0)}-${s.format}-${f}-${session}`;
   }
 
+  /* ------------------------------------------------ session folders */
+
+  const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const ILLEGAL = /[<>:"/\\|?*\x00-\x1f]/g;
+  const safeName = (t) => String(t).replace(ILLEGAL, '-').replace(/\s+/g, ' ').trim().replace(/[ .]+$/, '');
+  const DEFAULT_CAMS = { Formal: 3, Informal: 1 };
+
+  /** Camera folders a backup started from this row creates. */
+  function camsFor(s, defaults = {}) {
+    if (s.camPlan !== null && s.camPlan !== undefined && s.camPlan !== '') return Number(s.camPlan);
+    const d = s.type === 'Informal' ? defaults.camsInformal : defaults.camsFormal;
+    return d !== undefined && d !== '' && d !== null ? Number(d) : DEFAULT_CAMS[s.type] ?? 3;
+  }
+
+  /** '3058 Dt-17 Oct 2026', the job folder (one per folder number, one day each). */
+  function jobFolderName(folder, date) {
+    const [y, m, d] = String(date).split('-');
+    return `${String(folder).padStart(4, '0')} Dt-${d} ${MON3[+m - 1]} ${y}`;
+  }
+
+  /**
+   * The session folder a structure zip would carry for this row:
+   * Formal   'NN City Activity Event Topic E2. Dt-17-Oct-26'
+   * Informal 'NN City Topic Dt-17-Oct-26'
+   * Activity and event are left out when 'General' or already in the topic. NN
+   * numbers the session within its folder and is left off when the folder has
+   * one session (a lone informal session is then session 1, as the drive scan reads it).
+   */
+  function sessionFolderName(s, session, lead) {
+    const has = (big, small) => !!norm(small) && norm(big).includes(norm(small));
+    const topic = String(s.topic || '').trim();
+    const parts = [];
+    if (s.city && !norm(topic).startsWith(norm(s.city))) parts.push(s.city);
+    if (s.type === 'Formal') {
+      if (s.activity && s.activity !== 'General' && !has(topic, s.activity)) parts.push(s.activity);
+      const ev = (s.events || [])[0];
+      if (ev && ev !== 'General' && !has(topic, ev)) parts.push(ev);
+      if (topic) parts.push(topic);
+      parts.push(`${session}.`);
+    } else {
+      parts.push(topic || (s.events || [])[0] || 'Informal');
+    }
+    const [y, m, d] = String(sessionDay(s)).split('-');
+    const prefix = lead ? `${pad2(lead)} ` : '';
+    return safeName(`${prefix}${parts.join(' ')} Dt-${d}-${MON3[+m - 1]}-${y.slice(2)}`);
+  }
+
+  /**
+   * Everything a backup started from each included row needs: Map key ->
+   * {id, type, folder, session, jobName, sessionName, cams}.
+   */
+  function folderPlan(sessions, starts = {}, defaults = {}) {
+    const nums = assignNumbers(sessions, starts);
+    const byFolder = new Map();
+    for (const s of sessions) {
+      const n = nums.get(s.key);
+      if (!s.include || !n || n.folder == null) continue;
+      const k = `${s.type}|${n.folder}`;
+      if (!byFolder.has(k)) byFolder.set(k, []);
+      byFolder.get(k).push(s);
+    }
+    const out = new Map();
+    for (const group of byFolder.values()) {
+      group.sort((a, b) => sessionRank(nums.get(a.key).session) - sessionRank(nums.get(b.key).session));
+      group.forEach((s, i) => {
+        const { folder, session } = nums.get(s.key);
+        const lead = group.length < 2 ? 0 : s.type === 'Informal' ? Number(session) || i + 1 : i + 1;
+        out.set(s.key, {
+          id: masterId(s, folder, session),
+          type: s.type,
+          folder,
+          session,
+          jobName: jobFolderName(folder, sessionDay(s)),
+          sessionName: sessionFolderName(s, session, lead),
+          cams: camsFor(s, defaults),
+        });
+      });
+    }
+    return out;
+  }
+
+  /* --------------------------------------------------------- checks */
+
+  const RE_DURATION = /^(?:\d+h )?(?:\d+m )?\d+s$|^\d+h(?: \d+m)?$|^\d+m$/;
+
+  // The Raw Satsang Master fields Frappe's import requires (its red fields):
+  // ID (from folder, session, type, format and author), Folder/DVCAM No.,
+  // Session Time/No., Satsang Type, Full Date, Format, Author, Duration, and
+  // an Event Type in the Event/Category table. Everything else — activity,
+  // place, topic, language, clips, cameras — is optional there, so problems
+  // with it are warnings.
+  const FORMATS = ['HD', '4K', 'DV'];
+
+  /**
+   * What would make Frappe refuse a row, or keep its durations from finding
+   * their folder after the backup. Map key -> {field: {msg, hard, after}}:
+   * `hard` (red) is a required field missing or wrong — it blocks saving, and
+   * starting a backup unless `after` (the duration, known only once backed up);
+   * the rest (yellow) are warnings.
+   */
+  function check(sessions, starts = {}, vocab = {}) {
+    const nums = assignNumbers(sessions, starts);
+    const out = new Map();
+    const add = (s, field, msg, hard = true, after = false) => {
+      if (!out.has(s.key)) out.set(s.key, {});
+      const o = out.get(s.key);
+      if (!o[field] || (hard && !o[field].hard)) o[field] = { msg, hard, after };
+    };
+    const known = (list) => new Set((list || []).map((v) => String(v).toLowerCase()));
+    const vocabOf = { activity: known(vocab.activities), events: known(vocab.events), languages: known(vocab.languages) };
+    const included = sessions.filter((s) => s.include);
+    const folders = new Map();
+    const ids = new Map();
+    for (const s of included) {
+      const n = nums.get(s.key) || {};
+      const label = String(n.session || '');
+      if (!RE_ISO.test(s.date || '') || !fromIndian(s.date)) add(s, 'date', 'Enter the date as dd/mm/yyyy.');
+      else if (afterMidnight(s)) add(s, 'date', `Starts after midnight — filed with the evening of ${toIndian(sessionDay(s))}.`, false);
+      if (n.folder == null || !Number.isFinite(Number(n.folder)) || Number(n.folder) <= 0) {
+        add(s, 'folder', `Enter the first ${s.type} folder number above, or type one in this row.`);
+      } else {
+        const k = String(Number(n.folder));
+        if (!folders.has(k)) folders.set(k, []);
+        folders.get(k).push(s);
+        const id = `${k}-${label.toUpperCase()}`;
+        if (ids.has(id)) {
+          add(s, 'session', 'Same folder and session as another row — Frappe refuses a duplicate ID.');
+          add(ids.get(id), 'session', 'Same folder and session as another row — Frappe refuses a duplicate ID.');
+        } else ids.set(id, s);
+      }
+      if (s.type === 'Formal' && !/^[ME]\d*$/.test(label)) {
+        add(s, 'session', 'Formal sessions are M or E — M1, M2 / E1, E2 when a half has more than one.');
+      } else if (s.type === 'Informal' && !/^[1-9]\d*$/.test(label)) {
+        add(s, 'session', 'Informal sessions are numbered 1, 2, 3.');
+      }
+      if (!['Formal', 'Informal'].includes(s.type)) add(s, 'type', 'Satsang Type is required: Formal or Informal.');
+      if (!FORMATS.includes(s.format)) add(s, 'format', 'Format is required: HD, 4K or DV.');
+      if (!String(s.author || '').trim()) add(s, 'author', 'Author is required (e.g. DD).');
+      const dur = String(s.duration || '').trim();
+      if (!dur) add(s, 'duration', 'Duration is required — it fills in when this session\'s backup finishes.', true, true);
+      else if (!RE_DURATION.test(dur)) add(s, 'duration', 'Write it like 1h 2m 3s, 54m 1s or 48s.');
+      // Optional in Frappe: warnings only.
+      if (!String(s.topic || '').trim()) add(s, 'topic', 'No topic — it also names the session folder.', false);
+      if (!String(s.city || '').trim()) add(s, 'city', 'Which city? It starts the session folder name.', false);
+      const notListed = 'Not in the master list — Frappe refuses it unless it is added there first.';
+      if (vocabOf.activity.size && s.activity && !vocabOf.activity.has(String(s.activity).toLowerCase())) {
+        add(s, 'activity', notListed, false);
+      }
+      for (const f of ['events', 'languages']) {
+        const list = (s[f] || []).filter(Boolean);
+        if (!list.length) {
+          if (f === 'events') add(s, f, 'Event Type is required — pick at least one.');
+          else add(s, f, 'No language.', false);
+        }
+        else if (vocabOf[f].size && list.some((v) => !vocabOf[f].has(String(v).toLowerCase()))) add(s, f, notListed, false);
+      }
+    }
+    for (const [folder, group] of folders) {
+      const days = new Set(group.map(sessionDay));
+      if (days.size > 1) {
+        group.forEach((s) => add(s, 'folder', `Folder ${folder} is on ${days.size} different days — each day has its own folder.`));
+      }
+      if (new Set(group.map((s) => s.type)).size > 1) {
+        group.forEach((s) => add(s, 'folder', `Folder ${folder} is used for both Formal and Informal.`));
+      }
+      const labels = group.map((s) => String(nums.get(s.key).session).toUpperCase());
+      if (group[0].type === 'Formal') {
+        for (const h of ['M', 'E']) {
+          const mine = group.filter((s, i) => labels[i].startsWith(h));
+          const word = h === 'M' ? 'morning (before noon)' : 'evening (noon till next morning)';
+          if (mine.length === 1 && String(nums.get(mine[0].key).session).toUpperCase() !== h) {
+            add(mine[0], 'session', `The only ${word} session is just ${h}.`);
+          } else if (mine.length > 1) {
+            const want = mine.map((_, i) => `${h}${i + 1}`).join(', ');
+            const got = mine.map((s) => String(nums.get(s.key).session).toUpperCase()).sort(
+              (a, b) => sessionRank(a) - sessionRank(b));
+            if (got.join(', ') !== want) mine.forEach((s) => add(s, 'session', `${mine.length} ${word} sessions are ${want}.`));
+          }
+        }
+        group.forEach((s) => {
+          const label = String(nums.get(s.key).session).toUpperCase();
+          if (/^[ME]/.test(label) && label[0] !== half(s) && s.start) {
+            add(s, 'session', `Starts at ${s.start}, so it is ${half(s) === 'M' ? 'a morning (M)' : 'an evening (E)'} session.`);
+          }
+        });
+      } else {
+        const sorted = labels.map(Number).sort((a, b) => a - b);
+        if (sorted.some((v, i) => v !== i + 1)) {
+          group.forEach((s) => add(s, 'session', `Informal sessions in folder ${folder} run 1, 2, 3 with no gaps.`, false));
+        }
+      }
+    }
+    return out;
+  }
+
   /**
    * Sheet rows for the included sessions, newest first like the master. A
    * second event type or language goes on its own row underneath with every
@@ -577,7 +827,7 @@
     const included = sessions.filter((s) => s.include && nums.has(s.key));
     const rank = (s) => {
       const n = nums.get(s.key);
-      return [s.date, n.folder || 0, sessionRank(n.session)];
+      return [sessionDay(s), n.folder || 0, sessionRank(n.session)];
     };
     included.sort((a, b) => {
       const x = rank(a), y = rank(b);
@@ -589,7 +839,7 @@
       const events = (s.events || []).filter(Boolean);
       const langs = (s.languages || []).filter(Boolean);
       rows.push([masterId(s, folder, session), folder, s.format, session, s.author, s.type,
-        s.date, s.duration || '', s.activity, s.place, s.topic,
+        sessionDay(s), s.duration || '', s.activity, s.place, s.topic,
         s.clips === '' || s.clips == null ? '' : Number(s.clips),
         s.cameras === '' || s.cameras == null ? '' : Number(s.cameras),
         events[0] || '', langs[0] || '']);
@@ -683,10 +933,11 @@
         if (i >= 0) mem.titles.splice(i, 1);
         mem.titles.unshift(item);
       }
-      if (s.placeText && s.place && s.place !== auto.place) {
+      if (s.placeText && s.place && (s.place !== auto.place || (s.city && s.city !== auto.city))) {
         const i = mem.places.findIndex((p) => similarity(p.key, s.placeText) >= 0.92);
         if (i >= 0) mem.places.splice(i, 1);
-        mem.places.unshift({ key: s.placeText, place: s.place, languages: (s.languages || []).slice() });
+        mem.places.unshift({ key: s.placeText, place: s.place, city: s.city || '',
+          languages: (s.languages || []).slice() });
       }
     }
     mem.titles = mem.titles.slice(0, 300);
@@ -696,5 +947,6 @@
 
   return { COLUMNS, findDates, findTime, cleanTitle, similarity, readRows, classify,
            draftSessions, assignNumbers, masterId, sheetRows, fmtDuration, applyScan,
-           learn, TITLE_RULES, PLACE_RULES };
+           learn, toIndian, fromIndian, sessionDay, half, camsFor, jobFolderName,
+           sessionFolderName, folderPlan, check, TITLE_RULES, PLACE_RULES };
 });

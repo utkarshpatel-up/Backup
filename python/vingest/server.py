@@ -385,6 +385,11 @@ def m_schedule_write(p, _id):
     return {"path": master_sheet.write_xlsx(p["path"], p.get("rows") or [])}
 
 
+def m_schedule_structure(p, _id):
+    """The empty session structure for one schedule row, standing in for a zip."""
+    return {"path": master_sheet.make_structure(p["job"], p["session"], p.get("cams", 3))}
+
+
 def m_snapshot(p, req_id):
     return compare.snapshot(p["root"], p.get("with_duration", True),
                             _progress(req_id), _cancelled(req_id))

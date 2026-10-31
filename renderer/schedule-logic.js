@@ -17,7 +17,7 @@
   const COLUMNS = ['ID', 'Folder/DVCAM No.', 'Format', 'Session Time/No.', 'Author',
     'Satsang Type', 'Full Date', 'Duration', 'Activity', 'Place Details',
     'Topic/Description', 'No of clips', 'No of cameras',
-    'Event Type (Event/Category)', 'Language Type (Language)'];
+    'Event Type (Event/Category)', 'Language Type (Language)', 'Geolocation'];
 
   /* ------------------------------------------------------------ dates */
 
@@ -722,7 +722,7 @@
    * starting a backup unless `after` (the duration, known only once backed up);
    * the rest (yellow) are warnings.
    */
-  function check(sessions, starts = {}, vocab = {}) {
+  function check(sessions, starts = {}, vocab = {}, cities = []) {
     const nums = assignNumbers(sessions, starts);
     const out = new Map();
     const add = (s, field, msg, hard = true, after = false) => {
@@ -766,6 +766,11 @@
       // Optional in Frappe: warnings only.
       if (!String(s.topic || '').trim()) add(s, 'topic', 'No topic — it also names the session folder.', false);
       if (!String(s.city || '').trim()) add(s, 'city', 'Which city? It starts the session folder name.', false);
+      else if (cities.length && !cityOf(s, cities)) {
+        add(s, 'city', citiesNamed(s.city, cities).length > 1
+          ? `Several cities are called ${s.city} — pick the right one from the list.`
+          : 'Not in the city list — Geolocation (City, State, Country) stays empty in Frappe.', false);
+      }
       const notListed = 'Not in the master list — Frappe refuses it unless it is added there first.';
       if (vocabOf.activity.size && s.activity && !vocabOf.activity.has(String(s.activity).toLowerCase())) {
         add(s, 'activity', notListed, false);
@@ -822,7 +827,7 @@
    * second event type or language goes on its own row underneath with every
    * other cell blank — the master's convention. Dates are ISO strings here.
    */
-  function sheetRows(sessions, starts = {}) {
+  function sheetRows(sessions, starts = {}, cities = []) {
     const nums = assignNumbers(sessions, starts);
     const included = sessions.filter((s) => s.include && nums.has(s.key));
     const rank = (s) => {
@@ -842,7 +847,7 @@
         sessionDay(s), s.duration || '', s.activity, s.place, s.topic,
         s.clips === '' || s.clips == null ? '' : Number(s.clips),
         s.cameras === '' || s.cameras == null ? '' : Number(s.cameras),
-        events[0] || '', langs[0] || '']);
+        events[0] || '', langs[0] || '', geolocation(s, cities)]);
       for (let i = 1; i < Math.max(events.length, langs.length); i++) {
         const extra = new Array(COLUMNS.length).fill('');
         extra[13] = events[i] || '';
@@ -945,8 +950,296 @@
     return mem;
   }
 
+  /* ------------------------------------------------------- cities */
+
+  /** "Gujarat-India" with country "India" -> "Gujarat". */
+  function stateName(state, country) {
+    let t = String(state || '');
+    const tail = `-${country}`;
+    while (country && t.toLowerCase().endsWith(tail.toLowerCase()) && t.length > tail.length) {
+      t = t.slice(0, -tail.length);
+    }
+    return t;
+  }
+
+  /**
+   * The city list — Frappe's City doctype export: ID, City Name, State, Country
+   * — as [{name, city, state, country}]. `name` is the record ID
+   * ("Bhadran-Gujarat-India"), which is what the Geolocation link holds.
+   */
+  function parseCities(rows) {
+    const all = (rows || []).map((r) => (r || []).map((c) => String(c ?? '').trim()));
+    const hi = all.findIndex((r) => r.some((c) => /^city/i.test(c)));
+    if (hi < 0) return [];
+    const head = all[hi].map((c) => c.toLowerCase());
+    const col = (...tests) => head.findIndex((h) => tests.some((t) => t.test(h)));
+    const iName = col(/^(id|name)$/);
+    const iCity = col(/^city( name)?$/, /^city/);
+    const iState = col(/^state/);
+    const iCountry = col(/^country/);
+    const out = [];
+    const seen = new Set();
+    for (const r of all.slice(hi + 1)) {
+      const city = r[iCity] || '';
+      if (!city) continue;
+      const country = iCountry >= 0 ? r[iCountry] || '' : '';
+      const rec = { name: (iName >= 0 && r[iName]) || city, city,
+        state: stateName(iState >= 0 ? r[iState] : '', country), country };
+      const k = rec.name.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(rec); }
+    }
+    return out.sort((a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name));
+  }
+
+  const citiesNamed = (city, cities) => {
+    const k = String(city || '').trim().toLowerCase();
+    return k ? (cities || []).filter((c) => c.city.toLowerCase() === k) : [];
+  };
+
+  /** A typed city or city ID -> its record: an ID always; a name only when one city has it. */
+  function findCity(text, cities) {
+    const k = String(text || '').trim().toLowerCase();
+    if (!k) return null;
+    const byId = (cities || []).find((c) => c.name.toLowerCase() === k);
+    if (byId) return byId;
+    const named = citiesNamed(text, cities);
+    return named.length === 1 ? named[0] : null;
+  }
+
+  /** A row's city record: the one picked (`geo`, an ID) if it still matches, else by name. */
+  function cityOf(s, cities) {
+    if (s.geo) {
+      const picked = findCity(s.geo, cities);
+      if (picked && picked.city.toLowerCase() === String(s.city || '').trim().toLowerCase()) return picked;
+    }
+    return findCity(s.city, cities);
+  }
+
+  /** Geolocation for the sheet: the city record's ID; blank when it isn't in the
+   * list, since Frappe refuses a link to a city it doesn't have. */
+  function geolocation(s, cities) {
+    const c = cityOf(s, cities);
+    return c ? c.name : '';
+  }
+
+  /* ------------------------------------------------------- report */
+
+  // The header words of the master / Frappe report exports, per field.
+  const REPORT_FIELDS = {
+    id: [/^(raw video )?id$/],
+    folder: [/^folder/],
+    format: [/^format$/],
+    session: [/^session/],
+    author: [/^author$/],
+    type: [/^satsang type$/],
+    date: [/^full date$/, /^date$/],
+    year: [/^year$/], month: [/^(m|month)$/], day: [/^(d|day)$/],
+    duration: [/^duration$/],
+    activity: [/^activity$/],
+    place: [/^place detail/],
+    topic: [/^topic/],
+    clips: [/^no\.? ?of clips$/, /^no o/],
+    cameras: [/^no\.? ?of cameras$/],
+    events: [/^event type/],
+    languages: [/^language/],
+    city: [/^city$/], state: [/^state$/], country: [/^country$/],
+    geolocation: [/^geolocation$/],
+  };
+
+  /** An Excel serial (46312), dd-mm-yyyy, dd/mm/yyyy or ISO date -> ISO; '' if none. */
+  function reportDate(v) {
+    const t = String(v ?? '').trim();
+    if (/^\d{5}(\.\d+)?$/.test(t)) {
+      return new Date(Date.UTC(1899, 11, 30) + Math.floor(+t) * 86400000).toISOString().slice(0, 10);
+    }
+    if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);
+    return fromIndian(t.split(' ')[0]) || '';
+  }
+
+  /** "00:56:23" or "56m 23s" -> the master's "56m 23s". */
+  function reportDuration(v) {
+    const t = String(v ?? '').trim();
+    const m = /^(\d+):([0-5]?\d):([0-5]?\d)$/.exec(t);
+    return m ? fmtDuration(+m[1] * 3600 + +m[2] * 60 + +m[3]) : t;
+  }
+
+  /**
+   * Records from an existing-data export (the master .xlsx or a Frappe report
+   * download): one per ID, with the continuation rows' extra event types and
+   * languages folded in, and comma lists ("Shibir,Parayan") split.
+   */
+  function parseReport(rows, cities = []) {
+    const all = (rows || []).map((r) => (r || []).map((c) => String(c ?? '').trim()));
+    const hi = all.findIndex((r) => r.some((c) => REPORT_FIELDS.id.some((t) => t.test(c.toLowerCase()))));
+    if (hi < 0) return [];
+    const head = all[hi].map((c) => c.toLowerCase());
+    const at = {};
+    for (const [f, tests] of Object.entries(REPORT_FIELDS)) {
+      at[f] = head.findIndex((h) => tests.some((t) => t.test(h)));
+    }
+    const get = (r, f) => (at[f] >= 0 ? r[at[f]] || '' : '');
+    const split = (v) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const out = [];
+    let last = null;
+    for (const r of all.slice(hi + 1)) {
+      const id = get(r, 'id');
+      if (!id) {
+        if (last) {
+          for (const f of ['events', 'languages']) {
+            for (const v of split(get(r, f))) if (!last[f].includes(v)) last[f].push(v);
+          }
+        }
+        continue;
+      }
+      let date = reportDate(get(r, 'date'));
+      if (!date && get(r, 'year')) {
+        const y = +get(r, 'year'), mo = +get(r, 'month'), d = +get(r, 'day');
+        if (y && mo && d && validDay(y, mo, d)) date = iso(y, mo, d);
+      }
+      const geo = findCity(get(r, 'geolocation'), cities);
+      last = {
+        id, folder: Number(get(r, 'folder')) || null, format: get(r, 'format'), session: get(r, 'session'),
+        author: get(r, 'author'), type: get(r, 'type'), date, duration: reportDuration(get(r, 'duration')),
+        activity: get(r, 'activity'), place: get(r, 'place'), topic: get(r, 'topic'),
+        clips: get(r, 'clips'), cameras: get(r, 'cameras'),
+        events: split(get(r, 'events')), languages: split(get(r, 'languages')),
+        city: get(r, 'city') || (geo ? geo.city : ''), state: get(r, 'state') || (geo ? geo.state : ''),
+        country: get(r, 'country') || (geo ? geo.country : ''), source: 'existing',
+      };
+      // The ID ("DD-I-DV-1498-1") names the parts a column may leave out.
+      const m = /^([A-Z]+)(?:,\s*[A-Z]+)?-([FI])-([A-Z0-9]+)-0*(\d+)-(.+)$/i.exec(id);
+      if (m) {
+        if (!last.author) last.author = m[1];
+        if (!last.type) last.type = m[2].toUpperCase() === 'F' ? 'Formal' : 'Informal';
+        if (!last.format) last.format = m[3];
+        if (!last.folder) last.folder = +m[4];
+        if (!last.session) last.session = m[5];
+      }
+      out.push(last);
+    }
+    return out;
+  }
+
+  /** Records for one schedule's ticked rows, in the same shape as parseReport's. */
+  function scheduleRecords(sessions, starts = {}, cities = [], label = '') {
+    const nums = assignNumbers(sessions, starts);
+    const out = [];
+    for (const s of sessions) {
+      const n = nums.get(s.key);
+      if (!s.include || !n || n.folder == null || !Number.isFinite(Number(n.folder))) continue;
+      const c = cityOf(s, cities);
+      out.push({
+        id: masterId(s, n.folder, n.session), folder: Number(n.folder), format: s.format,
+        session: String(n.session), author: s.author, type: s.type, date: sessionDay(s),
+        duration: s.duration || '', activity: s.activity, place: s.place, topic: s.topic,
+        clips: s.clips ?? '', cameras: s.cameras ?? '', events: (s.events || []).slice(),
+        languages: (s.languages || []).slice(), city: c ? c.city : s.city || '',
+        state: c ? c.state : '', country: c ? c.country : '', source: 'schedule', schedule: label,
+        backedUp: !!s.backedUp,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Which numbering a folder belongs to: Formal and Informal count separately,
+   * DV tapes separately from HD/4K files, and NM's recordings separately from
+   * DD's (DJM shares DD's). Each runs from 1 without holes.
+   */
+  function seriesOf(r) {
+    const who = String(r.author || '').split(',')[0].trim().toUpperCase() === 'NM' ? 'NM' : 'DD';
+    const fam = String(r.format || '').toUpperCase() === 'DV' ? 'DV' : 'HD/4K';
+    return `${who} ${r.type || '?'} ${fam}`;
+  }
+
+  /**
+   * Existing records plus the schedules', newest first (date, then folder, then
+   * session). A schedule row replaces an existing one with the same ID.
+   */
+  function mergeReport(existing, scheduled) {
+    const byId = new Map();
+    for (const r of existing || []) byId.set(r.id.toUpperCase(), r);
+    for (const r of scheduled || []) {
+      const prev = byId.get(r.id.toUpperCase());
+      byId.set(r.id.toUpperCase(), prev ? { ...r, alsoExisting: true } : r);
+    }
+    return [...byId.values()].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)
+      || (b.folder || 0) - (a.folder || 0) || sessionRank(b.session) - sessionRank(a.session));
+  }
+
+  /**
+   * Holes in the numbering: folder numbers missing inside each series, and
+   * Informal session numbers missing inside a folder (1, 3 with no 2).
+   * Returns [{series, kind, after, text}], highest folder first; `after` is the
+   * folder the gap sits just below (or the folder with the missing session).
+   */
+  function findGaps(records) {
+    const series = new Map();
+    for (const r of records || []) {
+      if (!r.folder) continue;
+      const k = seriesOf(r);
+      if (!series.has(k)) series.set(k, new Map());
+      const folders = series.get(k);
+      if (!folders.has(r.folder)) folders.set(r.folder, []);
+      folders.get(r.folder).push(r);
+    }
+    const gaps = [];
+    for (const [k, folders] of series) {
+      const nums = [...folders.keys()].sort((a, b) => a - b);
+      for (let i = 1; i < nums.length; i++) {
+        if (nums[i] - nums[i - 1] > 1) {
+          const from = nums[i - 1] + 1, to = nums[i] - 1;
+          gaps.push({ series: k, kind: 'folder', after: nums[i],
+            text: `${k}: folder ${from === to ? from : `${from}–${to}`} missing` });
+        }
+      }
+      if (!k.includes('Informal')) continue;
+      for (const [folder, rows] of folders) {
+        const have = new Set(rows.map((r) => Number(r.session)).filter((n) => n > 0));
+        const top = Math.max(0, ...have);
+        const missing = [];
+        for (let n = 1; n < top; n++) if (!have.has(n)) missing.push(n);
+        if (missing.length) {
+          gaps.push({ series: k, kind: 'session', after: folder,
+            text: `${k}: folder ${folder} has no session ${missing.join(', ')}` });
+        }
+      }
+    }
+    return gaps.sort((a, b) => b.after - a.after);
+  }
+
+  // The report's filters, as on Frappe's Raw Video Data Report. Text filters
+  // match anywhere in the field, case-insensitive; Folder and Date are ranges.
+  const REPORT_TEXT_FILTERS = ['year', 'activity', 'country', 'state', 'city', 'place', 'events',
+    'topic', 'languages', 'type', 'author', 'format'];
+
+  /** Records passing the report's filters ({field: text}, folderFrom/To, dateFrom/To ISO). */
+  function filterReport(records, f = {}) {
+    const has = (v, q) => String(Array.isArray(v) ? v.join(', ') : v ?? '').toLowerCase().includes(q);
+    const tests = [];
+    for (const k of REPORT_TEXT_FILTERS) {
+      const q = String(f[k] || '').trim().toLowerCase();
+      if (!q) continue;
+      if (k === 'year') tests.push((r) => String(r.date || '').startsWith(q));
+      else if (k === 'type' || k === 'format') tests.push((r) => String(r[k] || '').toLowerCase() === q);
+      else tests.push((r) => has(r[k], q));
+    }
+    for (const [k, q] of Object.entries(f.columns || {})) {
+      const t = String(q || '').trim().toLowerCase();
+      if (t) tests.push((r) => has(k === 'date' ? toIndian(r.date) : r[k], t));
+    }
+    const lo = Number(f.folderFrom), hi = Number(f.folderTo);
+    if (f.folderFrom !== '' && f.folderFrom != null && Number.isFinite(lo)) tests.push((r) => (r.folder || 0) >= lo);
+    if (f.folderTo !== '' && f.folderTo != null && Number.isFinite(hi)) tests.push((r) => (r.folder || 0) <= hi);
+    if (f.dateFrom) tests.push((r) => r.date && r.date >= f.dateFrom);
+    if (f.dateTo) tests.push((r) => r.date && r.date <= f.dateTo);
+    return tests.length ? (records || []).filter((r) => tests.every((t) => t(r))) : (records || []).slice();
+  }
+
   return { COLUMNS, findDates, findTime, cleanTitle, similarity, readRows, classify,
            draftSessions, assignNumbers, masterId, sheetRows, fmtDuration, applyScan,
            learn, toIndian, fromIndian, sessionDay, half, camsFor, jobFolderName,
-           sessionFolderName, folderPlan, check, TITLE_RULES, PLACE_RULES };
+           sessionFolderName, folderPlan, check, parseCities, findCity, cityOf, geolocation,
+           parseReport, scheduleRecords, seriesOf, mergeReport, findGaps, filterReport,
+           reportDate, TITLE_RULES, PLACE_RULES };
 });

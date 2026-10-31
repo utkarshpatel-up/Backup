@@ -347,14 +347,21 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 /* Event schedule page: an editable grid of master rows, each able to start its backup. */
 .sch-settings { gap: 14px; align-items: flex-end; flex-wrap: wrap; }
 .sch-settings .field { margin: 0; }
-.sch-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
-.sch-table { border-collapse: collapse; font-size: 12px; min-width: 100%; }
+/* The grid scrolls inside its own box, so its header row and first columns can
+   stay frozen while the page around it stays put (the Frappe report's layout). */
+.sch-scroll {
+  overflow: auto; border: 1px solid var(--line); border-radius: 8px;
+  max-height: calc(100vh - 330px); min-height: 220px; max-width: 100%;
+}
+.sch-table { border-collapse: separate; border-spacing: 0; font-size: 12px; min-width: 100%; }
 .sch-table th {
   position: sticky; top: 0; z-index: 1; background: var(--panel-2); text-align: left;
   padding: 6px; font-weight: 600; color: var(--muted); white-space: nowrap;
 }
 .sch-table td { padding: 3px 4px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-.sch-table tr.sch-off td { opacity: .45; }
+/* Dim an unticked row's contents, not its cells: a see-through frozen cell
+   would show the columns scrolling underneath it. */
+.sch-table tr.sch-off td > * { opacity: .45; }
 .sch-table .sch-id { white-space: nowrap; font-size: 11px; }
 .sch-in {
   width: 100%; font: inherit; font-size: 12px; padding: 3px 5px; border-radius: 5px;
@@ -378,3 +385,60 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .sch-in.w-wide { width: 230px; }
 .sch-source { margin-top: 14px; }
 .sch-source summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+
+/* Frozen header row and columns (event schedule and report). */
+.sch-table thead th { position: sticky; top: 0; z-index: 2; }
+.sch-table .fz { position: sticky; z-index: 1; background: var(--panel); }
+.sch-table thead th.fz { z-index: 3; background: var(--panel-2); }
+.sch-table .fz1 { left: 0; width: 34px; min-width: 34px; max-width: 34px; }
+.sch-table .fz2 { left: 34px; width: 182px; min-width: 182px; max-width: 182px; }
+.sch-table .fz3 { left: 216px; width: 158px; min-width: 158px; max-width: 158px; }
+.sch-table .fz4 { left: 374px; width: 86px; min-width: 86px; max-width: 86px;
+  box-shadow: inset -2px 0 0 var(--line); }
+.sch-table .sch-acts { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
+.sch-table td.sch-ro { color: var(--muted); white-space: nowrap; padding: 3px 8px; }
+.sch-table td.sch-id-err { color: var(--err); }
+.sch-in.w-year { width: 58px; }
+.sch-in.w-act { width: 160px; }
+.sch-in.w-auth { width: 70px; }
+/* Column width grips, at the right edge of each header. */
+.sch-table thead th { position: sticky; }
+.sch-table th .col-grip {
+  position: absolute; top: 0; right: 0; width: 8px; height: 100%; cursor: col-resize; z-index: 4;
+}
+.sch-table th .col-grip:hover, body.col-resizing .sch-table th .col-grip:hover { background: var(--accent); opacity: .5; }
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none; }
+.sch-table .sch-del { color: var(--muted); }
+.sch-table .sch-del:hover { color: var(--err); }
+.sch-src-scroll { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+
+/* Past schedules. */
+.sch-past { width: 100%; border-collapse: collapse; font-size: 12px; }
+.sch-past th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.sch-past td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.sch-past .sch-past-file { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.sch-past .sch-past-acts { white-space: nowrap; text-align: right; }
+
+/* Report. */
+.rep-filters { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.rep-filters .rep-f { width: 100%; padding: 6px 8px; }
+.rep-gaps { margin: 12px 0 0; color: var(--warn); font-size: 12px; line-height: 1.6; }
+.rep-count { margin: 10px 0 6px; text-align: right; color: var(--muted); font-size: 12px; }
+.rep-scroll { max-height: calc(100vh - 420px); }
+.rep-table td { white-space: nowrap; padding: 5px 8px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.rep-table thead th { padding: 6px 8px; }
+.rep-table thead tr.rep-colf th { top: 29px; padding: 3px 6px; }
+.rep-table thead tr.rep-colf .sch-in { width: 100%; min-width: 40px; }
+.rep-table .rz1 { left: 0; width: 340px; min-width: 340px; max-width: 340px; }
+.rep-table .rz2 { left: 340px; width: 72px; min-width: 72px; max-width: 72px; box-shadow: inset -2px 0 0 var(--line); }
+.rep-table tr.rep-sch td { color: var(--accent); }
+.rep-table tr.rep-both td { color: #a855f7; }
+.rep-table tr.rep-both td.rz1 { box-shadow: inset 3px 0 #a855f7; }
+.rep-id { display: flex; align-items: center; gap: 6px; overflow: hidden; }
+.rep-tag {
+  display: inline-block; flex: none; padding: 1px 6px; border-radius: 9px; font: 600 10px/1.5 var(--sans, inherit);
+  letter-spacing: .02em; white-space: nowrap;
+}
+.rep-tag.sch { background: var(--accent-soft); color: var(--accent); }
+.rep-tag.both { background: color-mix(in srgb, #a855f7 18%, transparent); color: #a855f7; }
+.rep-table tr.rep-gap td { color: var(--warn); background: var(--warn-soft); font-weight: 600; position: static; }

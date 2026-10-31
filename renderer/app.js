@@ -3761,6 +3761,7 @@ function showSchedule() {
 
 function render() {
   const onSchedule = state.view === 'schedule';
+  const onReport = state.view === 'report';
   $('backupMode').textContent = isInformal() ? 'Informal backup' : 'Formal backup';
   const run = state.scheduleRun;
   $('steps').innerHTML = `
@@ -3768,12 +3769,15 @@ function render() {
       <span class="num">≡</span><span>Event schedule</span></li>
     ${run ? `<li class="step-note mono" title="This backup was started from the event schedule">${esc(run.id)}</li>` : ''}`
     + STEPS.map((s, i) => `
-    <li class="${!onSchedule && i === state.step ? 'active' : ''} ${state.busy || !stepReady(i) ? 'disabled' : ''}
+    <li class="${!onSchedule && !onReport && i === state.step ? 'active' : ''} ${state.busy || !stepReady(i) ? 'disabled' : ''}
         ${i < state.step && stepReady(i) ? 'done' : ''}" data-step="${i}">
-      <span class="num">${i + 1}</span><span>${s.label}</span></li>`).join('');
+      <span class="num">${i + 1}</span><span>${s.label}</span></li>`).join('')
+    + `<li class="${onReport ? 'active' : ''} ${state.busy ? 'disabled' : ''}" data-view="report">
+      <span class="num">▤</span><span>Report</span></li>`;
   document.querySelectorAll('[data-step]').forEach((li) =>
     li.addEventListener('click', () => goStep(Number(li.dataset.step))));
   document.querySelector('[data-view="schedule"]')?.addEventListener('click', showSchedule);
+  document.querySelector('[data-view="report"]')?.addEventListener('click', showReport);
 
   $('topActions').innerHTML = `
     ${state.engine.info && !state.engine.info.ffprobe
@@ -3789,6 +3793,17 @@ function render() {
     const snap = scheduleSnapshot();
     $('content').innerHTML = renderSchedulePage();
     wireSchedulePage();
+    scheduleRestore(snap);
+    renderFooter();
+    renderModals();
+    return;
+  }
+  if (onReport) {
+    $('stepTitle').textContent = 'Report';
+    $('stepHint').textContent = 'Every session on record, plus the rows of the event schedules. Gaps in the numbering show in yellow.';
+    const snap = scheduleSnapshot();
+    $('content').innerHTML = renderReportPage();
+    wireReportPage();
     scheduleRestore(snap);
     renderFooter();
     renderModals();
@@ -3858,6 +3873,11 @@ function renderFooter() {
   if (state.view === 'schedule') {
     $('footer').innerHTML = scheduleFooterHtml();
     wireScheduleFooter();
+    return;
+  }
+  if (state.view === 'report') {
+    $('footer').innerHTML = reportFooterHtml();
+    wireReportFooter();
     return;
   }
   const prev = state.step > 0;
@@ -4545,7 +4565,7 @@ if (typeof window.addEventListener === 'function') {
   try {
     const settings = await window.api.getSettings();
     state.frappe = { ...FRAPPE_DEFAULTS, ...(settings.frappe || {}) };
-    restoreSchedule(settings);
+    await restoreSchedules(settings);
     render();
     let info = await call('ping');
     if (settings.ffprobe && !info.ffprobe) {
@@ -4556,6 +4576,7 @@ if (typeof window.addEventListener === 'function') {
     $('engineText').textContent = info.ffprobe
       ? `Engine ready · Python ${info.python}`
       : 'Engine ready · ffprobe missing';
+    reportPreload();
     await rescanVolumes();
   } catch (e) {
     state.engine = { ready: false, info: null, error: e.message };

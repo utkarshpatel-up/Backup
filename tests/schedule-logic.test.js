@@ -242,3 +242,62 @@ test('only Frappe\'s required fields are red; the rest are yellow', () => {
   assert.deepEqual([dur.hard, dur.after], [true, true]);
   assert.equal(got({ duration: 'about an hour' }).duration.after, false);
 });
+
+test('the city list gives Geolocation the city record ID; an unknown city leaves it blank', () => {
+  const cities = S.parseCities(require('../renderer/schedule-cities'));
+  assert.ok(cities.length > 1000);
+  const bhadran = S.findCity('Bhadran', cities);
+  assert.deepEqual(bhadran, { name: 'Bhadran-Gujarat-India', city: 'Bhadran', state: 'Gujarat', country: 'India' });
+  const base = { include: true, type: 'Formal', date: '2026-10-21', author: 'DD', format: 'HD',
+    events: ['Shibir'], languages: ['Gujarati'], flags: {}, key: 1, start: '10:00' };
+  const rows = S.sheetRows([{ ...base, city: 'Bhadran' }, { ...base, key: 2, start: '21:00', city: 'Nowhere' }],
+    { formal: 3053 }, cities);
+  assert.equal(S.COLUMNS[15], 'Geolocation');
+  assert.deepEqual(rows.map((r) => r[15]), ['', 'Bhadran-Gujarat-India']);   // newest (E) first
+  const named = cities.filter((c) => c.city === 'Springfield');
+  if (named.length > 1) assert.equal(S.findCity('Springfield', cities), null, 'a shared name needs its ID');
+});
+
+test('existing data folds continuation rows and reads Excel dates', () => {
+  const recs = S.parseReport([
+    ['ID', 'Folder/DVCAM No.', 'Format', 'Session Time/No.', 'Author', 'Satsang Type', 'Full Date',
+      'Duration', 'Activity', 'Place Details', 'Topic/Description', 'No of clips', 'No of cameras',
+      'Event Type (Event/Category)', 'Language Type (Language)'],
+    ['DD-F-HD-3057-M', '3057', 'HD', 'M', 'DD', 'Formal', '46320', '1h 33m 29s', 'MBA - Bhaio',
+      'Trimandir, Bhadran', 'Brahmacharya Purvardh Parayan', '2', '0', 'Shibir', 'Gujarati'],
+    ['', '', '', '', '', '', '', '', '', '', '', '', '', 'Parayan', 'Hindi'],
+    ['NM-F-DV-0329-E2', '329', 'DV', 'E2', 'NM', 'Formal', '', '', '', '', '', '', '', 'General', ''],
+  ]);
+  assert.equal(recs.length, 2);
+  assert.deepEqual([recs[0].date, recs[0].events, recs[0].languages],
+    ['2026-10-25', ['Shibir', 'Parayan'], ['Gujarati', 'Hindi']]);
+  assert.equal(S.seriesOf(recs[1]), 'NM Formal DV');
+});
+
+test('gaps: a missing folder per series, and a missing Informal session', () => {
+  const r = (id, folder, session, type = 'Formal', format = 'HD', author = 'DD') =>
+    ({ id, folder, session, type, format, author, date: '2026-10-01' });
+  const gaps = S.findGaps([
+    r('a', 3055, 'E'), r('b', 3057, 'M'), r('c', 3058, 'E'),
+    r('d', 3056, 'E', 'Formal', 'DV'),                         // DV counts on its own
+    r('e', 2619, '1', 'Informal'), r('f', 2619, '3', 'Informal'), r('g', 2618, '1', 'Informal', 'HD', 'DJM'),
+  ]);
+  assert.deepEqual(gaps.map((g) => g.text), [
+    'DD Formal HD/4K: folder 3056 missing',
+    'DD Informal HD/4K: folder 2619 has no session 2',
+  ]);
+});
+
+test('report filters work like Frappe\'s: text anywhere, exact menus, folder and date ranges', () => {
+  const recs = [
+    { id: 'A', folder: 3050, type: 'Formal', format: 'HD', date: '2026-10-17', city: 'Adalaj', events: ['Navratri', 'Garba'] },
+    { id: 'B', folder: 3052, type: 'Formal', format: '4K', date: '2026-10-19', city: 'Adalaj', events: ['Soneri Satsang'] },
+    { id: 'C', folder: 2617, type: 'Informal', format: 'HD', date: '2026-10-18', city: 'Bhadran', events: ['General'] },
+  ];
+  const ids = (f) => S.filterReport(recs, f).map((x) => x.id);
+  assert.deepEqual(ids({ events: 'garba' }), ['A']);
+  assert.deepEqual(ids({ format: 'HD', type: 'Formal' }), ['A']);
+  assert.deepEqual(ids({ folderFrom: '3051' }), ['B']);
+  assert.deepEqual(ids({ dateFrom: '2026-10-18', dateTo: '2026-10-18' }), ['C']);
+  assert.deepEqual(ids({ year: '2026', city: 'adal' }), ['A', 'B']);
+});

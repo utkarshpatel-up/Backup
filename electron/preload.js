@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('api', {
   ocrScheduleFile: (file) => ipcRenderer.invoke('schedule:ocrFile', file),
   ocrScheduleImage: (dataUrl) => ipcRenderer.invoke('schedule:ocrImage', dataUrl),
   readScheduleFile: (file) => ipcRenderer.invoke('schedule:readPdf', file),
+  getStore: (name) => ipcRenderer.invoke('store:get', name),
+  setStore: (name, data) => ipcRenderer.invoke('store:set', name, data),
+  pickTable: (title) => ipcRenderer.invoke('dialog:pickTable', title),
 
   reveal: (p) => ipcRenderer.invoke('shell:reveal', p),
   open: (p) => ipcRenderer.invoke('shell:open', p),

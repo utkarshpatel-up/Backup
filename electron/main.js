@@ -318,3 +318,33 @@ ipcMain.handle('schedule:readPdf', (_e, file) => {
   if (!/\.pdf$/i.test(String(file))) throw new Error('Not a PDF.');
   return new Uint8Array(fs.readFileSync(file));
 });
+
+// Bigger app data kept beside settings.json: the event schedules (every
+// assignment until the operator deletes it) and an imported city list.
+const STORES = new Set(['schedules', 'cities']);
+const storeFile = (name) => path.join(app.getPath('userData'), `${name}.json`);
+ipcMain.handle('store:get', (_e, name) => {
+  if (!STORES.has(name)) throw new Error(`Unknown store: ${name}`);
+  try { return JSON.parse(fs.readFileSync(storeFile(name), 'utf8')); } catch { return null; }
+});
+ipcMain.handle('store:set', (_e, name, data) => {
+  if (!STORES.has(name)) throw new Error(`Unknown store: ${name}`);
+  const file = storeFile(name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  // Write then rename, so a crash mid-write never leaves a half file behind.
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(data));
+  fs.renameSync(`${file}.tmp`, file);
+  return true;
+});
+
+ipcMain.handle('dialog:pickTable', async (_e, title) => {
+  const label = title || 'Choose a spreadsheet';
+  const r = await dialog.showOpenDialog(win, {
+    title: label,
+    message: label,   // macOS shows `message`, not `title`
+    defaultPath: app.getPath('downloads'),
+    filters: [{ name: 'Excel or CSV', extensions: ['xlsx', 'xlsm', 'csv'] }, { name: 'All files', extensions: ['*'] }],
+    properties: ['openFile'],
+  });
+  return r.canceled ? null : r.filePaths[0];
+});

@@ -34,7 +34,7 @@ from .verify_csv import _read_xlsx_rows
 COLUMNS = ["ID", "Folder/DVCAM No.", "Format", "Session Time/No.", "Author",
            "Satsang Type", "Full Date", "Duration", "Activity", "Place Details",
            "Topic/Description", "No of clips", "No of cameras",
-           "Event Type (Event/Category)", "Language Type (Language)"]
+           "Event Type (Event/Category)", "Language Type (Language)", "Geolocation"]
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
@@ -214,7 +214,7 @@ def _cell(ref: str, value, style: int = 0) -> str:
 def write_xlsx(path: str, rows: list[list]) -> str:
     """Write `rows` under the master's header. Column G (Full Date) takes ISO
     'YYYY-MM-DD' strings and is stored as a real Excel date, shown dd/mm/yyyy."""
-    widths = [18, 10, 8, 10, 8, 10, 12, 12, 24, 30, 50, 8, 9, 22, 16]
+    widths = [18, 10, 8, 10, 8, 10, 12, 12, 24, 30, 50, 8, 9, 22, 16, 30]
     sheet_rows = ['<row r="1">' + "".join(
         _cell(f"{_col(i)}1", h, 1) for i, h in enumerate(COLUMNS)) + "</row>"]
     for n, row in enumerate(rows, start=2):

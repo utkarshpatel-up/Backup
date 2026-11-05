@@ -302,3 +302,64 @@ def make_structure(job: str, session: str, cams: int = 3) -> str:
     for n in range(1, cams + 1):
         (folder / naming.CLIPS_DIRNAME / naming.cam_folder(n)).mkdir(parents=True)
     return str(root)
+
+
+# ------------------------------------------------------------------ finding
+
+def _job_folders(root: Path, number: str):
+    """Job folders numbered `number` at a drive's top level or one level down
+    (``M:/3058 Dt-03 Nov 2026`` or ``M:/AV 2026/3058 Dt-03 Nov 2026``)."""
+    def numbered(folder: Path):
+        try:
+            children = sorted(c for c in folder.iterdir() if c.is_dir() and not c.name.startswith("."))
+        except OSError:
+            return []
+        return [c for c in children if (m := PROJECT_DIR_RE.match(c.name)) and m.group(1) == number], children
+
+    found, children = numbered(root) or ([], [])
+    if found:
+        return found
+    for child in children:
+        if PROJECT_DIR_RE.match(child.name) or _is_cam_folder(child.name):
+            continue
+        deeper = numbered(child)
+        if deeper and deeper[0]:
+            return deeper[0]
+    return []
+
+
+def find_sessions(roots: list, job: str, session: str) -> list[dict]:
+    """The copies of one session folder across `roots` (the connected drives):
+    the job folder numbered like `job`, and inside it the session matching
+    `session` — by name (ignoring Dur-/Clips- and a leading index), else by its
+    Formal M/E marker, else by its Informal number, else the job's only session.
+    Returns [{root, job_path, session_path}], one per drive that has it."""
+    m = PROJECT_DIR_RE.match(job or "")
+    if not m:
+        raise ValueError(f"“{job}” is not a job folder name (NNNN Dt-DD Mon YYYY).")
+    number = m.group(1)
+    want_key = structure._session_key(session)
+    _, want_tag = structure._date_and_tag(session)
+    want_num = _session_number(session)
+    out = []
+    for root in roots or []:
+        r = Path(root)
+        if not r.is_dir():
+            continue
+        for job_path in _job_folders(r, number):
+            try:
+                sessions = [c for c in sorted(job_path.iterdir())
+                            if c.is_dir() and not c.name.startswith(".") and not _is_cam_folder(c.name)]
+            except OSError:
+                continue
+            pick = next((c for c in sessions if structure._session_key(c.name) == want_key), None)
+            if pick is None and want_tag:
+                pick = next((c for c in sessions if structure._date_and_tag(c.name)[1] == want_tag), None)
+            if pick is None and want_num is not None:
+                pick = next((c for c in sessions if _session_number(c.name) == want_num), None)
+            if pick is None and len(sessions) == 1:
+                pick = sessions[0]
+            if pick is not None:
+                out.append({"root": str(r), "job_path": str(job_path), "session_path": str(pick)})
+                break
+    return out

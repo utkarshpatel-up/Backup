@@ -187,7 +187,7 @@ function renderReportPage() {
       ? ` of ${all.length.toLocaleString()}` : ''}</div>
     <div class="sch-scroll rep-scroll"><table class="sch-table rep-table">
       <thead>
-        <tr><th class="fz rz1">Raw Video Id</th><th class="fz rz2">Folder</th>
+        <tr>${resizableTh('id', 'Raw Video Id', 'fz rz1')}${resizableTh('folder', 'Folder', 'fz rz2')}
           ${REPORT_COLUMNS.map(([k, h]) => resizableTh(k, h)).join('')}</tr>
         <tr class="rep-colf"><th class="fz rz1"><input class="sch-in" data-col="id" value="${esc(r.columns.id || '')}"></th>
           <th class="fz rz2"><input class="sch-in" data-col="folder" value="${esc(r.columns.folder || '')}"></th>

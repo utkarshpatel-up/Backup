@@ -138,6 +138,7 @@ class TargetPlan:
     cam_names: dict = field(default_factory=dict)     # cam number -> displayed folder name
     existing_cams: dict = field(default_factory=dict) # cam folder -> clips already filed there
     existing_cam_folders: dict = field(default_factory=dict) # cam number -> folder name (incl. empty)
+    cam_renames: list = field(default_factory=list)   # [{"from", "to"}] empty cam folders taking a new name
     existing_matches: list = field(default_factory=list) # assigned sources matching filed sizes
     master_present: bool = False                      # a master already sits in the folder
     items: list[PlanItem] = field(default_factory=list)
@@ -453,13 +454,57 @@ def build_plan(spec: dict, progress=None) -> dict:
         rename_camera_clips = bool(t.get("rename_camera_clips"))
         skip_existing_by_size = bool(t.get("skip_existing_by_size"))
 
+        # The camera folders already in the session, by number. A card tagged
+        # "(Drone)" for cam 7 must not open a second "Cam-07 (Drone)" beside the
+        # "Cam-07" the structure made: one number, one folder.
+        on_disk_cams: dict[int, list[tuple[str, int]]] = {}
+        if clips_root.is_dir():
+            for child in sorted(clips_root.iterdir(), key=lambda c: c.name.lower()):
+                m = re.match(r"Cam-(\d+)\b", child.name, re.IGNORECASE)
+                if not (m and child.is_dir()):
+                    continue
+                try:
+                    n = sum(1 for f in child.iterdir()
+                            if f.is_file() and f.suffix.lower() in CLIP_COUNT_EXTS)
+                except OSError:
+                    n = 0
+                on_disk_cams.setdefault(int(m.group(1)), []).append((child.name, n))
+        rel_prefix = "" if direct_camera_folders else f"{naming.CLIPS_DIRNAME}/"
+        settled: dict[int, str] = {}
+
         def cam_folder_name(idx: int) -> str:
             # Cam 0 is the informal "Root" target: no camera folder at all, so the
             # clip lands directly in the session folder with no "Cam-NN" prefix.
             if int(idx) <= 0:
                 return ""
+            idx = int(idx)
+            if idx in settled:
+                return settled[idx]
             custom = cam_names.get(str(idx)) or cam_names.get(idx)
-            return naming.sanitize(custom) if custom else naming.cam_folder(idx)
+            wanted = naming.sanitize(custom) if custom else naming.cam_folder(idx)
+            bare = naming.cam_folder(idx)
+            found = on_disk_cams.get(idx, [])
+            names = [name for name, _ in found]
+            chosen = wanted
+            if found and wanted not in names:
+                plain = next(((name, n) for name, n in found if name == bare), None)
+                if plain and plain[1] == 0 and len(found) == 1:
+                    # The structure's empty "Cam-07" becomes "Cam-07 (Drone)".
+                    plan.cam_renames.append({"from": rel_prefix + bare, "to": rel_prefix + wanted})
+                else:
+                    # The number already has a folder in use: file into it rather
+                    # than splitting one camera across two folders.
+                    chosen = next((name for name, n in found if n), names[0])
+                    if wanted != chosen:
+                        plan.warnings.append(
+                            f"{chosen} already holds this camera's clips, so they go in there "
+                            f"rather than a new {wanted}. Choose another camera number to keep them apart.")
+            elif wanted != bare and (bare, 0) in found:
+                # "Cam-07 (Drone)" is there already, and so is an empty "Cam-07"
+                # left from the structure: clear the empty duplicate away.
+                plan.cam_renames.append({"from": rel_prefix + bare, "to": rel_prefix + wanted})
+            settled[idx] = chosen
+            return chosen
 
         for cam_key, paths in sorted((t.get("cams") or {}).items(),
                                      key=lambda kv: int(kv[0])):
@@ -903,6 +948,17 @@ def execute_plan(plan: dict, progress=None, should_cancel=None) -> dict:
     for target in plan.get("targets", []):
         staging_root = Path(target.get("staging_path") or target["session_path"])
         staging_root.mkdir(parents=True, exist_ok=True)
+        # An empty camera folder taking its camera's new name ("Cam-07" ->
+        # "Cam-07 (Drone)"), or an empty duplicate of a folder that has it.
+        for move in target.get("cam_renames", []):
+            old, new = staging_root / move["from"], staging_root / move["to"]
+            try:
+                if old.is_dir() and not new.exists():
+                    old.rename(new)
+                elif old.is_dir() and new.is_dir() and not any(old.iterdir()):
+                    old.rmdir()
+            except OSError as e:
+                errors.append(f"Could not rename {move['from']} to {move['to']}: {e}")
         # A template's empty Cam folders are part of what it defines, so they are
         # created whether or not a clip was assigned to them.
         for rel in target.get("ensure_dirs", []):

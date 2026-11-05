@@ -476,22 +476,27 @@ async function scheduleSave() {
   const s = state.schedule;
   const rows = SCHEDULE.sheetRows(s.sessions, s.starts, scheduleCities());
   if (!rows.length) { toast('Tick at least one session to save.', 'warn'); return; }
+  // Red cells are what Frappe's import would refuse. They warn, they don't
+  // block: a working copy with gaps is often exactly what is wanted.
   const problems = scheduleProblems();
-  const blocked = s.sessions.filter((r) => r.include && blocksStart(problems.get(r.key)).length);
-  if (blocked.length) {
-    toast(`${blocked.length} row${blocked.length === 1 ? ' has' : 's have'} a red cell Frappe would refuse — `
-      + 'hover it to see why, fix it, then save.', 'warn');
-    return;
+  const red = s.sessions.filter((r) => r.include && blocksStart(problems.get(r.key)).length);
+  const noDuration = s.sessions.filter((r) => r.include && !blocksStart(problems.get(r.key)).length
+    && hardOf(problems.get(r.key)).length).length;
+  if (red.length || noDuration) {
+    const reasons = [...new Set(red.flatMap((r) => blocksStart(problems.get(r.key)).map((p) => p.msg)))];
+    const lines = [];
+    if (red.length) {
+      lines.push(`${red.length} row${red.length === 1 ? ' has' : 's have'} a red cell:`,
+        ...reasons.slice(0, 4).map((m) => `  • ${m}`),
+        ...(reasons.length > 4 ? [`  • …and ${reasons.length - 4} more`] : []));
+    }
+    if (noDuration) lines.push(`${noDuration} session${noDuration === 1 ? ' has' : 's have'} no duration yet.`);
+    if (!await window.api.confirm({
+      message: 'Some rows would be refused by the Frappe import.',
+      detail: `${lines.join('\n')}\n\nFix them first, or save this as a working copy anyway.`,
+      confirmLabel: 'Save anyway', cancelLabel: 'Go back and fix', danger: false,
+    })) return;
   }
-  // Only durations missing: those sessions are not backed up yet. Fine as a
-  // working copy, but Frappe refuses those rows until they are filled in.
-  const noDuration = s.sessions.filter((r) => r.include && hardOf(problems.get(r.key)).length).length;
-  if (noDuration && !await window.api.confirm({
-    message: `${noDuration} session${noDuration === 1 ? ' has' : 's have'} no duration yet.`,
-    detail: 'Duration is required in Frappe, so the import refuses those rows until they are backed up '
-      + '(or filled from the drive). Save this as a working copy anyway?',
-    confirmLabel: 'Save anyway', danger: false,
-  })) return;
   // Named after the schedule's dates, so each event gets a file of its own.
   const days = s.sessions.filter((x) => x.include).map(SCHEDULE.sessionDay).sort();
   const dmy = (d) => SCHEDULE.toIndian(d).replace(/\//g, '-');
@@ -558,11 +563,77 @@ async function scheduleStartBackup(key) {
     await loadTemplate(added);
     if (!state.template) return;
     state.scheduleRun = { key: row.key, id: plan.id, scheduleId: s.id };
+    // Started but not yet finished: if this backup is interrupted, the row
+    // offers "Clips only" to complete the session already on the drive.
+    row.startedAt = new Date().toISOString();
+    scheduleRemember();
     toast(`${plan.id}: add the ${plan.type === 'Informal' ? 'output folder' : 'drives'} and carry on as usual.`, 'ok');
     goStep(0);
   } catch (e) {
     toast(scheduleError(e), 'err');
   }
+}
+
+/**
+ * Finish a row whose session is already on the drive — a backup that stopped
+ * part way (an error, a pulled cable) or camera clips that arrived late. The
+ * row's session folder is found on each connected SSD, its duration, clip and
+ * camera counts are read from the folder as it stands, and the backup goes
+ * straight to the Cameras page in clips-only mode: the master and the folder
+ * name are left as they are.
+ */
+async function scheduleClipsOnly(key) {
+  const s = state.schedule;
+  const row = scheduleFind(key);
+  if (!row || state.busy) return;
+  const hard = blocksStart(scheduleProblems().get(row.key));
+  if (hard.length) { toast(`Fix this row first: ${hard[0].msg}`, 'warn'); return; }
+  const plan = SCHEDULE.folderPlan(s.sessions, s.starts, s.defaults).get(row.key);
+  if (!plan) return;
+  try {
+    const vols = await call('list_volumes', {});
+    state.volumes = vols.volumes || state.volumes;
+  } catch (_) { /* use the drives listed already */ }
+  let found = [];
+  try {
+    const r = await call('schedule_find_sessions',
+      { roots: (state.volumes || []).map((v) => v.path), job: plan.jobName, session: plan.sessionName },
+      { label: `Looking for ${plan.id} on the drives` });
+    found = r.found || [];
+  } catch (e) { toast(scheduleError(e), 'err'); return; }
+  const informal = plan.type === 'Informal';
+  let paths = found.map((f) => f.session_path).slice(0, informal ? 1 : 2);
+  if (paths.length) {
+    const ok = await window.api.confirm({
+      message: `Add camera clips to ${plan.id}'s existing session?`,
+      detail: `${paths.join('\n')}\n\nThe master and the folder name are left as they are; `
+        + 'the duration and clip count are read from the folder.'
+        + (found.length > paths.length ? `\n(Also found on ${found.length - paths.length} more drive(s), not used.)` : ''),
+      confirmLabel: 'Add camera clips', danger: false,
+    });
+    if (!ok) return;
+  } else {
+    // Not on a connected drive under that name: let the operator point at it.
+    const folder = await window.api.pickFolder(
+      `${plan.id} wasn't found on the connected drives — choose its session folder`);
+    if (!folder) return;
+    try {
+      const d = await call('detect_structure', { root: folder }, { label: 'Reading session' });
+      paths = [d.session_path || folder];
+    } catch (e) { toast(scheduleError(e), 'err'); return; }
+  }
+  // The row takes its duration, clips and cameras from the folder as it is now.
+  try {
+    const res = await call('schedule_scan', { root: parentDir(paths[0]) });
+    SCHEDULE.applyScan(s.sessions, s.starts, res.sessions);
+  } catch (_) { /* filled again when the copy finishes */ }
+  row.startedAt = row.startedAt || new Date().toISOString();
+  scheduleRemember();
+  setBackupType(informal ? 'informal' : 'formal');
+  state.scheduleRun = { key: row.key, id: plan.id, scheduleId: s.id, clipsOnly: true };
+  await clipsOnlyInto(paths);
+  toast(`${plan.id}: ${row.duration ? `${row.duration}, ${row.clips} clip${Number(row.clips) === 1 ? '' : 's'} so far. ` : ''}`
+    + 'Bring in the camera clips (Import camera cards, or Add files).', 'ok');
 }
 
 /**
@@ -708,13 +779,32 @@ function applyColWidths() {
     document.head.appendChild(tag);
   }
   const rules = [];
-  for (const [k, w] of Object.entries(colWidths('schedule'))) {
+  const fixed = (sel, w) => `${sel} { width: ${w}px; min-width: ${w}px; max-width: ${w}px; }`;
+  const sched = colWidths('schedule');
+  for (const [k, w] of Object.entries(sched)) {
+    if (k === 'id' || k === 'folder') continue;
     rules.push(`.sch-table:not(.rep-table) .c-${k} .sch-in { width: ${w}px; }`,
       `.sch-table:not(.rep-table) td.c-${k}.sch-ro { width: ${w}px; max-width: ${w}px; overflow: hidden; text-overflow: ellipsis; }`);
   }
-  for (const [k, w] of Object.entries(colWidths('report'))) {
-    rules.push(`.rep-table th.c-${k}, .rep-table td.c-${k} { width: ${w}px; min-width: ${w}px; max-width: ${w}px; }`);
+  // The frozen ID and Folder columns: a wider ID moves the Folder column along,
+  // since both stay pinned at the left while the rest scrolls.
+  const FZ3_LEFT = 296;
+  if (sched.id) {
+    rules.push(fixed('.sch-table:not(.rep-table) .fz3', sched.id),
+      `.sch-table:not(.rep-table) .fz3 { overflow: hidden; text-overflow: ellipsis; }`,
+      `.sch-table:not(.rep-table) .fz4 { left: ${FZ3_LEFT + sched.id}px; }`);
   }
+  if (sched.folder) {
+    rules.push(fixed('.sch-table:not(.rep-table) .fz4', sched.folder),
+      `.sch-table:not(.rep-table) .fz4 .sch-in { width: ${Math.max(30, sched.folder - 12)}px; }`);
+  }
+  const rep = colWidths('report');
+  for (const [k, w] of Object.entries(rep)) {
+    if (k === 'id' || k === 'folder') continue;
+    rules.push(fixed(`.rep-table th.c-${k}, .rep-table td.c-${k}`, w));
+  }
+  if (rep.id) rules.push(fixed('.rep-table .rz1', rep.id), `.rep-table .rz2 { left: ${rep.id}px; }`);
+  if (rep.folder) rules.push(fixed('.rep-table .rz2', rep.folder));
   tag.textContent = rules.join('\n');
 }
 
@@ -739,7 +829,9 @@ function wireColumnResize(table, scope) {
       e.stopPropagation();
       const th = grip.parentElement;
       // Start from what the column's box (or cell) is now.
-      const box = scope === 'schedule' ? table.querySelector(`tbody .c-${key} .sch-in`) || table.querySelector(`tbody td.c-${key}`) : th;
+      const frozen = th.classList.contains('fz');
+      const box = scope === 'schedule' && !frozen
+        ? table.querySelector(`tbody .c-${key} .sch-in`) || table.querySelector(`tbody td.c-${key}`) : th;
       const start = box ? box.getBoundingClientRect().width : th.getBoundingClientRect().width;
       const x0 = e.clientX;
       document.body.classList.add('col-resizing');
@@ -807,7 +899,11 @@ function scheduleTableHtml(problems) {
       <td class="fz fz2"><div class="sch-acts">${row.include ? `<button class="sm ${row.backedUp ? '' : 'primary'}" data-start="${row.key}"
         ${blocked || state.busy ? 'disabled' : ''} title="${esc(blocked
           ? `Fix the red cells first: ${blocksStart(problems.get(row.key))[0].msg}` : startTitle)}">
-        ${row.backedUp ? 'Backed up ✓' : running ? 'In progress…' : 'Start backup'}</button>` : ''}
+        ${row.backedUp ? 'Backed up ✓' : running ? 'In progress…' : 'Start backup'}</button>
+        <button class="sm ${row.startedAt && !row.backedUp && !running ? 'primary' : 'ghost'}" data-clips="${row.key}"
+          ${blocked || state.busy ? 'disabled' : ''} title="${esc(row.startedAt && !row.backedUp
+            ? 'This backup did not finish: add the camera clips to the session already on the drive'
+            : 'Add camera clips to this session already on the drive (late clips, or a backup that stopped)')}">Clips only</button>` : ''}
         <button class="sm ghost" data-add="${row.key}" title="Add an unplanned session below this one (same day, place and event)">＋</button>
         <button class="sm ghost sch-del" data-del="${row.key}" title="Delete this row (Undo brings it back)">✕</button></div></td>
       <td class="fz fz3 mono sch-id ${idProblem && idProblem.hard ? 'sch-id-err' : ''}"
@@ -847,7 +943,7 @@ function scheduleTableHtml(problems) {
   return `<div class="sch-scroll"><table class="sch-table">
     <thead><tr><th class="fz fz1"><input type="checkbox" id="schTickAll" ${ticked && ticked === s.sessions.length ? 'checked' : ''}
       ${ticked && ticked < s.sessions.length ? 'data-some="1"' : ''} title="Tick all / untick all"></th>
-      <th class="fz fz2"></th><th class="fz fz3">Raw Video Id</th><th class="fz fz4">Folder</th>
+      <th class="fz fz2"></th>${resizableTh('id', 'Raw Video Id', 'fz fz3')}${resizableTh('folder', 'Folder', 'fz fz4')}
       ${SCHEDULE_HEAD.map(([k, h]) => resizableTh(k, h)).join('')}</tr></thead>
     <tbody>${body}</tbody></table></div>`;
 }
@@ -1035,6 +1131,7 @@ function wireSchedulePage() {
   wireScheduleKeys(host.querySelector('.sch-table'));
   wireColumnResize(host.querySelector('.sch-table'), 'schedule');
   host.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', () => scheduleStartBackup(b.dataset.start)));
+  host.querySelectorAll('[data-clips]').forEach((b) => b.addEventListener('click', () => scheduleClipsOnly(b.dataset.clips)));
   host.querySelector('details.sch-source')?.addEventListener('toggle', (e) => { s.showSource = e.target.open; });
 }
 

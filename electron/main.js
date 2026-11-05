@@ -235,10 +235,10 @@ ipcMain.handle('dialog:pickExecutable', async () => {
   return r.canceled ? null : r.filePaths[0];
 });
 
-ipcMain.handle('dialog:confirm', async (_e, { message, detail, confirmLabel, danger }) => {
+ipcMain.handle('dialog:confirm', async (_e, { message, detail, confirmLabel, cancelLabel, danger }) => {
   const r = await dialog.showMessageBox(win, {
     type: danger ? 'warning' : 'question',
-    buttons: [confirmLabel || 'Continue', 'Cancel'],
+    buttons: [confirmLabel || 'Continue', cancelLabel || 'Cancel'],
     defaultId: danger ? 1 : 0,
     cancelId: 1,
     message,

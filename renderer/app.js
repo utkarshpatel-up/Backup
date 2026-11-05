@@ -293,7 +293,12 @@ function destOf(src) {
  */
 function filedKeyFor(srcPath) {
   if (isInformal()) return 'informal';
-  if (state.clipsOnly && !footageSources().length) return 'other';
+  if (state.clipsOnly && !footageSources().length) {
+    // Clips-only with no source drive can file into the session's copy on each
+    // SSD: the second copy is keyed by the folder it sits in.
+    const second = state.filedSessions.other2;
+    return second && srcPath && pathKey(srcPath) === pathKey(parentDir(second)) ? 'other2' : 'other';
+  }
   return srcPath || 'other';
 }
 
@@ -989,6 +994,8 @@ function wireSources() {
   makeFolderDropTarget($('renameDrop'), (folder) => openRenameTool(folder));
   $('btnClipsOnly')?.addEventListener('click', enterClipsOnly);
   $('btnClipsOnlyExit')?.addEventListener('click', exitClipsOnly);
+  $('btnSecondCopy')?.addEventListener('click', addSecondCopy);
+  $('btnSecondCopyOff')?.addEventListener('click', dropSecondCopy);
   $('btnFrappeSync')?.addEventListener('click', () => syncFrappe(null));
   $('btnFrappeSettingsBtn')?.addEventListener('click', openFrappeSettings);
   $('btnVerifyCsv')?.addEventListener('click', () => openVerifyCsv());
@@ -1193,7 +1200,7 @@ function clipsOnlySessions() {
   }
   const f = footageSources();
   if (!f.length) {
-    return state.filedSessions.other ? [state.filedSessions.other] : [];
+    return [state.filedSessions.other, state.filedSessions.other2].filter(Boolean);
   }
   return f.map((s) => state.filedSessions[filedKeyFor(s.path)]).filter(Boolean);
 }
@@ -1211,20 +1218,23 @@ function clipsOnlyCardHtml() {
       later? Skip the master step: choose the existing session folder and jump straight to camera
       assignment, then bring in the late clips with <b>Add files</b> / <b>Add a folder</b>. They are
       filed into that folder in place and renamed as usual${isInformal() ? '' : '; the master is left untouched'}.
-      ${isInformal() ? '' : 'To update two SSD copies at once, add both drives as sources first, then use this.'}</p>
+      ${isInformal() ? '' : 'Add the clips to one SSD copy or to both: the copy on the other SSD is offered when it is connected, or add it with <b>＋ Second SSD copy</b>.'}</p>
     <div class="row">
       <button class="sm primary" id="btnClipsOnly">${
         state.clipsOnly ? 'Re-choose existing session…' : 'Only camera clips…'}</button>
+      ${secondCopyButton()}
       ${state.clipsOnly ? '<button class="sm ghost" id="btnClipsOnlyExit">Exit clips-only</button>' : ''}
       <span class="hint" style="margin:0">${isInformal()
         ? 'No structure zip needed.'
-        : 'No source drive required — just pick the session folder.'}</span>
+        : 'No source drive required — pick the session folder; the same session on the other SSD is found for you.'}</span>
     </div>
     ${status}
   </div>`;
 }
 
 async function enterClipsOnly() {
+  // Chosen by hand here, so it is not a schedule row's backup.
+  state.scheduleRun = null;
   if (isInformal()) {
     const folder = await window.api.pickFolder(
       'Choose the existing session folder to add clips to');
@@ -1249,7 +1259,15 @@ async function enterClipsOnly() {
       try {
         d = await call('detect_structure', { root: folder }, { label: 'Reading session' });
       } catch (e) { toast(e.message, 'err'); return; }
-      state.filedSessions = { other: d.session_path || folder };
+      const first = d.session_path || folder;
+      state.filedSessions = { other: first };
+      // The same session on the other SSD: offer to file the clips there too.
+      const twin = await findSessionCopies(first);
+      if (twin && await window.api.confirm({
+        message: 'Add the clips to both SSD copies?',
+        detail: `The same session is also on another drive:\n${twin}\n\nChoose "Only this one" to file into ${first} alone.`,
+        confirmLabel: 'Both copies', cancelLabel: 'Only this one', danger: false,
+      })) state.filedSessions.other2 = twin;
     } else {
       // Source drive(s) already added: file into each drive's own session folder,
       // so a two-SSD job updates both copies in one pass.
@@ -1270,6 +1288,81 @@ async function enterClipsOnly() {
       state.filedSessions = filed;
     }
   }
+  await finishClipsOnlyEntry();
+}
+
+/**
+ * Clips-only into session folders already known (the event schedule found
+ * them on the drives): one per SSD copy, at most two. Any source drives and
+ * structure set up for another backup are put aside.
+ */
+async function clipsOnlyInto(paths) {
+  const list = paths.filter(Boolean);
+  if (!list.length) return;
+  state.template = null; state.templates = [];
+  state.sources = [];
+  if (isInformal()) {
+    state.informalDest = parentDir(list[0]);
+    state.filedSessions = { informal: list[0] };
+  } else {
+    state.filedSessions = { other: list[0], ...(list[1] ? { other2: list[1] } : {}) };
+  }
+  await finishClipsOnlyEntry();
+}
+
+/** The other connected drives' copy of a session folder, or null. */
+async function findSessionCopies(sessionPath) {
+  try {
+    const job = parentDir(sessionPath);
+    // Every other connected drive: not the one this copy sits on.
+    const here = pathKey(sessionPath);
+    const roots = (state.volumes || []).map((v) => v.path)
+      .filter((r) => !here.startsWith(`${pathKey(r).replace(/\/+$/, '')}/`));
+    if (!roots.length) return null;
+    const jobName = job.split(/[\\/]/).pop();
+    const r = await call('schedule_find_sessions',
+      { roots, job: jobName, session: sessionPath.split(/[\\/]/).pop() });
+    const other = (r.found || []).find((f) => pathKey(f.session_path) !== pathKey(sessionPath));
+    return other ? other.session_path : null;
+  } catch (_) {
+    return null;   // nothing found is not an error: one copy is fine
+  }
+}
+
+/** The "second SSD copy" control on the clips-only card, when it applies. */
+function secondCopyButton() {
+  if (!state.clipsOnly || isInformal() || footageSources().length || !state.filedSessions.other) return '';
+  return state.filedSessions.other2
+    ? '<button class="sm ghost" id="btnSecondCopyOff">Only the first copy</button>'
+    : '<button class="sm" id="btnSecondCopy">＋ Second SSD copy…</button>';
+}
+
+async function addSecondCopy() {
+  const folder = await window.api.pickFolder('Choose the same session folder on the other SSD');
+  if (!folder) return;
+  let d;
+  try {
+    d = await call('detect_structure', { root: folder }, { label: 'Reading session' });
+  } catch (e) { toast(e.message, 'err'); return; }
+  const second = d.session_path || folder;
+  if (pathKey(parentDir(parentDir(second))) === pathKey(parentDir(parentDir(state.filedSessions.other)))) {
+    toast('That is the same drive as the first copy — choose the folder on the other SSD.', 'warn');
+    return;
+  }
+  state.filedSessions.other2 = second;
+  state.plan = null; state.namingPreview = null; state.runResult = null;
+  state.camSeededKey = null;
+  await ensureExistingCamNamesSeeded();
+  render();
+}
+
+function dropSecondCopy() {
+  delete state.filedSessions.other2;
+  state.plan = null; state.namingPreview = null; state.runResult = null;
+  render();
+}
+
+async function finishClipsOnlyEntry() {
   state.clipsOnly = true;
   state.mastersFiled = true;              // reuse the in-place, no-master plan path
   state.masters = {}; state.masterSource = null;
@@ -2938,8 +3031,14 @@ function buildSpec() {
   const footage = footageSources();
   if (isInformal() || !footage.length) {
     // Informal, or a clips-only run with no source drive added: one logical
-    // target filing into a single chosen folder.
+    // target filing into a single chosen folder ...
     targets.push(targetFor(a, cams, isInformal() ? [] : chosenPaths(a)));
+    // ... and the same clips into the session's copy on the other SSD.
+    const second = !isInformal() && state.clipsOnly && state.filedSessions.other2;
+    if (second) {
+      const root = parentDir(second);
+      targets.push(targetFor({ path: root, dest: root, label: 'Second copy', kind: 'folder', role: 'other' }, cams, []));
+    }
   } else {
     // Every selected footage drive becomes its own copy of the session folder.
     // Drives that happen to share a codec role (both ProRes, both H.265, both

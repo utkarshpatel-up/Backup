@@ -380,6 +380,11 @@ def m_schedule_scan(p, req_id):
             "sessions": master_sheet.scan(p["root"], progress=_progress(req_id))}
 
 
+def m_schedule_find_sessions(p, _id):
+    """Where a session already sits on the connected drives: one entry per drive."""
+    return {"found": master_sheet.find_sessions(p.get("roots") or [], p["job"], p["session"])}
+
+
 def m_schedule_write(p, _id):
     """Save one schedule's rows as a new .xlsx in the Raw Satsang Master layout."""
     return {"path": master_sheet.write_xlsx(p["path"], p.get("rows") or [])}

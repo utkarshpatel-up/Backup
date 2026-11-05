@@ -132,3 +132,21 @@ def test_xlsx_has_master_header_real_dates_and_continuation_rows(tmp_path):
 def test_rpc_methods_are_registered():
     for name in ("schedule_read_table", "schedule_scan", "schedule_write", "schedule_structure"):
         assert name in server.METHODS
+
+
+def test_find_sessions_finds_each_ssds_copy_by_name_or_marker(tmp_path):
+    # The session on two SSDs: one at the drive's top, one a level down, and one
+    # copy already carrying its Dur- token. A third drive doesn't have it.
+    name = "Valsad Trimandir Ground Breaking Ceremony M. Dt-03-Nov-26"
+    m = tmp_path / "M" / "3058 Dt-03 Nov 2026" / f"{name} Dur-1h48m"
+    g = tmp_path / "G" / "AV 2026" / "3058 Dt-03 Nov 2026" / name
+    for p in (m, g, tmp_path / "M" / "3058 Dt-03 Nov 2026" / "Valsad Gnanvidhi E. Dt-03-Nov-26",
+              tmp_path / "D" / "3057 Dt-25 Oct 2026" / "Bhadran Shibir M. Dt-25-Oct-26"):
+        p.mkdir(parents=True)
+    roots = [str(tmp_path / d) for d in ("M", "G", "D")]
+    found = master_sheet.find_sessions(roots, "3058 Dt-03 Nov 2026", name)
+    assert [f["session_path"] for f in found] == [str(m), str(g)]
+    # Renamed since the schedule drafted it: still found by its M marker.
+    found = master_sheet.find_sessions(roots, "3058 Dt-03 Nov 2026", "Valsad Khatmuhurt M. Dt-03-Nov-26")
+    assert [f["session_path"] for f in found] == [str(m), str(g)]
+    assert server.METHODS["schedule_find_sessions"]

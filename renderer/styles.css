@@ -391,9 +391,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .sch-table .fz { position: sticky; z-index: 1; background: var(--panel); }
 .sch-table thead th.fz { z-index: 3; background: var(--panel-2); }
 .sch-table .fz1 { left: 0; width: 34px; min-width: 34px; max-width: 34px; }
-.sch-table .fz2 { left: 34px; width: 182px; min-width: 182px; max-width: 182px; }
-.sch-table .fz3 { left: 216px; width: 158px; min-width: 158px; max-width: 158px; }
-.sch-table .fz4 { left: 374px; width: 86px; min-width: 86px; max-width: 86px;
+.sch-table .fz2 { left: 34px; width: 262px; min-width: 262px; max-width: 262px; }
+.sch-table .fz3 { left: 296px; width: 158px; min-width: 158px; max-width: 158px; }
+.sch-table .fz4 { left: 454px; width: 86px; min-width: 86px; max-width: 86px;
   box-shadow: inset -2px 0 0 var(--line); }
 .sch-table .sch-acts { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
 .sch-table td.sch-ro { color: var(--muted); white-space: nowrap; padding: 3px 8px; }

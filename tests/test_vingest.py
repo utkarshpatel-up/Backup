@@ -2670,3 +2670,55 @@ class TestEverySessionInAZip:
         (job / "01 Event M. Dt-23-Oct-26").mkdir(parents=True)
         found = [Path(d.session_path).name for d in structure.detect_all(tmp_path, probe_masters=False)]
         assert found == ["01 Event M. Dt-23-Oct-26"]
+
+
+def _drone_session(tmp_path, *existing_cams):
+    session = (tmp_path / "SSD" / "3058 Dt-03 Nov 2026"
+               / "Valsad Trimandir Ground Breaking Ceremony M. Dt-03-Nov-26 Dur-1h48m")
+    for name in existing_cams:
+        (session / "Clips for Insert" / name).mkdir(parents=True)
+    card = tmp_path / "Drone 64GB" / "DCIM" / "100MEDIA"
+    card.mkdir(parents=True)
+    clip = card / "DJI_0001_D_AV.MP4"
+    clip.write_bytes(b"\0" * 2048)
+    return session, clip
+
+
+def _file_drone_clip(session, clip):
+    plan = ingest.build_plan({"mode": "copy", "targets": [{
+        "role": "other", "source_root": str(clip.parents[2]), "dest_root": str(session.parent),
+        "session_source": str(session), "masters": [], "allow_no_master": True,
+        "cams": {"7": [str(clip)]}, "cam_names": {"7": "Cam-07 (Drone)"}}]})
+    ingest.execute_plan(plan)
+    return plan
+
+
+def test_drone_clips_take_over_the_structures_empty_cam_folder(tmp_path):
+    # The structure made an empty Cam-07; the drone card is tagged "(Drone)" for
+    # cam 7. The empty folder is renamed — no second Cam-07 is left beside it.
+    session, clip = _drone_session(tmp_path, "Cam-01", "Cam-07")
+    plan = _file_drone_clip(session, clip)
+    cams = session / "Clips for Insert"
+    assert sorted(p.name for p in cams.iterdir()) == ["Cam-01", "Cam-07 (Drone)"]
+    assert [f.name for f in (cams / "Cam-07 (Drone)").iterdir()] == [clip.name]
+    assert plan["targets"][0]["cam_renames"] == [
+        {"from": "Clips for Insert/Cam-07", "to": "Clips for Insert/Cam-07 (Drone)"}]
+
+
+def test_an_empty_duplicate_cam_folder_left_from_before_is_cleared(tmp_path):
+    # An earlier run already split it: an empty Cam-07 beside Cam-07 (Drone).
+    session, clip = _drone_session(tmp_path, "Cam-07", "Cam-07 (Drone)")
+    _file_drone_clip(session, clip)
+    cams = session / "Clips for Insert"
+    assert sorted(p.name for p in cams.iterdir()) == ["Cam-07 (Drone)"]
+
+
+def test_a_cam_folder_in_use_is_not_split_by_a_new_name(tmp_path):
+    # Cam-07 already holds clips: new clips for cam 7 join it, with a warning,
+    # instead of opening a second folder for the same camera.
+    session, clip = _drone_session(tmp_path, "Cam-07")
+    (session / "Clips for Insert" / "Cam-07" / "A001.MP4").write_bytes(b"\0" * 10)
+    plan = _file_drone_clip(session, clip)
+    cams = session / "Clips for Insert"
+    assert sorted(p.name for p in cams.iterdir()) == ["Cam-07"]
+    assert any("already holds" in w for w in plan["targets"][0]["warnings"])

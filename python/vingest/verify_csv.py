@@ -2,9 +2,8 @@
 
 The operator exports the duration/clip-count list from Frappe *while online*
 (a plain CSV), then — with no network — this compares that master list against
-what is actually on the drive. It is the offline twin of :mod:`frappe_sync`:
-same session scan, but instead of pushing to a live site it diffs against a
-file and produces a highlighted report, exactly like the standalone
+what is actually on the drive. It uses the same scan as
+:mod:`session_scan`, diffs against that file and produces a highlighted report, exactly like the standalone
 ``vidcount_consolidated`` template does.
 
 Each session is flagged:
@@ -27,7 +26,7 @@ import re
 from pathlib import Path
 
 from .durations import fmt_hms, fmt_human, format_duration
-from .frappe_sync import scan_sessions
+from .session_scan import scan_sessions
 
 # project id (4+ digits) then a session number, e.g. DD-I-HD-2405-1 -> (2405, 1)
 _ID_KEY_RE = re.compile(r"(\d{4,})-(\d+)(?!.*\d{4,}-\d+)")

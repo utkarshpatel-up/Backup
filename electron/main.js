@@ -23,6 +23,20 @@ function saveSettings(patch) {
   return next;
 }
 
+/** Earlier versions could hold a Frappe URL, API key and secret here. Never keep them. */
+function forgetFrappeConnection() {
+  const settings = loadSettings();
+  const cache = path.join(app.getPath('userData'), 'frappe-report.xlsx');
+  const wasCache = settings.reportSource === cache;
+  if ('frappe' in settings || 'reportFetchedAt' in settings || wasCache) {
+    delete settings.frappe;
+    delete settings.reportFetchedAt;
+    if (wasCache) delete settings.reportSource;
+    fs.writeFileSync(SETTINGS_FILE(), JSON.stringify(settings, null, 2));
+  }
+  fs.rmSync(cache, { force: true });
+}
+
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 }
@@ -128,6 +142,7 @@ function createBridge() {
 }
 
 app.whenReady().then(() => {
+  forgetFrappeConnection();
   applyTheme(currentTheme());   // force dark (default) before the window paints
   buildMenu();
   createBridge();
@@ -290,9 +305,6 @@ ipcMain.handle('dialog:pickSchedule', async () => {
   });
   return r.canceled ? null : r.filePaths[0];
 });
-
-// The last report read from Frappe, kept for working offline.
-ipcMain.handle('report:cachePath', () => path.join(app.getPath('userData'), 'frappe-report.xlsx'));
 
 ipcMain.handle('dialog:saveXlsx', async (_e, defaultName, title) => {
   const label = title || "Save the event's sheet";

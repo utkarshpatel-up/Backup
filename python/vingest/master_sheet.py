@@ -27,7 +27,7 @@ from pathlib import Path
 
 from . import naming, structure
 from .durations import get_duration
-from .frappe_sync import PROJECT_DIR_RE, _is_cam_folder, _scan_one, _session_number
+from .session_scan import PROJECT_DIR_RE, _is_cam_folder, _scan_one, _session_number
 from .ingest import CLIP_COUNT_EXTS
 from .verify_csv import _read_xlsx_rows
 
@@ -129,7 +129,7 @@ def _master_totals(session: Path, exts):
 def scan(root: str, extensions=None, progress=None) -> list[dict]:
     """Every session folder under `root`: {project, tag, number, date, seconds,
     clips, cams, folder, path}. A session is a direct, non-camera child of a
-    ``NNNN Dt-<date>`` job folder (the same rule as the Frappe sync); `tag` is its
+    ``NNNN Dt-<date>`` job folder (the same rule as session_scan); `tag` is its
     Formal M/E/E2 marker, `number` its Informal leading index (1 when unnumbered).
 
     Duration and clips follow the backup's own naming: a Formal session (one with
@@ -184,7 +184,7 @@ def scan(root: str, extensions=None, progress=None) -> list[dict]:
 
 # ------------------------------------------------------------------ writing
 
-# Characters an XML 1.0 file may not hold, whatever Frappe's data has in it.
+# Characters an XML 1.0 file may not hold, whatever a sheet's data has in it.
 _XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 

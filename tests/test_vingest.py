@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-from vingest import (compare, durations, frappe_sync, ingest, naming,  # noqa: E402
+from vingest import (compare, durations, ingest, naming, session_scan,  # noqa: E402
                      organize, probe, server, sources, structure)
 import zipfile  # noqa: E402
 
@@ -2083,9 +2083,8 @@ class TestDurationsFormat:
         assert durations.get_duration(p) is None
 
 
-class TestFrappeSync:
-    """Push informal session duration + clip count to Frappe (field lookup,
-    update-only, unmatched exported)."""
+class TestSessionScan:
+    """Each session's duration and clip count, read off the drive."""
 
     def _tree(self, tmp_path):
         job = tmp_path / "2552 Dt-16 Apr 2026"
@@ -2102,52 +2101,15 @@ class TestFrappeSync:
             (s2 / f"c{i}.mov").write_bytes(b"x")
         return job
 
-    def _config(self):
-        return {"url": "https://x", "api_key": "k", "api_secret": "s",
-                "doctype": "Informal Session", "project_field": "project_id",
-                "session_field": "session_no", "duration_field": "total_duration",
-                "clips_field": "no_of_clips", "duration_format": "human"}
-
-    def test_report_is_read_with_its_labels_and_needs_no_field_names(self):
-        seen = {}
-
-        def requester(method, url, headers, body=None, timeout=30):
-            seen.update(method=method, url=url, auth=headers.get("Authorization"), body=body)
-            return 200, {"message": {
-                "columns": [{"label": "Raw Video Id", "fieldname": "id"}, "Folder:Int:80",
-                            {"label": "Duration", "fieldname": "duration"}],
-                "result": [{"id": "DD-F-HD-3059-E", "Folder": 3059, "duration": None},
-                           ["DD-F-HD-3060-E", 3060, "1h 2m 3s", "extra"],
-                           {"id": "", "Folder": 2, "duration": "", "is_total_row": 1}],
-            }}
-
-        rows = frappe_sync.fetch_report(
-            {"url": "https://x/", "api_key": "k", "api_secret": "s", "report_name": "Raw Video Data Report"}, requester)
-        assert rows == [["Raw Video Id", "Folder", "Duration"],
-                        ["DD-F-HD-3059-E", 3059, ""], ["DD-F-HD-3060-E", 3060, "1h 2m 3s"]]
-        assert seen["method"] == "GET" and seen["body"] is None
-        assert seen["auth"] == "token k:s"
-        assert seen["url"].startswith("https://x/api/method/frappe.desk.query_report.run?")
-        assert "report_name=Raw+Video+Data+Report" in seen["url"]
-
-    def test_report_failures_say_what_to_fix(self):
-        conn = {"url": "https://x", "api_key": "k", "api_secret": "s"}
-        with pytest.raises(ValueError, match="API secret"):
-            frappe_sync.fetch_report({"url": "https://x", "api_key": "k"})
-        for status, payload, words in [(403, {}, "Authentication failed"), (0, {"_error": "no route"}, "Could not reach"),
-                                       (404, {}, "no report named"), (200, {"message": "nope"}, "did not return")]:
-            with pytest.raises(ValueError, match=words):
-                frappe_sync.fetch_report(conn, lambda *a, **k: (status, payload))
-
     def test_scan_finds_sessions_and_rolls_up_cameras(self, tmp_path):
         self._tree(tmp_path)
-        sessions = frappe_sync.scan_sessions(str(tmp_path))
+        sessions = session_scan.scan_sessions(str(tmp_path))
         assert [(s["project"], s["session"], s["clips"]) for s in sessions] == [
             ("2552", 1, 5), ("2552", 2, 4)]
 
     def test_camera_folders_are_not_sessions(self, tmp_path):
         self._tree(tmp_path)
-        sessions = frappe_sync.scan_sessions(str(tmp_path))
+        sessions = session_scan.scan_sessions(str(tmp_path))
         assert all(not s["folder"].lower().startswith("cam") for s in sessions)
 
     def test_unnumbered_single_session_is_session_one(self, tmp_path):
@@ -2158,7 +2120,7 @@ class TestFrappeSync:
         s.mkdir(parents=True)
         (s / "a.mp4").write_bytes(b"x")
         (s / "b.mp4").write_bytes(b"x")
-        sessions = frappe_sync.scan_sessions(str(tmp_path))
+        sessions = session_scan.scan_sessions(str(tmp_path))
         assert [(x["project"], x["session"], x["clips"]) for x in sessions] == [
             ("2456", 1, 2)]
 
@@ -2172,58 +2134,24 @@ class TestFrappeSync:
             src = sess / day / "DSLR Cam"
             src.mkdir(parents=True)
             (src / "clip.mp4").write_bytes(b"x")
-        sessions = frappe_sync.scan_sessions(str(tmp_path))
+        sessions = session_scan.scan_sessions(str(tmp_path))
         # Exactly one session (2486-3), everything below rolled into it.
         assert [(s["project"], s["session"]) for s in sessions] == [("2486", 3)]
         assert sessions[0]["clips"] == 3
         assert all(s["project"] != "1763" for s in sessions)
 
-    def test_sync_updates_existing_and_flags_unmatched(self, tmp_path):
-        self._tree(tmp_path)
-        sessions = frappe_sync.scan_sessions(str(tmp_path))
-        seen = []
+class TestNoDatabaseConnection:
+    """The decision: no Frappe key or connection on an operator's machine."""
 
-        def fake(method, url, headers, body=None, timeout=30):
-            seen.append((method, body))
-            if method == "GET":
-                import urllib.parse as up
-                sess = json.loads(up.parse_qs(up.urlparse(url).query)["filters"][0])[1][2]
-                return (200, {"data": [{"name": "SESS-1"}]}) if sess == 1 else (200, {"data": []})
-            return 200, {"data": {"name": "SESS-1"}}
+    def test_no_method_reaches_frappe(self):
+        assert not [m for m in server.METHODS if "frappe" in m]
 
-        res = frappe_sync.sync(self._config(), sessions, requester=fake)
-        assert [u["session"] for u in res["updated"]] == [1]
-        assert [u["session"] for u in res["unmatched"]] == [2]
-        assert not res["errors"]
-        put = next(b for m, b in seen if m == "PUT")
-        assert put["no_of_clips"] == 5 and "total_duration" in put
-
-    def test_ambiguous_match_is_an_error_not_an_update(self, tmp_path):
-        self._tree(tmp_path)
-        sessions = frappe_sync.scan_sessions(str(tmp_path))
-
-        def fake(method, url, headers, body=None, timeout=30):
-            return 200, {"data": [{"name": "A"}, {"name": "B"}]}
-
-        res = frappe_sync.sync(self._config(), sessions, requester=fake)
-        assert not res["updated"]
-        assert len(res["errors"]) == 2
-
-    def test_config_problems_lists_missing_fields(self):
-        assert frappe_sync.config_problems({"url": "x"})
-        assert not frappe_sync.config_problems(self._config())
-
-    def test_write_unmatched_csv(self, tmp_path):
-        rows = [{"project": "2552", "session": 2, "folder": "02 Dinner",
-                 "clips": 4, "seconds": 65, "reason": "No matching record",
-                 "path": str(tmp_path)}]
-        out = frappe_sync.write_unmatched_csv(str(tmp_path / "u.csv"), rows)
-        text = Path(out).read_text(encoding="utf-8")
-        assert "No matching record" in text and "2552" in text
-
-    def test_rpc_methods_registered(self):
-        assert "frappe_sync" in server.METHODS
-        assert "frappe_scan" in server.METHODS
+    def test_engine_has_no_network_code(self):
+        engine = Path(server.__file__).parent
+        for f in engine.glob("*.py"):
+            text = f.read_text(encoding="utf-8")
+            for word in ("urllib", "http.client", "requests", "api_secret"):
+                assert word not in text, f"{f.name} mentions {word}"
 
 
 class TestVerifyCsv:

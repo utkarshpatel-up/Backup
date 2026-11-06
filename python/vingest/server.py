@@ -18,7 +18,7 @@ import threading
 import traceback
 from pathlib import Path
 
-from . import (__version__, compare, frappe_sync, ingest, master_sheet, naming,
+from . import (__version__, compare, ingest, master_sheet, naming,
                organize, probe, report, sources, structure, verify_csv)
 from .hashing import algorithm
 
@@ -292,51 +292,9 @@ def m_apply_rename(p, _id):
     return organize.apply_rename(p["plan"])
 
 
-def m_frappe_scan(p, _id):
-    """Preview the informal sessions under a folder — duration + clip count each,
-    read straight from headers. No network, nothing written."""
-    return {"sessions": frappe_sync.scan_sessions(p["root"])}
-
-
-def m_frappe_sync(p, req_id):
-    """Push each session's duration + clip count to its existing Frappe record.
-
-    Records that are not found are returned as `unmatched` and, together with any
-    errors, written to a CSV for the operator to fix in Frappe by hand.
-    """
-    import datetime as _dt
-    config = p["config"]
-    problems = frappe_sync.config_problems(config)
-    if problems:
-        raise ValueError("Frappe settings missing: " + ", ".join(problems))
-
-    emit = _progress(req_id)
-    emit({"stage": "frappe", "name": "Reading session durations…"})
-    sessions = frappe_sync.scan_sessions(p["root"])
-    result = frappe_sync.sync(config, sessions)
-
-    to_fix = result["unmatched"] + result["errors"]
-    csv_path = None
-    if to_fix and p.get("write_csv", True):
-        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        target = p.get("csv_path") or os.path.join(
-            os.path.abspath(p["root"]), f"frappe_unmatched_{stamp}.csv")
-        try:
-            csv_path = frappe_sync.write_unmatched_csv(target, to_fix)
-        except OSError:
-            import tempfile
-            csv_path = frappe_sync.write_unmatched_csv(
-                os.path.join(tempfile.gettempdir(), f"frappe_unmatched_{stamp}.csv"), to_fix)
-    result["csv_path"] = csv_path
-    return result
-
-
 def m_verify_csv(p, req_id):
     """Offline compare: diff the sessions under `root` against a duration CSV
     exported from Frappe, and write a highlighted report. No network.
-
-    `config` is optional — when present, its field names help locate the
-    project/session/duration/clip columns in the exported CSV.
     """
     import datetime as _dt
     root = p["root"]
@@ -346,7 +304,7 @@ def m_verify_csv(p, req_id):
 
     emit = _progress(req_id)
     emit({"stage": "verify", "name": "Reading session durations…"})
-    result = verify_csv.compare(root, csv_path, p.get("config"))
+    result = verify_csv.compare(root, csv_path)
 
     report_path = None
     if p.get("write_report", True):
@@ -393,15 +351,6 @@ def m_schedule_write(p, _id):
 def m_report_write(p, _id):
     """Save report entries as an .xlsx under the given column headers."""
     return {"path": master_sheet.write_xlsx(p["path"], p.get("rows") or [], p["columns"])}
-
-
-def m_frappe_report(p, _id):
-    """Read the report from Frappe (read-only) and keep a copy at `cache_path`, so
-    the entries are still there offline and after a restart."""
-    rows = frappe_sync.fetch_report(p.get("config") or {})
-    if p.get("cache_path"):
-        master_sheet.write_xlsx(p["cache_path"], rows[1:], rows[0])
-    return {"rows": rows}
 
 
 def m_schedule_structure(p, _id):

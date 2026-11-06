@@ -55,18 +55,9 @@ const state = {
   clipsOnly: false,     // "only camera clips": skip the master step, add clips into an existing session
   camSeededKey: null,   // signature of the existing session(s) whose cam-folder names have been adopted
   existingCamCounts: {},// cam number -> clips already filed on disk (shown beside each camera chip)
-  frappe: null,         // Frappe connection/schema settings (loaded from disk)
-  frappeUI: null,       // Frappe sync/settings modal: {open, view, busy, result, root}
   verify: null,         // Offline CSV comparison page: {open, root, csv, busy, result, error}
   schedule: null,       // Event schedule page and its master rows (schedule-ui.js)
   scheduleRun: null,    // the schedule row the current backup was started from: {key, id}
-};
-
-// Field names the Frappe integration stores in settings.json.
-const FRAPPE_DEFAULTS = {
-  url: '', api_key: '', api_secret: '', report_name: 'Raw Video Data Report', doctype: '',
-  project_field: '', session_field: '', duration_field: '',
-  clips_field: '', duration_format: 'human',
 };
 
 const STEPS = [
@@ -812,20 +803,9 @@ function renderSources() {
     </div>`);
 
     c.push(`<div class="card">
-      <h3>Update durations to Frappe</h3>
-      <p class="hint">After filtering (deleting bad takes) and renaming, push each session's
-        <b>total duration</b> and <b>clip count</b> to your Frappe database. Records are matched by
-        project id + session number and only <b>existing</b> records are updated — anything not found
-        is written to a CSV for you to fix in Frappe.</p>
-      <div class="row">
-        <button class="sm primary" id="btnFrappeSync">Sync a folder to Frappe…</button>
-        <button class="sm" id="btnFrappeSettingsBtn">Frappe settings…</button>
-        <span class="hint" style="margin:0">${frappeConfigComplete()
-          ? 'Connected.' : 'Set your Frappe URL, key and field names first.'}</span>
-      </div>
-      <p class="hint" style="margin-top:12px">No connection? Export the duration/clip list from
-        Frappe (CSV or Excel) while you have internet, then compare it against a drive here — fully
-        offline. Each session is flagged on-drive-only, in-CSV-only, or a duration/clip mismatch.</p>
+      <h3>Compare a drive to the duration list</h3>
+      <p class="hint">Export the duration/clip list from Frappe (CSV or Excel), then compare it
+        against a drive here — fully offline. Each session is flagged on-drive-only, in-CSV-only, or a duration/clip mismatch.</p>
       <div class="row">
         <button class="sm" id="btnVerifyCsv">Compare a folder to a CSV/Excel…</button>
       </div>
@@ -996,8 +976,6 @@ function wireSources() {
   $('btnClipsOnlyExit')?.addEventListener('click', exitClipsOnly);
   $('btnSecondCopy')?.addEventListener('click', addSecondCopy);
   $('btnSecondCopyOff')?.addEventListener('click', dropSecondCopy);
-  $('btnFrappeSync')?.addEventListener('click', () => syncFrappe(null));
-  $('btnFrappeSettingsBtn')?.addEventListener('click', openFrappeSettings);
   $('btnVerifyCsv')?.addEventListener('click', () => openVerifyCsv());
 
   document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
@@ -3941,12 +3919,11 @@ function render() {
   renderModals();
 }
 
-// One modal host, shared by the rename tool and the Frappe panels.
+// One modal host, for the rename tool.
 function renderModals() {
   const host = $('modal');
   if (!host) return;
   if (state.rename && state.rename.open) return renderRenameModal();
-  if (state.frappeUI && state.frappeUI.open) return renderFrappeModal();
   if (state.verify && state.verify.open) return renderVerifyModal();
   host.innerHTML = '';
   host.classList.remove('show');
@@ -4158,15 +4135,7 @@ function renderRenameModal() {
       ${errs.length ? `<div class="note warn"><b>${errs.length} problem(s):</b>
         <ul style="margin:6px 0 0 16px;padding:0">${errs.slice(0, 20)
           .map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
-      <p class="hint">You can preview again to confirm everything is now clean, or close.</p>
-      <div class="note info" style="margin-top:12px">
-        <b>Update Frappe?</b> Push each session's total duration and clip count in this folder
-        to your Frappe database.
-        <div class="row" style="margin-top:8px">
-          <button class="sm primary" id="btnRenameFrappe">Update durations to Frappe…</button>
-          <button class="sm ghost" id="btnRenameFrappeSettings">Frappe settings…</button>
-        </div>
-      </div>`;
+      <p class="hint">You can preview again to confirm everything is now clean, or close.</p>`;
   } else if (!plan) {
     bodyHtml = `<div class="empty"><div class="big">📂</div>
       <div>Drop a folder here, or choose one, to preview the renames.</div></div>`;
@@ -4215,199 +4184,6 @@ function renderRenameModal() {
   });
   $('btnRenamePreview')?.addEventListener('click', previewRename);
   $('btnRenameApply')?.addEventListener('click', applyRename);
-  $('btnRenameFrappe')?.addEventListener('click', () => syncFrappe(r.root));
-  $('btnRenameFrappeSettings')?.addEventListener('click', openFrappeSettings);
-}
-
-/* ---------------------------------------------- Frappe duration sync (modal) */
-
-function frappeConfig() {
-  return { ...FRAPPE_DEFAULTS, ...(state.frappe || {}) };
-}
-
-function frappeConfigComplete() {
-  const c = frappeConfig();
-  return ['url', 'api_key', 'api_secret', 'doctype', 'project_field',
-          'session_field', 'duration_field', 'clips_field'].every((k) => String(c[k] || '').trim());
-}
-
-function openFrappeSettings() {
-  state.frappeUI = { ...(state.frappeUI || {}), open: true, view: 'settings' };
-  render();
-}
-
-function closeFrappe() {
-  state.frappeUI = null;
-  render();
-}
-
-async function saveFrappeSettings() {
-  const get = (id) => ($(id) ? $(id).value.trim() : '');
-  state.frappe = {
-    url: get('fFrappeUrl'), api_key: get('fFrappeKey'), api_secret: get('fFrappeSecret'),
-    report_name: get('fFrappeReport') || FRAPPE_DEFAULTS.report_name, doctype: get('fFrappeDoctype'), project_field: get('fFrappeProject'),
-    session_field: get('fFrappeSession'), duration_field: get('fFrappeDuration'),
-    clips_field: get('fFrappeClips'),
-    duration_format: ($('fFrappeFormat') ? $('fFrappeFormat').value : 'human'),
-  };
-  try { await window.api.setSettings({ frappe: state.frappe }); } catch (e) { /* non-fatal */ }
-  toast('Frappe settings saved.', 'ok');
-  // If we opened settings on the way to a report fetch or a sync, continue to it now.
-  if (state.frappeUI && state.frappeUI.pendingReport && reportConnected()) {
-    closeFrappe();
-    reportFetch();
-    return;
-  }
-  const pending = state.frappeUI && state.frappeUI.pendingRoot;
-  if (pending && frappeConfigComplete()) { syncFrappe(pending); return; }
-  closeFrappe();
-}
-
-// Push durations for every session under `root`. Opens settings first if the
-// connection/schema isn't configured yet.
-async function syncFrappe(root) {
-  if (!root) {
-    root = await window.api.pickFolder('Choose the folder holding the informal sessions');
-    if (!root) return;
-  }
-  if (!frappeConfigComplete()) {
-    state.frappeUI = { open: true, view: 'settings', pendingRoot: root };
-    toast('Fill in the Frappe settings first.', 'warn');
-    render();
-    return;
-  }
-  state.frappeUI = { open: true, view: 'result', root, busy: true, result: null };
-  render();
-  try {
-    const result = await call('frappe_sync', { root, config: frappeConfig() },
-                              { label: 'Updating Frappe' });
-    state.frappeUI = { open: true, view: 'result', root, busy: false, result };
-    const u = result.updated.length, m = result.unmatched.length, e = result.errors.length;
-    toast(`Frappe: ${u} updated, ${m} unmatched, ${e} error(s).`,
-          e ? 'err' : (m ? 'warn' : 'ok'));
-  } catch (err) {
-    state.frappeUI = { open: true, view: 'result', root, busy: false, error: err.message };
-    toast(err.message, 'err');
-  }
-  render();
-}
-
-function frappeField(id, label, value, opts = {}) {
-  const type = opts.password ? 'password' : 'text';
-  return `<label class="field" style="margin:0 0 10px">
-    <span>${esc(label)}${opts.hint ? ` <span class="hint" style="margin:0">· ${esc(opts.hint)}</span>` : ''}</span>
-    <input id="${id}" type="${type}" value="${esc(value || '')}" placeholder="${esc(opts.placeholder || '')}"
-      ${opts.password ? 'autocomplete="off"' : ''} /></label>`;
-}
-
-function renderFrappeModal() {
-  const host = $('modal');
-  const ui = state.frappeUI;
-  host.classList.add('show');
-
-  if (ui.view === 'settings') {
-    const c = frappeConfig();
-    host.innerHTML = `<div class="modal-backdrop" data-close="1">
-      <div class="modal-panel" role="dialog" aria-modal="true">
-        <div class="modal-head">
-          <div><h3 style="margin:0">Frappe settings</h3>
-          <div class="hint" style="margin-top:4px">Stored locally on this PC. The URL, key and report
-            name are all the Report page needs; the fields below are for writing durations.</div></div>
-          <button class="sm ghost" id="btnFrappeClose">Close</button>
-        </div>
-        <div class="modal-body">
-          ${frappeField('fFrappeUrl', 'Frappe site URL', c.url, { placeholder: 'https://your-site.frappe.cloud' })}
-          <div class="row" style="gap:10px">
-            <div style="flex:1">${frappeField('fFrappeKey', 'API key', c.api_key)}</div>
-            <div style="flex:1">${frappeField('fFrappeSecret', 'API secret', c.api_secret, { password: true })}</div>
-          </div>
-          ${frappeField('fFrappeReport', 'Report to fetch', c.report_name, { hint: 'read-only, for the Report page', placeholder: FRAPPE_DEFAULTS.report_name })}
-          ${frappeField('fFrappeDoctype', 'DocType', c.doctype, { placeholder: 'Informal Session' })}
-          <div class="row" style="gap:10px">
-            <div style="flex:1">${frappeField('fFrappeProject', 'Project field', c.project_field, { hint: 'matched to the project id (e.g. 2552)', placeholder: 'project_id' })}</div>
-            <div style="flex:1">${frappeField('fFrappeSession', 'Session field', c.session_field, { hint: 'matched to the session number', placeholder: 'session_no' })}</div>
-          </div>
-          <div class="row" style="gap:10px">
-            <div style="flex:1">${frappeField('fFrappeDuration', 'Duration field', c.duration_field, { placeholder: 'total_duration' })}</div>
-            <label class="field" style="margin:0 0 10px;width:200px"><span>Duration format</span>
-              <select id="fFrappeFormat">
-                <option value="human" ${c.duration_format === 'human' ? 'selected' : ''}>1h 2m 3s</option>
-                <option value="hms" ${c.duration_format === 'hms' ? 'selected' : ''}>HH:MM:SS</option>
-                <option value="seconds" ${c.duration_format === 'seconds' ? 'selected' : ''}>Seconds</option>
-              </select></label>
-          </div>
-          ${frappeField('fFrappeClips', 'Clip-count field', c.clips_field, { placeholder: 'no_of_clips' })}
-          <p class="hint">Create an API key/secret in Frappe under your user → Settings → API Access.</p>
-        </div>
-        <div class="modal-foot">
-          <div class="spacer"></div>
-          <button class="sm ghost" id="btnFrappeCancel">Cancel</button>
-          <button class="primary" id="btnFrappeSave">Save settings</button>
-        </div>
-      </div>
-    </div>`;
-    host.querySelector('[data-close]')?.addEventListener('click', (e) => {
-      if (e.target === e.currentTarget) closeFrappe();
-    });
-    $('btnFrappeClose')?.addEventListener('click', closeFrappe);
-    $('btnFrappeCancel')?.addEventListener('click', closeFrappe);
-    $('btnFrappeSave')?.addEventListener('click', saveFrappeSettings);
-    return;
-  }
-
-  // result view
-  let body;
-  if (ui.busy) {
-    body = `<div class="empty"><div class="big">☁️</div>
-      <div>Reading durations and updating Frappe…</div></div>`;
-  } else if (ui.error) {
-    body = `<div class="note err"><b>Frappe sync failed:</b> ${esc(ui.error)}</div>`;
-  } else if (ui.result) {
-    const r = ui.result;
-    const list = (rows) => `<table class="rename-table">${rows.map((x) => `<tr>
-      <td class="mono">${esc(String(x.project))}/${esc(String(x.session))}</td>
-      <td class="mono old">${esc(x.folder || '')}</td>
-      <td class="new">${x.clips} clips · ${esc(fmtDur(x.seconds))}${
-        x.reason ? ` — <span style="color:var(--warn)">${esc(x.reason)}</span>` : ''}</td>
-    </tr>`).join('')}</table>`;
-    body = `<div class="note ${r.errors.length ? 'warn' : 'ok'}">
-        <b>${r.updated.length}</b> updated · <b>${r.unmatched.length}</b> unmatched ·
-        <b>${r.errors.length}</b> error(s) · ${r.total} session(s) scanned.</div>
-      ${r.csv_path ? `<div class="note info">Unmatched/errored sessions were written to a CSV so you
-        can fix them in Frappe:<div class="mono" style="margin-top:4px">${esc(r.csv_path)}</div>
-        <button class="sm" id="btnFrappeRevealCsv" style="margin-top:8px">Reveal CSV</button></div>` : ''}
-      ${r.updated.length ? `<h4 class="rename-h">Updated</h4>${list(r.updated)}` : ''}
-      ${r.unmatched.length ? `<h4 class="rename-h">Unmatched (fix in Frappe)</h4>${list(r.unmatched)}` : ''}
-      ${r.errors.length ? `<h4 class="rename-h">Errors</h4>${list(r.errors)}` : ''}`;
-  } else {
-    body = '';
-  }
-  host.innerHTML = `<div class="modal-backdrop" data-close="1">
-    <div class="modal-panel" role="dialog" aria-modal="true">
-      <div class="modal-head">
-        <div><h3 style="margin:0">Update durations to Frappe</h3>
-        <div class="path" style="margin-top:4px">${esc(ui.root || '')}</div></div>
-        <button class="sm ghost" id="btnFrappeClose">Close</button>
-      </div>
-      <div class="modal-body">${body}</div>
-      <div class="modal-foot">
-        <button class="sm" id="btnFrappeSettings2" ${ui.busy ? 'disabled' : ''}>Frappe settings…</button>
-        <button class="sm ghost" id="btnFrappeRerun" ${ui.busy ? 'disabled' : ''}>Run again</button>
-        <div class="spacer"></div>
-        <button class="primary" id="btnFrappeCloseDone" ${ui.busy ? 'disabled' : ''}>Done</button>
-      </div>
-    </div>
-  </div>`;
-  host.querySelector('[data-close]')?.addEventListener('click', (e) => {
-    if (e.target === e.currentTarget && !ui.busy) closeFrappe();
-  });
-  $('btnFrappeClose')?.addEventListener('click', () => { if (!ui.busy) closeFrappe(); });
-  $('btnFrappeCloseDone')?.addEventListener('click', closeFrappe);
-  $('btnFrappeSettings2')?.addEventListener('click', openFrappeSettings);
-  $('btnFrappeRerun')?.addEventListener('click', () => syncFrappe(ui.root));
-  $('btnFrappeRevealCsv')?.addEventListener('click', () => {
-    if (ui.result && ui.result.csv_path) window.api.reveal(ui.result.csv_path);
-  });
 }
 
 /* --------------------------------------- offline CSV verification (page) */
@@ -4452,7 +4228,7 @@ async function runVerify() {
   render();
   try {
     v.result = await call('verify_csv',
-      { root: v.root, csv_path: v.csv, config: frappeConfig() },
+      { root: v.root, csv_path: v.csv },
       { label: 'Comparing drive to CSV' });
     const c = v.result.counts;
     toast(`Verify: ${c.match} match, ${c.diff} mismatch, ` +
@@ -4669,7 +4445,6 @@ if (typeof window.addEventListener === 'function') {
   render();
   try {
     const settings = await window.api.getSettings();
-    state.frappe = { ...FRAPPE_DEFAULTS, ...(settings.frappe || {}) };
     await restoreSchedules(settings);
     render();
     let info = await call('ping');

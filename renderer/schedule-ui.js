@@ -67,7 +67,7 @@ async function restoreSchedules(settings) {
       store = { openId: item.id, items: [item] };
     }
   }
-  store.items.forEach((item) => scheduleHydrate(item, settings));
+  store.items.forEach((item) => { scheduleHydrate(item, settings); scheduleHoldNumbers(item); });
   state.schedules = store;
   state.schedule = store.items.find((x) => x.id === store.openId) || null;
   if (settings && settings.colWidths) state.colWidths = { schedule: {}, report: {}, ...settings.colWidths };
@@ -245,6 +245,7 @@ const listOf = (t) => String(t || '').split(',').map((x) => x.trim()).filter(Boo
 // before the focus reaches the next cell, and redrawing then would drop the
 // focus (and the page's scroll) back at the top.
 let scheduleRenderTimer = null;
+let scheduleChipFocus = null;   // the row and field whose add box takes the focus after a render
 function scheduleRerender() {
   clearTimeout(scheduleRenderTimer);
   scheduleRenderTimer = setTimeout(render, 0);
@@ -264,9 +265,16 @@ function scheduleSet(key, field, value) {
   if (!row) return;
   if (field === 'include') row.include = !!value;
   else if (field === 'events' || field === 'languages') row[field] = listOf(value);
-  else if (field === 'folder' || field === 'session') row[field] = String(value).trim().toUpperCase() || null;
+  else if (field === 'folder' || field === 'session') {
+    row[field] = String(value).trim().toUpperCase() || null;
+    if (field === 'folder') row.sharedFolder = false;
+  }
   else if (field === 'camPlan') row.camPlan = String(value).trim() === '' ? null : Number(value);
-  else if (field === 'y' || field === 'm' || field === 'd') row.date = scheduleDatePart(row, field, value);
+  else if (field === 'y' || field === 'm' || field === 'd') {
+    row.date = scheduleDatePart(row, field, value);
+    // Moved to another day, an added row takes that day's number, not the one it was copied with.
+    if (row.sharedFolder) { row.folder = null; row.sharedFolder = false; }
+  }
   else if (field === 'city') {
     // The city list offers the record ID where several cities share a name.
     const c = SCHEDULE.findCity(value, scheduleCities());
@@ -281,6 +289,67 @@ function scheduleSet(key, field, value) {
   scheduleRerender();
 }
 
+/** Add a value to a row's list, spelt as the lists spell it; `stay` keeps typing in that box. */
+function scheduleChipAdd(key, field, text, stay) {
+  const row = scheduleFind(key);
+  if (!row) return;
+  const known = field === 'events' ? pickValues(SCHEDULE_VOCAB.events, knownValues('events'))
+    : pickValues(SCHEDULE_VOCAB.languages, knownValues('languages'));
+  const next = (row[field] || []).slice();
+  for (const part of listOf(text)) {
+    const value = known.find((v) => v.toLowerCase() === part.toLowerCase()) || part;
+    if (!next.some((v) => v.toLowerCase() === value.toLowerCase())) next.push(value);
+  }
+  if (next.length === (row[field] || []).length) return;
+  if (stay) scheduleChipFocus = { key: String(key), field };
+  scheduleSet(key, field, next.join(','));
+}
+
+function scheduleChipRemove(key, field, index, stay) {
+  const row = scheduleFind(key);
+  if (!row) return;
+  if (stay) scheduleChipFocus = { key: String(key), field };
+  scheduleSet(key, field, (row[field] || []).filter((_, i) => i !== Number(index)).join(','));
+}
+
+/** The event list for one row: what's usually held with its events first, the ones it has left out. */
+function scheduleEventPick(key) {
+  const row = scheduleFind(key);
+  if (!row) return;
+  const existing = reportState().existing;
+  if (scheduleEventPick.from !== existing) {
+    scheduleEventPick.from = existing;
+    scheduleEventPick.partners = SCHEDULE.eventPartners(existing || []);
+  }
+  const have = (row.events || []).map((v) => String(v).toLowerCase());
+  const often = new Map();
+  for (const e of row.events || []) {
+    for (const [v, n] of scheduleEventPick.partners.get(String(e).toLowerCase()) || []) {
+      if (!have.includes(v.toLowerCase())) often.set(v, { n: (often.get(v)?.n || 0) + n, withEvent: e });
+    }
+  }
+  const first = [...often].sort((a, b) => b[1].n - a[1].n);
+  const taken = new Set([...have, ...first.map(([v]) => v.toLowerCase())]);
+  const rest = pickValues(SCHEDULE_VOCAB.events, knownValues('events')).filter((v) => !taken.has(v.toLowerCase()));
+  setDatalist('schEventPick', [...first.map(([v, o]) => [v, `Often with ${o.withEvent} (${o.n})`]), ...rest]);
+}
+
+/**
+ * A session with folders on a drive keeps its number: type its current number
+ * into any such row, so adding a session before it moves only the rows not yet
+ * started. Their folder names on the drive would no longer match otherwise.
+ */
+function scheduleHoldNumbers(s) {
+  const nums = SCHEDULE.assignNumbers(s.sessions, s.starts);
+  for (const row of s.sessions) {
+    if (!(row.backedUp || row.startedAt)) continue;
+    const n = nums.get(row.key);
+    if (!n) continue;
+    if (row.folder == null && n.folder != null) row.folder = n.folder;
+    if (!row.session && n.session) row.session = n.session;
+  }
+}
+
 /**
  * An unplanned session, not on the schedule, added by hand below row `key` (or
  * at the end): it keeps that row's day, type, place and event, since an extra
@@ -288,6 +357,7 @@ function scheduleSet(key, field, value) {
  */
 function scheduleAddRow(key) {
   const s = state.schedule;
+  scheduleHoldNumbers(s);
   const i = key == null ? s.sessions.length - 1 : s.sessions.findIndex((x) => x.key === Number(key));
   const like = s.sessions[i];
   const copy = like ? JSON.parse(JSON.stringify(like)) : {
@@ -302,8 +372,9 @@ function scheduleAddRow(key) {
   copy.topic = '';
   copy.title = ''; copy.subtitle = ''; copy.placeText = ''; copy.source = 'Unplanned — added by hand';
   copy.duration = ''; copy.clips = ''; copy.cameras = ''; copy.backedUp = null;
+  copy.sharedFolder = copy.folder != null;  // its folder only holds while it stays on this day
   copy.flags = {
-    session: 'Unplanned session added by hand — set M/E or the session number.',
+    session: 'Unplanned session — numbered in order for you; type M/E only if this is wrong.',
     topic: 'Unplanned session — fill in what it was about.',
   };
   s.sessions.splice(i + 1, 0, copy);
@@ -566,6 +637,7 @@ async function scheduleStartBackup(key) {
     // Started but not yet finished: if this backup is interrupted, the row
     // offers "Clips only" to complete the session already on the drive.
     row.startedAt = new Date().toISOString();
+    scheduleHoldNumbers(s);
     scheduleRemember();
     toast(`${plan.id}: add the ${plan.type === 'Informal' ? 'output folder' : 'drives'} and carry on as usual.`, 'ok');
     goStep(0);
@@ -628,6 +700,7 @@ async function scheduleClipsOnly(key) {
     SCHEDULE.applyScan(s.sessions, s.starts, res.sessions);
   } catch (_) { /* filled again when the copy finishes */ }
   row.startedAt = row.startedAt || new Date().toISOString();
+  scheduleHoldNumbers(s);
   scheduleRemember();
   setBackupType(informal ? 'informal' : 'formal');
   state.scheduleRun = { key: row.key, id: plan.id, scheduleId: s.id, clipsOnly: true };
@@ -731,6 +804,7 @@ function scheduleDatalists() {
   setDatalist('schPlaces', pickValues(SCHEDULE_VOCAB.places, knownValues('place')));
   setDatalist('schTopics', pickValues(SCHEDULE_VOCAB.topics, knownValues('topic')));
   setDatalist('schEvents', pickValues(SCHEDULE_VOCAB.events, knownValues('events')));
+  if (!document.getElementById('schEventPick')) setDatalist('schEventPick', pickValues(SCHEDULE_VOCAB.events, knownValues('events')));
   setDatalist('schLanguages', pickValues(SCHEDULE_VOCAB.languages, knownValues('languages')));
   setDatalist('schSessions', ['M', 'E', 'M1', 'M2', 'M3', 'E1', 'E2', 'E3', '1', '2', '3', '4', '5', '6']);
   setDatalist('schAuthors', ['DD', 'DJM', 'NM']);
@@ -871,6 +945,16 @@ function scheduleTableHtml(problems) {
       ${opts.placeholder ? `placeholder="${esc(opts.placeholder)}"` : ''}
       title="${esc(hint)}"></td>`;
   };
+  // Several values on one row: a chip each with its ✕, and a box to add another.
+  const chips = (row, field, list, title) => {
+    const p = prob(row, field);
+    const values = row[field] || [];
+    return `<td class="c-${field}"><div class="sch-chips ${p ? `flag${p.hard ? ' err' : ''}` : ''}" title="${esc(p ? p.msg : title)}">
+      ${values.map((v, i) => `<span class="sch-chip">${esc(v)}<button type="button" data-chip-del="${row.key}"
+        data-chip-f="${field}" data-chip-i="${i}" title="Remove ${esc(v)}" aria-label="Remove ${esc(v)}">✕</button></span>`).join('')}
+      <input class="sch-chip-in" data-chip-add="${row.key}" data-chip-f="${field}" list="${list}"
+        placeholder="${values.length ? '＋ add' : 'Pick…'}" aria-label="Add ${field === 'events' ? 'an event type' : 'a language'}"></div></td>`;
+  };
   // A menu always lists every option; a value not on it (from an older sheet) is kept.
   const select = (row, field, options, cls) => {
     const p = prob(row, field);
@@ -925,12 +1009,10 @@ function scheduleTableHtml(problems) {
       ${cell(row, 'session', row.session, { list: 'schSessions', cls: 'w-num', placeholder: n.session || '',
         title: row.type === 'Formal' ? 'M before noon, E from noon till next morning; M1, M2 / E1, E2 when there are several'
           : 'Informal sessions are 1, 2, 3 in the day' })}
-      ${cell(row, 'events', listText(row.events), { list: 'schEvents',
-        title: 'Several? Separate with commas — each extra one gets its own row in the sheet.' })}
+      ${chips(row, 'events', 'schEventPick', 'Pick as many as apply — each extra one gets its own row in the sheet.')}
       ${cell(row, 'topic', row.topic, { list: 'schTopics',
         title: `On the schedule: ${row.title || ''}${row.subtitle ? ` — ${row.subtitle}` : ''}` })}
-      ${cell(row, 'languages', listText(row.languages), { list: 'schLanguages',
-        title: 'Several? Separate with commas.' })}
+      ${chips(row, 'languages', 'schLanguages', 'Pick as many as apply.')}
       ${cell(row, 'duration', row.duration, { cls: 'w-dur', title: 'Filled in after the backup — or like 1h 2m 3s' })}
       ${cell(row, 'clips', row.clips, { cls: 'w-small' })}
       ${cell(row, 'cameras', row.cameras, { cls: 'w-small' })}
@@ -1118,6 +1200,32 @@ function wireSchedulePage() {
     el.addEventListener('change', () => scheduleSet(el.dataset.k, el.dataset.f, el.type === 'checkbox' ? el.checked : el.value));
     openPickerOnClick(el);
   });
+  host.querySelectorAll('[data-chip-del]').forEach((b) => b.addEventListener('click', () =>
+    scheduleChipRemove(b.dataset.chipDel, b.dataset.chipF, b.dataset.chipI, true)));
+  host.querySelectorAll('[data-chip-add]').forEach((el) => {
+    const key = el.dataset.chipAdd;
+    const field = el.dataset.chipF;
+    const commit = (stay) => { const v = el.value; el.value = ''; if (v.trim()) scheduleChipAdd(key, field, v, stay); };
+    el.addEventListener('focus', () => { if (field === 'events') scheduleEventPick(key); });
+    openPickerOnClick(el);
+    // Picked from the list: added at once, ready for another. Typed: Enter or a comma adds it.
+    el.addEventListener('input', (e) => {
+      if (!e.inputType || e.inputType === 'insertReplacementText' || el.value.endsWith(',')) commit(true);
+    });
+    el.addEventListener('change', () => commit(false));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(true); }
+      else if (e.key === 'Backspace' && !el.value) {
+        const row = scheduleFind(key);
+        if ((row[field] || []).length) scheduleChipRemove(key, field, row[field].length - 1, true);
+      }
+    });
+  });
+  if (scheduleChipFocus) {
+    const { key, field } = scheduleChipFocus;
+    scheduleChipFocus = null;
+    host.querySelector(`[data-chip-add="${key}"][data-chip-f="${field}"]`)?.focus();
+  }
   host.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => scheduleAddRow(b.dataset.add)));
   $('schAddRow')?.addEventListener('click', () => scheduleAddRow(null));
   host.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => scheduleDeleteRows([b.dataset.del])));

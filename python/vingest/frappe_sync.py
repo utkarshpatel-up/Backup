@@ -27,6 +27,8 @@ from .ingest import CLIP_COUNT_EXTS
 
 PROJECT_ID_RE = re.compile(r"\b(\d{4,})\b")
 SESSION_NUM_RE = re.compile(r"^(\d+)\b")
+DEFAULT_REPORT = "Raw Video Data Report"
+REPORT_TIMEOUT = 180  # a whole report can take far longer than one record
 CAM_FOLDER_RE = re.compile(r"cam[-\s_]*\d+", re.IGNORECASE)
 # A project (job) folder: the id sits at the very START of the name, followed by
 # the spaced ` Dt-<date>` token that naming.build_job_folder writes
@@ -226,6 +228,58 @@ def sync(config: dict, sessions: list[dict], requester=None) -> dict:
         "unmatched": unmatched,
         "errors": errors,
     }
+
+
+def report_problems(config: dict) -> list[str]:
+    """Settings missing for reading the report: only the connection, no field names."""
+    required = {"url": "Frappe URL", "api_key": "API key", "api_secret": "API secret"}
+    return [label for key, label in required.items() if not str(config.get(key) or "").strip()]
+
+
+def _report_columns(columns) -> list[tuple[str, str]]:
+    """(label, fieldname) per column: a dict, or Frappe's older 'Label:Type/Option:Width' text."""
+    out = []
+    for c in columns or []:
+        if isinstance(c, dict):
+            label = str(c.get("label") or c.get("fieldname") or "")
+            out.append((label, str(c.get("fieldname") or label)))
+        else:
+            label = str(c).split(":")[0]
+            out.append((label, label))
+    return out
+
+
+def fetch_report(config: dict, requester=None) -> list[list]:
+    """Read a Frappe report over its API, read-only. Returns [header, row, row …]
+    with the same column labels as the report's own download."""
+    problems = report_problems(config)
+    if problems:
+        raise ValueError("Frappe settings missing: " + ", ".join(problems))
+    requester = requester or _urllib_requester
+    name = str(config.get("report_name") or "").strip() or DEFAULT_REPORT
+    query = urllib.parse.urlencode({"report_name": name, "filters": "{}", "ignore_prepared_report": 1})
+    url = f"{str(config['url']).rstrip('/')}/api/method/frappe.desk.query_report.run?{query}"
+    status, payload = requester("GET", url, _headers(config), timeout=REPORT_TIMEOUT)
+    if status == 404:
+        raise ValueError(f'Frappe has no report named "{name}" — check the report name.')
+    if status != 200:
+        raise ValueError(_explain(status, payload, "report"))
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if not isinstance(message, dict) or "columns" not in message:
+        raise ValueError(f'Frappe did not return the columns of "{name}".')
+    columns = _report_columns(message.get("columns"))
+    rows = [[label for label, _ in columns]]
+    for row in message.get("result") or []:
+        if isinstance(row, dict):
+            if row.get("is_total_row"):
+                continue
+            cells = [row.get(field) for _, field in columns]
+        elif isinstance(row, (list, tuple)):
+            cells = list(row)[:len(columns)]
+        else:
+            continue
+        rows.append(["" if c is None else c for c in cells])
+    return rows
 
 
 def _explain(status, payload, phase) -> str:

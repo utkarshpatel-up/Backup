@@ -2108,6 +2108,37 @@ class TestFrappeSync:
                 "session_field": "session_no", "duration_field": "total_duration",
                 "clips_field": "no_of_clips", "duration_format": "human"}
 
+    def test_report_is_read_with_its_labels_and_needs_no_field_names(self):
+        seen = {}
+
+        def requester(method, url, headers, body=None, timeout=30):
+            seen.update(method=method, url=url, auth=headers.get("Authorization"), body=body)
+            return 200, {"message": {
+                "columns": [{"label": "Raw Video Id", "fieldname": "id"}, "Folder:Int:80",
+                            {"label": "Duration", "fieldname": "duration"}],
+                "result": [{"id": "DD-F-HD-3059-E", "Folder": 3059, "duration": None},
+                           ["DD-F-HD-3060-E", 3060, "1h 2m 3s", "extra"],
+                           {"id": "", "Folder": 2, "duration": "", "is_total_row": 1}],
+            }}
+
+        rows = frappe_sync.fetch_report(
+            {"url": "https://x/", "api_key": "k", "api_secret": "s", "report_name": "Raw Video Data Report"}, requester)
+        assert rows == [["Raw Video Id", "Folder", "Duration"],
+                        ["DD-F-HD-3059-E", 3059, ""], ["DD-F-HD-3060-E", 3060, "1h 2m 3s"]]
+        assert seen["method"] == "GET" and seen["body"] is None
+        assert seen["auth"] == "token k:s"
+        assert seen["url"].startswith("https://x/api/method/frappe.desk.query_report.run?")
+        assert "report_name=Raw+Video+Data+Report" in seen["url"]
+
+    def test_report_failures_say_what_to_fix(self):
+        conn = {"url": "https://x", "api_key": "k", "api_secret": "s"}
+        with pytest.raises(ValueError, match="API secret"):
+            frappe_sync.fetch_report({"url": "https://x", "api_key": "k"})
+        for status, payload, words in [(403, {}, "Authentication failed"), (0, {"_error": "no route"}, "Could not reach"),
+                                       (404, {}, "no report named"), (200, {"message": "nope"}, "did not return")]:
+            with pytest.raises(ValueError, match=words):
+                frappe_sync.fetch_report(conn, lambda *a, **k: (status, payload))
+
     def test_scan_finds_sessions_and_rolls_up_cameras(self, tmp_path):
         self._tree(tmp_path)
         sessions = frappe_sync.scan_sessions(str(tmp_path))

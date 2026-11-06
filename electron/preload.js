@@ -18,7 +18,8 @@ contextBridge.exposeInMainWorld('api', {
   pickExecutable: () => ipcRenderer.invoke('dialog:pickExecutable'),
   confirm: (opts) => ipcRenderer.invoke('dialog:confirm', opts),
   pickSchedule: () => ipcRenderer.invoke('dialog:pickSchedule'),
-  saveXlsx: (defaultName) => ipcRenderer.invoke('dialog:saveXlsx', defaultName),
+  saveXlsx: (defaultName, title) => ipcRenderer.invoke('dialog:saveXlsx', defaultName, title),
+  reportCachePath: () => ipcRenderer.invoke('report:cachePath'),
   // Offline OCR of a schedule picture: a file path, or a PNG data URL (a PDF page).
   ocrScheduleFile: (file) => ipcRenderer.invoke('schedule:ocrFile', file),
   ocrScheduleImage: (dataUrl) => ipcRenderer.invoke('schedule:ocrImage', dataUrl),

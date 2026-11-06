@@ -291,10 +291,14 @@ ipcMain.handle('dialog:pickSchedule', async () => {
   return r.canceled ? null : r.filePaths[0];
 });
 
-ipcMain.handle('dialog:saveXlsx', async (_e, defaultName) => {
+// The last report read from Frappe, kept for working offline.
+ipcMain.handle('report:cachePath', () => path.join(app.getPath('userData'), 'frappe-report.xlsx'));
+
+ipcMain.handle('dialog:saveXlsx', async (_e, defaultName, title) => {
+  const label = title || "Save the event's sheet";
   const r = await dialog.showSaveDialog(win, {
-    title: "Save the event's sheet",
-    message: "Save the event's sheet",
+    title: label,
+    message: label,
     defaultPath: path.join(app.getPath('downloads'), defaultName || 'Event_Schedule.xlsx'),
     filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }],
   });

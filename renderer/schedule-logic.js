@@ -172,12 +172,18 @@
   // is OCR noise from the LIVE badge or the italic sub-line.
   const KEEP_LATIN = /^(MBA|MHT|[A-Z]MHT|GNC|NRI|YMHT|LMHT|AK|DBF|Q&A|ATPL)$/;
 
+  // Gujarati or Hindi letters, not their digits: OCR leaves a stray "(૦)" beside
+  // the LIVE badge even on an English poster.
+  const nativeLetters = (s) => (String(s).match(/[\u0A80-\u0AE5\u0AF0-\u0AFF\u0900-\u0965\u0970-\u097F]/g) || []).length;
+  const latinLetters = (s) => (String(s).match(/[A-Za-z]/g) || []).length;
+
   function cleanTitle(line) {
     let s = String(line || '')
       .replace(/\[[^\]]*\]?/g, ' ')                       // [LIVE] and friends
-      .replace(/\(([^)]*)\)?/g, (all, inner) => (GUJ.test(inner) || DEVA.test(inner) ? all : ' '))
+      .replace(/\(([^)]*)\)?/g, (all, inner) => (nativeLetters(inner) >= 2 ? all : ' '))
       .replace(/\b[A-Za-z]*IVE\b\)?/gi, ' ');               // LIVE, IVE, CVE)
-    if (GUJ.test(s) || DEVA.test(s)) {
+    // A Gujarati or Hindi title; on a mostly English one the few other letters are the noise.
+    if (nativeLetters(s) && nativeLetters(s) >= latinLetters(s)) {
       s = s.split(/\s+/).filter((w) => {
         if (!/[A-Za-z]/.test(w)) return /[\p{L}\p{N}]/u.test(w);
         return KEEP_LATIN.test(w.replace(/[^A-Za-z&]/g, ''));
@@ -229,21 +235,39 @@
     return after.split(/\||સંપર્ક|संपर्क|contact/i)[0].replace(/[\s,|]+$/, '').trim();
   }
 
-  /** "Adalaj, DCC Hall" out of the poster's header line. */
+  /** "Adalaj, DCC Hall" out of the poster's header line, after its year or, with none, its dates. */
   function placeFromHeader(text) {
-    const line = String(text || '').split('\n').find((l) => RE_YEAR.test(l)) || '';
-    const after = line.slice(line.search(RE_YEAR) + 4).replace(/^[\s,]+/, '');
-    return after.replace(/indian\s*time.*$/i, '').split(/\s{2,}/)[0]
-      .split(/\s+/).filter((w) => /[\p{L}]{2,}/u.test(w) && (GUJ.test(w) || /^[A-Z]/.test(w)))
-      .join(' ').replace(/[,\s]+$/, '').trim();
+    const lines = String(text || '').split('\n');
+    const dated = lines.find((l) => RE_YEAR.test(l));
+    const line = dated || lines.find((l) => findDates(l, 2000)) || '';
+    const from = dated ? line.search(RE_YEAR) + 4
+      : (() => { const m = findDates(line, 2000); return m ? line.indexOf(m.match) + m.match.length : line.length; })();
+    const after = line.slice(from).replace(/^[\s,]+/, '');
+    const words = after.replace(/indian\s*time.*$/i, '').split(/\s{2,}/)[0]
+      .split(/\s+/).filter((w) => /[\p{L}]{2,}/u.test(w) && (GUJ.test(w) || /^[A-Z]/.test(w)));
+    // OCR of the small "Indian Time" at the line's end leaves a scrap like "PE".
+    while (words.length > 1 && /^[A-Z]{1,2}$/.test(words[words.length - 1])) words.pop();
+    return words.join(' ').replace(/[,\s]+$/, '').trim();
   }
+
+  // Words in a poster heading that are never its city ("Satsang Details").
+  const RE_NOT_CITY = /^(satsang|schedule|program|programme|details|venue|shibir|pujya)$/i;
+
+  /** A city written in English, from a heading's first word or a header's first part; else ''. */
+  function englishCity(text) {
+    const first = String(text || '').split(',')[0].trim();
+    return /^[A-Z][A-Za-z .'-]{1,30}$/.test(first) && !RE_NOT_CITY.test(first) ? first : '';
+  }
+
+  // The poster's title line, for a header that has dates but no year.
+  const RE_HEADER = /schedule|programme|કાર્યક્રમ|કાયક્રમ|કાયંક્રમ|कार्यक्रम/i;
 
   /** A section heading's city: "વલસાડ સત્સંગ કાર્યક્રમ" -> "વલસાડ". */
   function cityFromHeading(text) {
     const first = String(text || '').split('\n')
       .find((l) => GUJ.test(l) || DEVA.test(l) || /[A-Za-z]{3}/.test(l)) || '';
     const words = cleanTitle(first).split(/\s+/).filter(Boolean);
-    return words.length ? words[0] : '';
+    return words.length && !RE_NOT_CITY.test(words[0]) ? words[0] : '';
   }
 
   /**
@@ -265,6 +289,17 @@
     let headerPlace = '';
     let sectionPlace = '';
     let venue = '';
+    let lastRow = null;        // the session the row just before this one produced
+
+    /** A venue line belongs to the session right above it, else to the sessions after it. */
+    const setVenue = (place) => {
+      if (lastRow && !lastRow.ownPlace) {
+        lastRow.place = place;
+        lastRow.city = '';
+      } else {
+        venue = place;
+      }
+    };
 
     all.forEach((cells, idx) => {
       const text = joined[idx];
@@ -274,23 +309,30 @@
       const time = findTime(text);
       // A heading or info line: no date in it, or a lone line that carries the
       // year — the poster header ("14 ઓક્ટોબર થી 5 નવેમ્બર 2026, Adalaj") names
-      // dates but is not a session.
-      if (!dates || (filled.length === 1 && !time && RE_YEAR.test(text))) {
+      // dates but is not a session. So is a first line with a date range and the
+      // poster's title or a place ("6 to 26 November, Adalaj, DCC Hall").
+      const isHeader = filled.length === 1 && !time && (RE_YEAR.test(text)
+        || (!header && !entries.length && !skipped.length && dates && dates.days.length > 1
+          && (RE_HEADER.test(text) || text.slice(text.indexOf(dates.match) + dates.match.length).includes(','))));
+      if (!dates || isHeader) {
         if (RE_PLACE_LINE.test(text)) {
-          venue = cleanPlace(placeFromLine(text));
+          setVenue(cleanPlace(placeFromLine(text)));
         } else if (RE_CONTACT.test(text)) {
           // "સ્થળ" misread but the contact line is under it: the venue is after the colon.
           const first = text.split('\n')[0];
           if (!RE_CONTACT.test(first) && first.includes(':')) {
-            venue = cleanPlace(first.slice(first.indexOf(':') + 1));
+            setVenue(cleanPlace(first.slice(first.indexOf(':') + 1)));
           }
-        } else if (!header && RE_YEAR.test(text)) {
+        } else if (!header && (isHeader || RE_YEAR.test(text))) {
           header = text;
           headerPlace = cleanPlace(placeFromHeader(text));
-        } else if (!dates) {
+        } else if (!dates && filled.length === 1) {
+          // A section heading is a line of its own; several cells with no date
+          // is a row whose date was misread ('gt" Nov, Mon | Break').
           sectionPlace = cityFromHeading(text);
           venue = '';
         }
+        lastRow = null;
         return;
       }
 
@@ -328,9 +370,10 @@
 
       if (RE_BREAK.test(title) || (!time && letters(title).length < 3)) {
         skipped.push({ days: dates.days, reason: 'break', rowText });
+        lastRow = null;
         return;
       }
-      entries.push({
+      lastRow = {
         days: dates.days,
         start: time ? time.start : null,
         end: time ? time.end : null,
@@ -338,8 +381,12 @@
         subtitle,
         live,
         place: rowPlace || venue || sectionPlace || headerPlace,
+        // A place that doesn't say its city: the section's, or the header's first part.
+        city: rowPlace ? '' : englishCity(sectionPlace) || (venue ? '' : englishCity(headerPlace)),
+        ownPlace: !!rowPlace,
         rowText,
-      });
+      };
+      entries.push(lastRow);
     });
 
     // A schedule running over New Year: a month that goes backwards is the next year.
@@ -356,9 +403,24 @@
 
   /* ------------------------------------------------ house vocabulary */
 
+  function parayanTopic(e) {
+    const n = /(?:આપ્તવાણી|aptavani|आप्तवाणी)\s*[-–]?\s*(\d{1,2})/i.exec(`${e.title} ${e.subtitle}`);
+    return n ? `Aptavani-${n[1]} Parayan` : 'Parayan';
+  }
+
   // Schedule wording -> master values, first match wins. `t` is tested against
   // the title and sub-line together; spellings allow for common OCR slips.
   const TITLE_RULES = [
+    // From the master: a Bhakti on an occasion is the Formal evening session, and
+    // New Year is a Formal celebration plus, with Darshan, an Informal darshan.
+    { t: /(?=.*(?:ભક્તિ|bhakti|भक्ति))(?=.*(?:દિવાળી|diwali|दिवाली|જન્મ\s*જયંતી|જન્મજયંતી|janma\s*jayanti|પૂ\S*ણિમા|પુ\S*ણિમા|guru\s*purnima|પ્રાણ\s*પ્રતિષ્ઠા|pran\s*pratishtha|પુણ્યતિથિ|punyatithi|શિ[બખવ][િી]ર|shibir))/i,
+      topic: 'Bhakti', events: ['Bhakti'], type: 'Formal' },
+    { t: /નૂતન\s*વર્ષ|નવું\s*વર્ષ|બેસતું\s*વર્ષ|new\s*year|नव\s*वर्ष/i, topic: 'New Year Celebration', events: ['New Year'], type: 'Formal',
+      parts: (e) => (/દર્શન|darshan|दर्शन/i.test(e.title)
+        ? [{ type: 'Formal', hint: 'M', topic: 'New Year Celebration', events: ['New Year'] },
+          { type: 'Informal', topic: 'New Year Darshan', events: ['New Year', 'Darshan'] }]
+        : null) },
+    { t: /દિવાળી|diwali|दिवाली/i, topic: 'Diwali Informal Recording', events: ['Diwali'], type: 'Informal' },
     { t: /ખાતમુહ|ખાત\s*મુહ|ખાતમૂહ|khat\s*mu|khatmurat|ground\s*breaking|ભૂમિ\s*પૂજન|भूमिपूजन/i,
       topic: 'Ground Breaking Ceremony (Khatmurat)', events: ['Ground Breaking Ceremony'], type: 'Formal' },
     { t: /જ્ઞાન\s*વિધિ|જ્ઞાનવિધી|gn?y?aa?n\s*vidhi|ज्ञान\s*विधि/i,
@@ -372,16 +434,16 @@
       events: (e) => (/નવરાત્ર|navratri/i.test(e.title) || ['09', '10'].includes(e.days[0].slice(5, 7))
         ? ['Navratri', 'Garba'] : ['Garba']),
       type: 'Formal' },
-    { t: /શિ[બખવ][િી]ર|shibir|शिबिर/i, topic: 'General Satsang', guessTopic: true,
+    { t: /શિ[બખવ][િી]ર|shibir|शिबिर/i,
+      topic: (e) => (/ડ્રામા|નાટક|drama/i.test(e.title) ? 'Drama' : /દર્શન|darshan/i.test(e.title) ? 'Darshan'
+        : /પારાયણ|parayan/i.test(e.title) ? parayanTopic(e) : 'General Satsang'),
+      guessTopic: (e) => !/ડ્રામા|નાટક|drama|દર્શન|darshan|પારાયણ|parayan/i.test(e.title),
       events: (e) => (/હિન્દી|hindi/i.test(e.title) ? ['Hindi Shibir'] : ['Shibir']),
       activity: (e) => (/MBA/i.test(e.title)
         ? (/બહેન|behen|behn|sisters/i.test(e.title) ? 'MBA - Behno' : 'MBA - Bhaio') : null),
       type: 'Formal', allDay: true },
     { t: /પારાયણ|parayan|पारायण/i,
-      topic: (e) => {
-        const n = /(?:આપ્તવાણી|aptavani|आप्तवाणी)\s*[-–]?\s*(\d{1,2})/i.exec(`${e.title} ${e.subtitle}`);
-        return n ? `Aptavani-${n[1]} Parayan` : 'Parayan';
-      },
+      topic: (e) => parayanTopic(e),
       events: ['Parayan'], type: 'Formal' },
     { t: /સ[ાો]?નેરી|પ્રશ્ન|soneri|q\s*&\s*a/i,
       topic: (e) => {
@@ -405,6 +467,39 @@
     { t: /સત્સંગ|સત્સગ|satsang|सत्संग/i, topic: 'General Satsang', events: ['General'], type: 'Formal' },
   ];
 
+  // Every event a title names, in the master's usual order: the occasion first,
+  // then what happened at it ("Diwali,Bhakti", "Shibir,Parayan", "Soneri Satsang,Parayan").
+  const EVENT_WORDS = [
+    [/દિવાળી|diwali|दिवाली/i, 'Diwali'],
+    [/નૂતન\s*વર્ષ|નવું\s*વર્ષ|બેસતું\s*વર્ષ|new\s*year|नव\s*वर्ष/i, 'New Year'],
+    [/જન્મ\s*જયંતી|જન્મજયંતી|janma\s*jayanti/i, 'Janma Jayanti'],
+    [/પૂ\S*ણિમા|પુ\S*ણિમા|guru\s*purnima|गुरु\s*पूर्णिमा/i, 'Gurupurnima'],
+    [/પ્રાણ\s*પ્રતિષ્ઠા|pran\s*pratishtha/i, 'Pranpratishtha'],
+    [/પુણ્યતિથિ|punyatithi/i, 'Niruma Punyatithi'],
+    [/નવરાત્ર|navratri/i, 'Navratri'],
+    [/શિ[બખવ][િી]ર|shibir|शिबिर/i, 'Shibir'],
+    [/સ[ાો]?નેરી\s*સત્સ|soneri\s*satsang/i, 'Soneri Satsang'],
+    [/પારાયણ|parayan|पारायण/i, 'Parayan'],
+    [/ભક્તિ|bhakti|भक्ति/i, 'Bhakti'],
+    [/દર્શન|darshan|दर्शन/i, 'Darshan'],
+    [/ગરબા|garba|गरबा/i, 'Garba'],
+    [/ડ્રામા|નાટક|\bdrama\b/i, 'Drama'],
+    [/દાદા\s*દરબાર|dada\s*darbar/i, 'Dada Darbar'],
+    [/સેવાર્થી\s*સત્સંગ|sevarthi\s*satsang/i, 'Sevarthi Satsang'],
+    [/જ્ઞાન\s*વિધિ|જ્ઞાનવિધી|gn?y?aa?n\s*vidhi|ज्ञान\s*विधि/i, 'Gnanvidhi'],
+  ];
+  const EVENT_ORDER = EVENT_WORDS.map(([, name]) => name);
+
+  /** A rule's events plus any others the title names; 'General' only when nothing else fits. */
+  function eventsFor(ruleEvents, title) {
+    const all = new Set(ruleEvents);
+    for (const [re, name] of EVENT_WORDS) if (re.test(title)) all.add(name);
+    if (all.has('Hindi Shibir')) all.delete('Shibir');
+    if (all.size > 1) all.delete('General');
+    const rank = (e) => { const i = EVENT_ORDER.indexOf(e); return i < 0 ? -1 : i; };
+    return [...all].sort((a, b) => rank(a) - rank(b));
+  }
+
   // Venue wording -> master place, with the language the session is usually in
   // and the city that starts the session folder's name ("Adalaj Soneri …").
   const PLACE_RULES = [
@@ -418,9 +513,14 @@
     { t: /વારાણસી|varanasi|banaras/i, place: 'Varanasi', city: 'Varanasi', guess: true, languages: ['Hindi'] },
   ];
 
-  /** A city read off an English place ("Hotel Venue, Allentown" -> "Allentown"); '' if unsure. */
-  function cityOf(place) {
-    const last = String(place || '').split(',').pop().trim();
+  // Trailing parts of an address that are not its city.
+  const RE_NOT_ADDRESS_CITY = /^(india|usa|us|uk|canada|australia|andhra pradesh|assam|bihar|chhattisgarh|delhi|goa|gujarat|haryana|himachal pradesh|jharkhand|karnataka|kerala|madhya pradesh|maharashtra|odisha|punjab|rajasthan|tamil nadu|telangana|uttar pradesh|uttarakhand|west bengal|\d[\d\s-]*)$/i;
+
+  /** A city read off an English place ("Hotel Venue, Allentown" or "…, Anand, Gujarat" -> the city); '' if unsure. */
+  function cityInPlace(place) {
+    const parts = String(place || '').split(',').map((x) => x.trim()).filter(Boolean);
+    while (parts.length > 1 && RE_NOT_ADDRESS_CITY.test(parts[parts.length - 1])) parts.pop();
+    const last = parts.length ? parts[parts.length - 1] : '';
     return /^[A-Za-z][A-Za-z .'-]{1,30}$/.test(last) ? last : '';
   }
 
@@ -450,7 +550,8 @@
     const rule = TITLE_RULES.find((r) => r.t.test(text));
     if (rule) {
       out.topic = pick(rule.topic, entry);
-      out.events = pick(rule.events, entry).slice();
+      out.events = eventsFor(pick(rule.events, entry), entry.title || '');
+      out.parts = pick(rule.parts, entry) || null;
       out.type = pick(rule.type, entry);
       out.activity = pick(rule.activity, entry) || 'General';
       out.allDay = !!rule.allDay;
@@ -485,10 +586,10 @@
       if (prule.languages && !(remembered && remembered.languages)) out.languages = prule.languages.slice();
     } else {
       out.place = placeText;
-      if (placeText) flags.place = 'Write the place in English.';
-      else flags.place = 'The schedule does not name a place.';
+      if (nativeLetters(placeText)) flags.place = 'Write the place in English.';
+      else if (!placeText) flags.place = 'The schedule does not name a place.';
     }
-    if (!out.city) out.city = (prule && prule.city) || cityOf(out.place);
+    if (!out.city) out.city = (prule && prule.city) || entry.city || cityInPlace(out.place);
     if (!out.city) flags.city = 'Which city? It starts the session folder name.';
     return out;
   }
@@ -505,11 +606,13 @@
     const sessions = [];
     for (const entry of read.entries) {
       const c = classify(entry, memory);
+      // One poster row can be several sessions (New Year & Darshan).
+      const pieces = c.parts || [{}];
       const slots = entry.start ? [{ start: entry.start, end: entry.end, hint: null }]
         : c.allDay ? [{ start: null, end: null, hint: 'M' }, { start: null, end: null, hint: 'E' }]
           : [{ start: null, end: null, hint: null }];
       for (const day of entry.days) {
-        for (const slot of slots) {
+        for (const slot of slots) for (const piece of pieces) {
           const flags = { ...c.flags };
           if (!entry.start) flags.session = c.allDay
             ? 'The schedule gives no times — add or remove sessions to match the day.'
@@ -520,13 +623,13 @@
             date: day,
             start: slot.start,
             end: slot.end,
-            hint: slot.hint,
-            type: c.type,
+            hint: piece.hint || slot.hint,
+            type: piece.type || c.type,
             activity: c.activity,
             place: c.place,
             city: c.city,
-            topic: c.topic,
-            events: c.events.slice(),
+            topic: piece.topic || c.topic,
+            events: (piece.events || c.events).slice(),
             languages: c.languages.slice(),
             author: defaults.author || 'DD',
             format: defaults.format || 'HD',
@@ -579,36 +682,69 @@
    * Folder and session numbers for every included session. Formal and Informal
    * keep separate folder series; each day takes the next folder in its series.
    * Formal sessions are M / E (M1, M2 … when a half has several); Informal are
-   * 1, 2, 3 by time. A number the operator typed is kept as typed.
+   * 1, 2, 3 by time, then by their order on the page. A number the operator typed
+   * is kept as typed, and the numbers around it move: the next day follows on
+   * from a typed folder, and no automatic number repeats a typed one.
    * Returns a Map key -> {folder, session}.
    */
   function assignNumbers(sessions, starts = {}) {
     const out = new Map();
+    const position = new Map(sessions.map((s, i) => [s.key, i]));
+    const typedFolder = (s) => (s.folder != null && s.folder !== '' ? Number(s.folder) : null);
     const order = (a, b) => {
       const x = sessionDay(a), y = sessionDay(b);
       return (x < y ? -1 : x > y ? 1 : 0)
         || HALF_RANK[half(a)] - HALF_RANK[half(b)]
         || clock(a).localeCompare(clock(b))
-        || a.key - b.key;
+        || position.get(a.key) - position.get(b.key);
+    };
+    // Sequence labels for rows of one group: a typed label holds its number and
+    // the rest take the free ones. `label(n)` writes number n; bare M or E is 1.
+    const labelGroup = (group, folderOf, label, numberOf) => {
+      const used = new Set(group.filter((s) => s.session).map((s) => numberOf(s.session)));
+      let n = 0;
+      for (const s of group) {
+        let text = s.session;
+        if (!text) {
+          do { n += 1; } while (used.has(n));
+          text = label(n, group.length);
+        }
+        out.set(s.key, { folder: folderOf(s), session: text });
+      }
     };
     for (const type of ['Formal', 'Informal']) {
       const list = sessions.filter((s) => s.include && s.type === type).sort(order);
       const start = Number(type === 'Formal' ? starts.formal : starts.informal);
       const days = [...new Set(list.map(sessionDay))];
-      const folderOf = new Map(days.map((d, i) => [d, Number.isFinite(start) && start > 0 ? start + i : null]));
+      const taken = new Set(list.map(typedFolder).filter((v) => v != null));
+      let next = Number.isFinite(start) && start > 0 ? start : null;
       for (const day of days) {
         const group = list.filter((s) => sessionDay(s) === day);
-        const folder = (s) => (s.folder != null && s.folder !== '' ? Number(s.folder) : folderOf.get(day));
-        if (type === 'Informal') {
-          group.forEach((s, i) => out.set(s.key, { folder: folder(s), session: s.session || String(i + 1) }));
-          continue;
+        const typedHere = group.map(typedFolder).filter((v) => v != null);
+        // A row whose folder is already on the drive fixes the day's folder.
+        const anchor = group.find((s) => typedFolder(s) != null && (s.backedUp || s.startedAt));
+        let dayFolder = anchor ? typedFolder(anchor) : null;
+        if (dayFolder == null && next != null && group.some((s) => typedFolder(s) == null)) {
+          while (taken.has(next) && !typedHere.includes(next)) next += 1;
+          dayFolder = next;
+          next += 1;
         }
-        for (const h of ['M', 'E']) {
-          const g = group.filter((s) => half(s) === h);
-          g.forEach((s, i) => out.set(s.key, {
-            folder: folder(s),
-            session: s.session || (g.length > 1 ? `${h}${i + 1}` : h),
-          }));
+        for (const v of typedHere) if (next == null || v >= next) next = v + 1;
+        const folder = (s) => typedFolder(s) ?? dayFolder;
+        // Sessions are numbered inside their folder: one given a folder of its own starts over.
+        for (const f of new Set(group.map(folder))) {
+          const inFolder = group.filter((s) => folder(s) === f);
+          if (type === 'Informal') {
+            labelGroup(inFolder, folder, (n) => String(n), Number);
+            continue;
+          }
+          // A typed M or E decides the row's half, whatever its start time.
+          const halfOf = (s) => { const m = /^([ME])/i.exec(String(s.session || '')); return m ? m[1].toUpperCase() : half(s); };
+          for (const h of ['M', 'E']) {
+            labelGroup(inFolder.filter((s) => halfOf(s) === h), folder,
+              (n, count) => (count > 1 ? `${h}${n}` : h),
+              (text) => { const m = /^[ME]-?(\d*)$/i.exec(String(text)); return m ? +m[1] || 1 : NaN; });
+          }
         }
       }
     }
@@ -1236,10 +1372,49 @@
     return tests.length ? (records || []).filter((r) => tests.every((t) => t(r))) : (records || []).slice();
   }
 
+  // The report as a sheet: the headers parseReport reads back, so an export can
+  // be chosen again later as the existing data.
+  const REPORT_SHEET = [['Raw Video Id', 'id'], ['Folder', 'folder'], ['Year', 'year'], ['M', 'month'], ['D', 'day'],
+    ['Activity', 'activity'], ['Author', 'author'], ['Format', 'format'], ['Satsang Type', 'type'], ['City', 'city'],
+    ['State', 'state'], ['Country', 'country'], ['Place Detail', 'place'], ['Session', 'session'],
+    ['Event Type', 'events'], ['Topic/Description', 'topic'], ['Language', 'languages'], ['Duration', 'duration'],
+    ['No of clips', 'clips'], ['No of cameras', 'cameras']];
+
+  /** How often each event was held with each other one: Map(lowercase event -> Map(event -> times)). */
+  function eventPartners(records) {
+    const out = new Map();
+    for (const r of records || []) {
+      for (const a of r.events || []) {
+        for (const b of r.events || []) {
+          if (a === b) continue;
+          const k = String(a).toLowerCase();
+          if (!out.has(k)) out.set(k, new Map());
+          out.get(k).set(b, (out.get(k).get(b) || 0) + 1);
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Report records -> {columns, rows} for an .xlsx; whole numbers stay numbers. */
+  function reportSheet(records) {
+    const value = (r, k) => {
+      if (k === 'year') return r.date ? +r.date.slice(0, 4) : '';
+      if (k === 'month') return r.date ? +r.date.slice(5, 7) : '';
+      if (k === 'day') return r.date ? +r.date.slice(8, 10) : '';
+      const v = r[k];
+      if (Array.isArray(v)) return v.join(', ');
+      if (['folder', 'clips', 'cameras'].includes(k) && /^\d+$/.test(String(v ?? ''))) return Number(v);
+      return v ?? '';
+    };
+    return { columns: REPORT_SHEET.map(([h]) => h),
+      rows: (records || []).map((r) => REPORT_SHEET.map(([, k]) => value(r, k))) };
+  }
+
   return { COLUMNS, findDates, findTime, cleanTitle, similarity, readRows, classify,
            draftSessions, assignNumbers, masterId, sheetRows, fmtDuration, applyScan,
            learn, toIndian, fromIndian, sessionDay, half, camsFor, jobFolderName,
            sessionFolderName, folderPlan, check, parseCities, findCity, cityOf, geolocation,
-           parseReport, scheduleRecords, seriesOf, mergeReport, findGaps, filterReport,
+           parseReport, reportSheet, eventPartners, scheduleRecords, seriesOf, mergeReport, findGaps, filterReport,
            reportDate, TITLE_RULES, PLACE_RULES };
 });

@@ -64,7 +64,7 @@ const state = {
 
 // Field names the Frappe integration stores in settings.json.
 const FRAPPE_DEFAULTS = {
-  url: '', api_key: '', api_secret: '', doctype: '',
+  url: '', api_key: '', api_secret: '', report_name: 'Raw Video Data Report', doctype: '',
   project_field: '', session_field: '', duration_field: '',
   clips_field: '', duration_format: 'human',
 };
@@ -4245,14 +4245,19 @@ async function saveFrappeSettings() {
   const get = (id) => ($(id) ? $(id).value.trim() : '');
   state.frappe = {
     url: get('fFrappeUrl'), api_key: get('fFrappeKey'), api_secret: get('fFrappeSecret'),
-    doctype: get('fFrappeDoctype'), project_field: get('fFrappeProject'),
+    report_name: get('fFrappeReport') || FRAPPE_DEFAULTS.report_name, doctype: get('fFrappeDoctype'), project_field: get('fFrappeProject'),
     session_field: get('fFrappeSession'), duration_field: get('fFrappeDuration'),
     clips_field: get('fFrappeClips'),
     duration_format: ($('fFrappeFormat') ? $('fFrappeFormat').value : 'human'),
   };
   try { await window.api.setSettings({ frappe: state.frappe }); } catch (e) { /* non-fatal */ }
   toast('Frappe settings saved.', 'ok');
-  // If we opened settings on the way to a sync, continue to it now.
+  // If we opened settings on the way to a report fetch or a sync, continue to it now.
+  if (state.frappeUI && state.frappeUI.pendingReport && reportConnected()) {
+    closeFrappe();
+    reportFetch();
+    return;
+  }
   const pending = state.frappeUI && state.frappeUI.pendingRoot;
   if (pending && frappeConfigComplete()) { syncFrappe(pending); return; }
   closeFrappe();
@@ -4306,8 +4311,8 @@ function renderFrappeModal() {
       <div class="modal-panel" role="dialog" aria-modal="true">
         <div class="modal-head">
           <div><h3 style="margin:0">Frappe settings</h3>
-          <div class="hint" style="margin-top:4px">Stored locally on this PC. Used to find each
-            session's record by field and write its duration &amp; clip count.</div></div>
+          <div class="hint" style="margin-top:4px">Stored locally on this PC. The URL, key and report
+            name are all the Report page needs; the fields below are for writing durations.</div></div>
           <button class="sm ghost" id="btnFrappeClose">Close</button>
         </div>
         <div class="modal-body">
@@ -4316,6 +4321,7 @@ function renderFrappeModal() {
             <div style="flex:1">${frappeField('fFrappeKey', 'API key', c.api_key)}</div>
             <div style="flex:1">${frappeField('fFrappeSecret', 'API secret', c.api_secret, { password: true })}</div>
           </div>
+          ${frappeField('fFrappeReport', 'Report to fetch', c.report_name, { hint: 'read-only, for the Report page', placeholder: FRAPPE_DEFAULTS.report_name })}
           ${frappeField('fFrappeDoctype', 'DocType', c.doctype, { placeholder: 'Informal Session' })}
           <div class="row" style="gap:10px">
             <div style="flex:1">${frappeField('fFrappeProject', 'Project field', c.project_field, { hint: 'matched to the project id (e.g. 2552)', placeholder: 'project_id' })}</div>

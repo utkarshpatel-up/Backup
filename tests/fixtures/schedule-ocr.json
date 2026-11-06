@@ -1,5 +1,5 @@
 {
- "_note": "Tesseract output (electron/schedule-ocr.js, eng+guj) for three real schedule posters, read cell by cell.",
+ "_note": "Tesseract output (electron/schedule-ocr.js, eng+guj) for four real schedule posters, read cell by cell.",
  "oct-14-to-nov-5-2026": {
   "table": true,
   "rows": [
@@ -173,6 +173,80 @@
     "23\" August, Sun",
     "જ્ઞાનવિધિ",
     "4:30-8 PM"
+   ]
+  ]
+ },
+ "nov-6-to-26-2026-english": {
+  "table": true,
+  "rows": [
+   [
+    "ny Pujya Deepakbhai's Satsang Schedule\nPr મં 6 to 26 November, Adalaj, DCC Hall PE 70"
+   ],
+   [
+    "6\" Nov, Fri",
+    "Soneri Satsang- Q & A\nQuestions : BMHT & LMHT",
+    "9-10 PM"
+   ],
+   [
+    "7 Nov, Sat",
+    "Break"
+   ],
+   [
+    "8\" Nov, Sun",
+    "Diwali Bhakti (LIVE) (ten)",
+    "8.30-10.30 PM"
+   ],
+   [
+    "gt\" Nov, Mon",
+    "Break"
+   ],
+   [
+    "10\" Nov, Tue",
+    "New Year & Darshan Program (LIVE) (tee)\n(As Published On Akonnect)"
+   ],
+   [
+    "11\" Nov, Wed",
+    "Break"
+   ],
+   [
+    "12\" Nov, Thu",
+    "Soneri Satsang - Q & A LIVE) (teen)\nQuestions : ATPL Sector 4",
+    "9 - 10 PM"
+   ],
+   [
+    "13\" Nov, Fri",
+    "Break"
+   ],
+   [
+    "14\" Nov, Sat",
+    "Soneri Satsang - Q & A\nQuestions : General",
+    "9-10 PM"
+   ],
+   [
+    "Adalaj Satsang Details"
+   ],
+   [
+    "Venue : Dadanagar Convention Center | Contact : 93286 61166 / 77"
+   ],
+   [
+    "15% Nov, Sun",
+    "Gnan Vidhi",
+    "4.30 - 8 PM"
+   ],
+   [
+    "16 to 18 Nov",
+    "Break"
+   ],
+   [
+    "19 to 25 Nov",
+    "119\" Janma Jayanti Mahotsav - Anand [LIVE] (૦)\n(As Published On Akonnect)"
+   ],
+   [
+    "Venue : Anand - Sojitra Road, Near Morad Valasan Canal, Anand, Gujarat | Contact : 99983 39150"
+   ],
+   [
+    "26\" Nov, Thu",
+    "Break"
    ]
   ]
  }

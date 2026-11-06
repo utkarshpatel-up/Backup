@@ -184,8 +184,12 @@ def scan(root: str, extensions=None, progress=None) -> list[dict]:
 
 # ------------------------------------------------------------------ writing
 
+# Characters an XML 1.0 file may not hold, whatever Frappe's data has in it.
+_XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
 def _xq(text) -> str:
-    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+    return (_XML_ILLEGAL.sub("", str(text)).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
@@ -211,16 +215,19 @@ def _cell(ref: str, value, style: int = 0) -> str:
     return f'<c r="{ref}" t="inlineStr"{st}><is><t xml:space="preserve">{_xq(value)}</t></is></c>'
 
 
-def write_xlsx(path: str, rows: list[list]) -> str:
-    """Write `rows` under the master's header. Column G (Full Date) takes ISO
-    'YYYY-MM-DD' strings and is stored as a real Excel date, shown dd/mm/yyyy."""
-    widths = [18, 10, 8, 10, 8, 10, 12, 12, 24, 30, 50, 8, 9, 22, 16, 30]
+def write_xlsx(path: str, rows: list[list], columns: list | None = None) -> str:
+    """Write `rows` under the master's header, or under `columns` if given. In the
+    master's layout column G (Full Date) takes ISO 'YYYY-MM-DD' strings and is
+    stored as a real Excel date, shown dd/mm/yyyy."""
+    master = columns is None
+    heads = COLUMNS if master else columns
+    widths = [18, 10, 8, 10, 8, 10, 12, 12, 24, 30, 50, 8, 9, 22, 16, 30] if master else [18] * len(heads)
     sheet_rows = ['<row r="1">' + "".join(
-        _cell(f"{_col(i)}1", h, 1) for i, h in enumerate(COLUMNS)) + "</row>"]
+        _cell(f"{_col(i)}1", h, 1) for i, h in enumerate(heads)) + "</row>"]
     for n, row in enumerate(rows, start=2):
         cells = []
-        for i, v in enumerate(list(row)[:len(COLUMNS)]):
-            if i == 6 and isinstance(v, str) and _ISO_DATE.match(v):
+        for i, v in enumerate(list(row)[:len(heads)]):
+            if master and i == 6 and isinstance(v, str) and _ISO_DATE.match(v):
                 d = _dt.date.fromisoformat(v)
                 cells.append(_cell(f"G{n}", (d - _EPOCH).days, 2))
             else:
@@ -265,7 +272,7 @@ def write_xlsx(path: str, rows: list[list]) -> str:
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
             'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-            '<sheets><sheet name="Event Schedule" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+            f'<sheets><sheet name="{"Event Schedule" if master else "Report"}" sheetId="1" r:id="rId1"/></sheets></workbook>'),
         "xl/_rels/workbook.xml.rels": (
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'

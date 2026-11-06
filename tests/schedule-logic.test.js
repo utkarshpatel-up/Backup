@@ -62,6 +62,81 @@ test('Oct–Nov poster: every programme found, breaks left out', () => {
     [['Formal', 'M', 'Ground Breaking Ceremony'], ['Informal', '1', 'Gnanvidhi']]);
 });
 
+test('Nov English poster: the title bar\'s place and city, a venue below its row, no made-up sessions', () => {
+  const { read, sessions } = draft('nov-6-to-26-2026-english');
+  // The header ("6 to 26 November, Adalaj, DCC Hall") has no year, and is not a 21-day session.
+  assert.equal(read.headerPlace, 'Adalaj, DCC Hall');
+  assert.equal(sessions.length, 14);   // New Year & Darshan is two sessions
+  const on = (date) => sessions.filter((s) => s.date === date);
+  // Rows above any section take the title bar's place and city, across a misread 'gt" Nov' break.
+  for (const date of ['2026-11-06', '2026-11-08', '2026-11-12', '2026-11-14']) {
+    const [s] = on(date);
+    assert.deepEqual([s.place, s.city, s.flags.place, s.flags.city],
+      ['Dadanagar Hall', 'Adalaj', undefined, undefined], date);
+  }
+  // The section's venue is the line above its row.
+  assert.deepEqual([on('2026-11-15')[0].place, on('2026-11-15')[0].city], ['Dadanagar Hall', 'Adalaj']);
+  // The stray "(૦)" by the LIVE badge no longer empties the title, so the Mahotsav is kept;
+  // its venue is the line below it, and Gujarat is the state, not the city.
+  const anand = sessions.filter((s) => s.date >= '2026-11-19');
+  assert.equal(anand.length, 7);
+  assert.ok(anand.every((s) => s.events[0] === 'Janma Jayanti' && s.city === 'Anand'
+    && /Sojitra Road/.test(s.place) && !s.flags.place));
+});
+
+test('a title that names several events gets them all, as the master has them', () => {
+  const one = (title, subtitle = '') => S.draftSessions(S.readRows([['1 Nov, Sun', subtitle ? `${title}\n${subtitle}` : title, '9-10 PM']]), {}, {})[0];
+  const got = (title) => { const s = one(title); return [s.type, s.events.join(','), s.topic]; };
+  // Diwali Bhakti in the master, three years running: Formal, Diwali,Bhakti, topic Bhakti.
+  assert.deepEqual(got('Diwali Bhakti (LIVE)'), ['Formal', 'Diwali,Bhakti', 'Bhakti']);
+  assert.deepEqual(got('દિવાળી ભક્તિ'), ['Formal', 'Diwali,Bhakti', 'Bhakti']);
+  assert.deepEqual(got('Janma Jayanti Bhakti'), ['Formal', 'Janma Jayanti,Bhakti', 'Bhakti']);
+  assert.deepEqual(got('Guru Purnima Bhakti'), ['Formal', 'Gurupurnima,Bhakti', 'Bhakti']);
+  assert.deepEqual(got('Shibir Parayan Aptavani-2'), ['Formal', 'Shibir,Parayan', 'Aptavani-2 Parayan']);
+  assert.deepEqual(got('Shibir Bhakti'), ['Formal', 'Shibir,Bhakti', 'Bhakti']);
+  assert.deepEqual(got('Shibir Garba').slice(0, 2), ['Formal', 'Shibir,Garba']);
+  assert.deepEqual(got('Shibir Drama'), ['Formal', 'Shibir,Drama', 'Drama']);
+  assert.deepEqual(got('Soneri Satsang Parayan Aptavani-2'), ['Formal', 'Soneri Satsang,Parayan', 'Aptavani-2 Parayan']);
+  assert.deepEqual(got('Janma Jayanti Darshan').slice(0, 2), ['Formal', 'Janma Jayanti,Darshan']);
+  // One event stays one event.
+  assert.deepEqual(got('Bhakti'), ['Informal', 'Bhakti', 'Bhakti']);
+  assert.deepEqual(got('Diwali Lighting').slice(0, 2), ['Informal', 'Diwali']);
+  assert.deepEqual(got('Soneri Satsang - Q & A').slice(0, 2), ['Formal', 'Soneri Satsang']);
+  assert.deepEqual(got('Hindi Shibir').slice(1, 2), ['Hindi Shibir']);
+  // A junk sub-line can't add an event; "General" gives way to a named one.
+  assert.deepEqual(one('Soneri Satsang', 'Questions : Bhakti').events, ['Soneri Satsang']);
+});
+
+test('New Year & Darshan is two sessions on one day, as in the last two years', () => {
+  const sessions = S.draftSessions(S.readRows([['10 Nov, Tue', 'New Year & Darshan Program']]), {}, { author: 'DD', format: 'HD' });
+  assert.deepEqual(sessions.map((s) => [s.type, s.events.join(','), s.topic]),
+    [['Formal', 'New Year', 'New Year Celebration'], ['Informal', 'New Year,Darshan', 'New Year Darshan']]);
+  const n = S.assignNumbers(sessions, { formal: 3060, informal: 2621 });
+  assert.deepEqual(sessions.map((s) => `${n.get(s.key).folder}-${n.get(s.key).session}`), ['3060-M', '2621-1']);
+  // Each event of a row after the first goes on its own sheet row, as the import needs.
+  const rows = S.sheetRows(sessions, { formal: 3060, informal: 2621 });
+  const darshan = rows.findIndex((r) => r[0] === 'DD-I-HD-2621-1');
+  assert.deepEqual([rows[darshan][13], rows[darshan + 1][13], rows[darshan + 1][0]], ['New Year', 'Darshan', '']);
+  // New Year alone stays one Formal session.
+  assert.equal(S.draftSessions(S.readRows([['10 Nov, Tue', 'New Year Celebration', '9-10 AM']]), {}, {}).length, 1);
+});
+
+test('the report tells which events go together', () => {
+  const partners = S.eventPartners([{ events: ['Diwali', 'Bhakti'] }, { events: ['Bhakti', 'Diwali'] }, { events: ['Bhakti', 'Shibir'] }, { events: ['Diwali'] }]);
+  assert.equal(partners.get('diwali').get('Bhakti'), 2);
+  assert.deepEqual([...partners.get('bhakti')].sort(), [['Diwali', 2], ['Shibir', 1]]);
+});
+
+test('a place finds its city: address parts, an English heading, the header\'s first part', () => {
+  const cityOfRows = (rows) => S.draftSessions(S.readRows(rows), {}, {})[0];
+  assert.equal(cityOfRows([['1 Nov, Sun', 'Satsang', '9-10 PM'], ['Venue : Hotel One, Allentown, USA']]).city, 'Allentown');
+  assert.equal(cityOfRows([['Surat Satsang Details'], ['Venue : Green Hall'], ['1 Nov, Sun', 'Satsang', '9-10 PM']]).city, 'Surat');
+  const header = cityOfRows([['Satsang Schedule\n1 to 5 November, Surat, Green Hall'], ['1 Nov, Sun', 'Satsang', '9-10 PM']]);
+  assert.deepEqual([header.place, header.city], ['Surat, Green Hall', 'Surat']);
+  // A heading with no city in it does not make one up.
+  assert.notEqual(cityOfRows([['Satsang Details'], ['1 Nov, Sun', 'Satsang', '9-10 PM']]).city, 'Satsang');
+});
+
 test('a second event type goes on its own row with the other cells blank', () => {
   const { rows } = draft('oct-14-to-nov-5-2026', { formal: 3048, informal: 2612 });
   const i = rows.findIndex((r) => r[6] === '2026-10-17');
@@ -102,6 +177,74 @@ test('several sessions in one half are M1/M2; a typed number is kept', () => {
   assert.equal(n.get(1).folder, 3100);
   assert.equal(n.get(4).folder, 4000);
   assert.equal(S.masterId(sessions[0], 3100, 'M1'), 'DD-F-HD-3100-M1');
+});
+
+test('a session added between planned ones moves the numbers around it', () => {
+  const base = { include: true, type: 'Formal', author: 'DD', format: 'HD', start: '21:00', events: [], languages: [], flags: {} };
+  const days = ['2026-11-06', '2026-11-12', '2026-11-14'];
+  const rows = () => days.map((date, i) => ({ ...base, key: i + 1, date }));
+  const numbers = (list, starts = { formal: 3059 }) => {
+    const n = S.assignNumbers(list, starts);
+    return list.map((s) => `${n.get(s.key).folder}-${n.get(s.key).session}`);
+  };
+  // Same day: its folder, E1 and E2; the later days don't move.
+  const same = rows();
+  same.splice(1, 0, { ...base, key: 9, date: days[0] });
+  assert.deepEqual(numbers(same), ['3059-E1', '3059-E2', '3060-E', '3061-E']);
+  // Another day: the next folder, and every later day moves up one.
+  const other = rows();
+  other.splice(1, 0, { ...base, key: 9, date: '2026-11-07' });
+  assert.deepEqual(numbers(other), ['3059-E', '3060-E', '3061-E', '3062-E']);
+  // A folder typed on the added row: the rest follow on from it, none repeats it.
+  const typed = rows();
+  typed.splice(1, 0, { ...base, key: 9, date: days[0], folder: '3060' });
+  assert.deepEqual(numbers(typed), ['3059-E', '3060-E', '3061-E', '3062-E']);
+  // A typed M leaves the evening alone; a typed E1 pushes the planned row to E2.
+  const morning = rows();
+  morning.splice(1, 0, { ...base, key: 9, date: days[0], session: 'M' });
+  assert.deepEqual(numbers(morning).slice(0, 2), ['3059-E', '3059-M']);
+  const first = rows();
+  first.splice(1, 0, { ...base, key: 9, date: days[0], session: 'E1' });
+  assert.deepEqual(numbers(first).slice(0, 2), ['3059-E2', '3059-E1']);
+  // Added below the first of two rows at the same time: it goes between them.
+  const between = [{ ...base, key: 1, date: days[0] }, { ...base, key: 9, date: days[0] }, { ...base, key: 2, date: days[0] }];
+  assert.deepEqual(numbers(between), ['3059-E1', '3059-E2', '3059-E3']);
+  // With no first number yet, a typed folder starts the series for later days.
+  const started = rows();
+  started[0].folder = '3059';
+  assert.deepEqual(numbers(started, {}), ['3059-E', '3060-E', '3061-E']);
+});
+
+test('a session already on a drive keeps its number when one is added before it', () => {
+  const base = { include: true, type: 'Formal', author: 'DD', format: 'HD', start: '21:00', events: [], languages: [], flags: {} };
+  const list = [
+    { ...base, key: 1, date: '2026-11-06' },
+    { ...base, key: 9, date: '2026-11-07' },
+    { ...base, key: 2, date: '2026-11-12', folder: 3060, session: 'E', backedUp: '2026-11-12T20:00:00Z' },
+    { ...base, key: 3, date: '2026-11-14' },
+    // Moved onto the backed-up day: it joins that day's folder.
+    { ...base, key: 4, date: '2026-11-12', start: '22:00' },
+  ];
+  const n = S.assignNumbers(list, { formal: 3059 });
+  assert.deepEqual([1, 9, 2, 3].map((k) => n.get(k).folder), [3059, 3061, 3060, 3062]);
+  assert.equal(n.get(4).folder, 3060);
+  assert.equal(n.get(4).session, 'E2');
+});
+
+test('report entries export under headers that read back as the same entries', () => {
+  const records = S.parseReport([
+    ['Raw Video Id', 'Folder', 'Full Date', 'Satsang Type', 'Event Type', 'Language', 'City', 'No of clips'],
+    ['DD-F-HD-3059-E', '3059', '2026-11-06', 'Formal', 'Soneri Satsang', 'Gujarati', 'Adalaj', '12'],
+    ['', '', '', '', 'General', 'Hindi', '', ''],
+  ], []);
+  const sheet = S.reportSheet(records);
+  assert.equal(sheet.rows[0][sheet.columns.indexOf('Folder')], 3059);
+  assert.equal(sheet.rows[0][sheet.columns.indexOf('Event Type')], 'Soneri Satsang, General');
+  const again = S.parseReport([sheet.columns, ...sheet.rows.map((r) => r.map(String))], []);
+  assert.equal(again.length, 1);
+  for (const f of ['id', 'folder', 'date', 'type', 'city', 'clips']) assert.equal(String(again[0][f]), String(records[0][f]), f);
+  assert.deepEqual(again[0].events, ['Soneri Satsang', 'General']);
+  assert.deepEqual(again[0].languages, ['Gujarati', 'Hindi']);
 });
 
 test('the operator\'s corrections are remembered for the next schedule', () => {

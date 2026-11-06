@@ -382,6 +382,25 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .sch-in.w-dur { width: 92px; }
 .sch-in.w-lang { width: 110px; }
 .sch-in.w-mid { width: 150px; }
+.sch-chips {
+  display: flex; flex-wrap: wrap; gap: 3px; align-items: center; min-width: 170px; padding: 2px 3px;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--panel);
+}
+.sch-chips:focus-within { border-color: var(--accent); }
+.sch-chips.flag { border-color: var(--warn); background: var(--warn-soft); }
+.sch-chips.flag.err { border-color: var(--err); background: var(--err-soft); }
+.sch-chip {
+  display: inline-flex; align-items: center; gap: 3px; padding: 1px 3px 1px 6px; border-radius: 4px;
+  background: var(--accent-soft); color: var(--text); font-size: 11px; white-space: nowrap;
+}
+.sch-chip button {
+  all: unset; cursor: pointer; padding: 0 3px; font-size: 9px; line-height: 14px; color: var(--muted); border-radius: 3px;
+}
+.sch-chip button:hover, .sch-chip button:focus-visible { color: var(--err); background: var(--err-soft); }
+.sch-chip-in {
+  flex: 1 1 52px; min-width: 52px; font: inherit; font-size: 12px; padding: 1px 2px;
+  border: 0; outline: 0; background: transparent; color: var(--text);
+}
 .sch-in.w-wide { width: 230px; }
 .sch-source { margin-top: 14px; }
 .sch-source summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 8px; }

@@ -37,6 +37,66 @@ function reportState() {
   return state.report;
 }
 
+/** Key, secret and site URL are in: the report can be read from Frappe. */
+function reportConnected() {
+  const c = frappeConfig();
+  return !!(String(c.url).trim() && String(c.api_key).trim() && String(c.api_secret).trim());
+}
+
+/**
+ * Read the report from Frappe: read-only, and kept in a local copy so the entries
+ * stay available offline. If it fails, the entries already loaded stay on the page.
+ */
+async function reportFetch() {
+  const r = reportState();
+  if (r.fetching) return;
+  if (!reportConnected()) {
+    state.frappeUI = { open: true, view: 'settings', pendingReport: true };
+    render();
+    toast('Enter the Frappe URL, API key and secret first.', 'warn');
+    return;
+  }
+  r.fetching = true;
+  r.error = null;
+  render();
+  try {
+    const cache = await window.api.reportCachePath();
+    const res = await call('frappe_report', { config: frappeConfig(), cache_path: cache });
+    const existing = SCHEDULE.parseReport(res.rows, scheduleCities());
+    if (!existing.length) throw new Error('Frappe returned no rows with a Raw Video Id / ID column — check the report name.');
+    r.existing = existing;
+    r.file = cache;
+    r.fetchedAt = new Date().toISOString();
+    window.api.setSettings({ reportSource: cache, reportFetchedAt: r.fetchedAt }).catch(() => {});
+    toast(`Fetched ${existing.length.toLocaleString()} sessions from Frappe.`, 'ok');
+  } catch (e) {
+    r.error = `Could not fetch from Frappe: ${scheduleError(e)}${r.existing ? ' — showing the entries already loaded.' : ''}`;
+  } finally {
+    r.fetching = false;
+    render();
+  }
+}
+
+/** Save the entries the filters leave as an .xlsx, which can be chosen again later as the existing data. */
+async function reportExport() {
+  const r = reportState();
+  const records = reportShown(reportRecords().all);
+  if (!records.length) { toast('Nothing to export — no entries match these filters.', 'warn'); return; }
+  const day = new Date().toISOString().slice(0, 10);
+  const filtered = records.length < reportRecords().all.length;
+  const target = await window.api.saveXlsx(`Raw_Video_Report_${day}${filtered ? '_filtered' : ''}.xlsx`, 'Export the report entries');
+  if (!target) return;
+  try {
+    const sheet = SCHEDULE.reportSheet(records);
+    const res = await call('report_write', { path: target, columns: sheet.columns, rows: sheet.rows });
+    r.exported = res.path;
+    toast(`Exported ${records.length.toLocaleString()} entries.`, 'ok');
+  } catch (e) {
+    toast(scheduleError(e), 'err');
+  }
+  render();
+}
+
 /** Read the existing-data file the operator chose (remembered in settings). */
 async function reportLoad(file) {
   const r = reportState();
@@ -60,7 +120,8 @@ async function reportLoad(file) {
 async function reportChooseFile() {
   const file = await window.api.pickTable('Choose the existing data: the Raw Satsang Master, or a download of the Raw Video Data Report');
   if (!file) return;
-  window.api.setSettings({ reportSource: file }).catch(() => {});
+  reportState().fetchedAt = null;
+  window.api.setSettings({ reportSource: file, reportFetchedAt: null }).catch(() => {});
   await reportLoad(file);
 }
 
@@ -70,6 +131,7 @@ async function reportPreload() {
   const r = reportState();
   if (r.existing || r.loading) return;
   const settings = await window.api.getSettings().catch(() => ({}));
+  r.fetchedAt = settings.reportFetchedAt || null;
   if (settings.reportSource) await reportLoad(settings.reportSource);
 }
 
@@ -81,7 +143,13 @@ async function showReport() {
   render();
   if (!r.existing && !r.loading && !r.error) {
     const settings = await window.api.getSettings().catch(() => ({}));
+    r.fetchedAt = settings.reportFetchedAt || null;
     if (settings.reportSource) await reportLoad(settings.reportSource);
+  }
+  // A Frappe-sourced report is brought up to date the first time it's opened.
+  if (r.fetchedAt && !r.refreshed && reportConnected()) {
+    r.refreshed = true;
+    await reportFetch();
   }
 }
 
@@ -105,17 +173,23 @@ function reportValue(rec, key) {
   return Array.isArray(v) ? v.join(', ') : v ?? '';
 }
 
-function renderReportPage() {
+/** The records the filters and column filters leave. */
+function reportShown(all) {
   const r = reportState();
-  const { all, scheduled } = reportRecords();
   // Column filters match what the cell shows, so Year/M/D filter as written.
   const { source: wantSource, ...frappeFilters } = r.filters;
-  const shown = SCHEDULE.filterReport(all, frappeFilters)
+  return SCHEDULE.filterReport(all, frappeFilters)
     .filter((rec) => !wantSource || reportSource(rec) === wantSource
       || (wantSource === 'Event schedule' && rec.source === 'schedule'))
     .filter((rec) => Object.entries(r.columns).every(([k, q]) => !String(q || '').trim()
       || String(k === 'id' ? rec.id : k === 'folder' ? rec.folder : reportValue(rec, k)).toLowerCase()
         .includes(String(q).trim().toLowerCase())));
+}
+
+function renderReportPage() {
+  const r = reportState();
+  const { all, scheduled } = reportRecords();
+  const shown = reportShown(all);
   const gaps = SCHEDULE.findGaps(all);
   const page = shown.slice(0, r.limit);
   // A gap's yellow line goes under the last listed row of the folder it sits below.
@@ -167,16 +241,25 @@ function renderReportPage() {
     }
     return `<input class="sch-in rep-f" data-filter="${k}" placeholder="${label}" value="${esc(v)}"${list}>`;
   };
-  const source = r.loading ? '<span class="hint" style="margin:0">Reading the existing data…</span>'
-    : r.existing ? `<span class="mono" title="${esc(r.file)}">${esc(String(r.file).split(/[\\/]/).pop())}</span>
+  const fetched = r.fetchedAt ? new Date(r.fetchedAt) : null;
+  const source = r.fetching ? '<span class="hint" style="margin:0">Fetching from Frappe…</span>'
+    : r.loading ? '<span class="hint" style="margin:0">Reading the existing data…</span>'
+    : r.existing ? `${fetched ? `Frappe, fetched ${esc(SCHEDULE.toIndian(fetched.toISOString().slice(0, 10)))} ${esc(fetched.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}`
+        : `<span class="mono" title="${esc(r.file)}">${esc(String(r.file).split(/[\\/]/).pop())}</span>`}
         · <b>${r.existing.length.toLocaleString()}</b> sessions`
       : '<span class="hint" style="margin:0">No existing data chosen yet — only the event schedules are listed.</span>';
   return `<div class="card">
-      <div class="row" style="align-items:center">
-        <div style="flex:1;min-width:0"><h3 style="margin:0">Raw Video Data Report</h3>
+      <div class="row" style="align-items:center;flex-wrap:wrap">
+        <div style="flex:1 1 320px;min-width:0"><h3 style="margin:0">Raw Video Data Report</h3>
           <div class="hint" style="margin:4px 0 0">Existing data: ${source} · Event schedules: <b>${scheduled}</b> sessions</div></div>
-        <button class="sm" id="repFile">${r.existing ? 'Change file…' : 'Choose existing data…'}</button>
-        ${r.file ? '<button class="sm ghost" id="repReload" title="Read the file again">Refresh</button>' : ''}
+        <button class="sm ${reportConnected() ? 'primary' : ''}" id="repFetch" ${r.fetching ? 'disabled' : ''}
+          title="Read the report from Frappe, read-only. A copy is kept for working offline.">${r.fetching ? 'Fetching…' : 'Fetch from Frappe'}</button>
+        <button class="sm ghost" id="repFrappe" title="Frappe site URL, API key and secret, and report name">Frappe settings…</button>
+        <button class="sm" id="repFile">${r.existing && !fetched ? 'Change file…' : 'Choose existing data…'}</button>
+        ${r.file && !fetched ? '<button class="sm ghost" id="repReload" title="Read the file again">Refresh</button>' : ''}
+        <button class="sm" id="repExport" ${shown.length ? '' : 'disabled'}
+          title="Save the entries these filters leave as an .xlsx. It can be chosen again later as the existing data.">Export ${shown.length.toLocaleString()} entries…</button>
+        ${r.exported ? '<button class="sm ghost" id="repExported">Show exported file</button>' : ''}
       </div>
       ${r.error ? `<div class="note err" style="margin-top:10px">${esc(r.error)}</div>` : ''}
       <div class="rep-filters">${REPORT_FILTERS.map(filterField).join('')}</div>
@@ -220,6 +303,10 @@ function wireReportPage() {
   wireColumnResize(document.querySelector('.rep-table'), 'report');
   $('repFile')?.addEventListener('click', reportChooseFile);
   $('repReload')?.addEventListener('click', () => reportLoad(r.file));
+  $('repFetch')?.addEventListener('click', reportFetch);
+  $('repFrappe')?.addEventListener('click', openFrappeSettings);
+  $('repExport')?.addEventListener('click', reportExport);
+  $('repExported')?.addEventListener('click', () => window.api.reveal(r.exported));
   $('repMore')?.addEventListener('click', () => { r.limit += REPORT_PAGE; render(); });
   // Every filter applies by itself: menus and picked values at once, typing
   // after a short pause. A date counts only once it is a whole dd/mm/yyyy (or

@@ -1,15 +1,31 @@
 'use strict';
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage, net, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
 const { PythonBridge } = require('./python-bridge');
 const { openFolderGroups } = require('./open-folders');
 const { ScheduleOcr } = require('./schedule-ocr');
+const { trustedHandle, restrictNavigation } = require('./ipc-security');
+const { FlushHandshake, CloseCoordinator } = require('./close-coordinator');
+const { createSyncHost } = require('./sync/host');
+const { registerSyncIpc } = require('./sync/ipc');
+const { writeAtomic } = require('./sync/vault');
 app.setName('AV Backup');
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
 
 let win = null;
 let bridge = null;
 let scheduleOcr = null;   // started on the first schedule picture
+let syncHost = null;
+let closer = null;
+let quittingApproved = false;
+let quitPending = null;
+const APP_FILE = path.join(__dirname, '..', 'renderer', 'index.html');
+const APP_URL = pathToFileURL(APP_FILE).href;
+const handle = trustedHandle(ipcMain, () => win, APP_URL);
+const flush = new FlushHandshake({ ipcMain, getWindow: () => win, appUrl: APP_URL });
 
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
 
@@ -18,8 +34,7 @@ function loadSettings() {
 }
 function saveSettings(patch) {
   const next = { ...loadSettings(), ...patch };
-  fs.mkdirSync(path.dirname(SETTINGS_FILE()), { recursive: true });
-  fs.writeFileSync(SETTINGS_FILE(), JSON.stringify(next, null, 2));
+  writeAtomic(fs, SETTINGS_FILE(), JSON.stringify(next, null, 2));
   return next;
 }
 
@@ -32,7 +47,7 @@ function forgetFrappeConnection() {
     delete settings.frappe;
     delete settings.reportFetchedAt;
     if (wasCache) delete settings.reportSource;
-    fs.writeFileSync(SETTINGS_FILE(), JSON.stringify(settings, null, 2));
+    writeAtomic(fs, SETTINGS_FILE(), JSON.stringify(settings, null, 2));
   }
   fs.rmSync(cache, { force: true });
 }
@@ -106,31 +121,39 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       // Keep working when the window is minimised or behind another app: Chromium
       // otherwise slows its timers to a crawl, and pdf.js stalls drawing a
       // schedule's pages until the window comes back.
       backgroundThrottling: false,
     },
   });
-  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  const window = win;
+  restrictNavigation(window.webContents, APP_URL);
+  window.loadFile(APP_FILE);
   win.maximize();
-
-  // A long copy must not be lost to a stray Cmd-W.
-  win.on('close', (e) => {
-    if (!global.__vingestBusy) return;
-    e.preventDefault();
-    dialog.showMessageBox(win, {
-      type: 'warning',
-      buttons: ['Keep running', 'Stop and quit'],
-      defaultId: 0,
-      cancelId: 0,
-      message: 'A copy is still running.',
-      detail: 'Quitting now leaves the session folder incomplete.',
-    }).then(({ response }) => {
-      if (response === 1) { global.__vingestBusy = false; win.destroy(); }
-    });
+  closer = new CloseCoordinator({
+    isBusy: () => !!global.__vingestBusy,
+    confirmStop: async () => (await dialog.showMessageBox(window, {
+      type: 'warning', buttons: ['Keep running', 'Stop and quit'], defaultId: 0, cancelId: 0,
+      message: 'A copy is still running.', detail: 'Quitting now leaves the session folder incomplete.',
+    })).response === 1,
+    flushRenderer: () => flush.request(window),
+    flushLocal: () => syncHost && syncHost.flushLocal(),
+    confirmDiscard: async () => (await dialog.showMessageBox(window, {
+      type: 'warning', buttons: ['Keep app open', 'Quit without saving'], defaultId: 0, cancelId: 0,
+      message: 'Pending changes could not be saved.',
+      detail: 'Keep the app open and fix the save problem. Quitting without saving may lose your latest edits.',
+    })).response === 1,
+    cancelled: () => { if (!window.isDestroyed()) window.webContents.send('app:close-cancelled'); },
   });
+  const controller = closer;
+  window.on('close', (e) => {
+    if (controller.approved) return;
+    e.preventDefault();
+    controller.request().then((ok) => { if (ok && !window.isDestroyed()) { global.__vingestBusy = false; window.close(); } });
+  });
+  window.on('closed', () => { flush.cancel(window); if (win === window) win = null; });
 }
 
 function createBridge() {
@@ -142,14 +165,26 @@ function createBridge() {
 }
 
 app.whenReady().then(() => {
+  if (!primaryInstance) return;
   forgetFrappeConnection();
   applyTheme(currentTheme());   // force dark (default) before the window paints
   buildMenu();
   createBridge();
+  syncHost = createSyncHost({ dir: app.getPath('userData'), net, safeStorage });
+  registerSyncIpc({ ipcMain, getWindow: () => win, appUrl: APP_URL, getHost: () => syncHost, isClosing: () => !!(closer && closer.pending) });
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('second-instance', () => { if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.focus(); } });
+app.on('before-quit', (event) => {
+  if (quittingApproved || !win || win.isDestroyed()) return;
+  event.preventDefault();
+  if (!quitPending) quitPending = closer.request().then((ok) => {
+    if (ok) { quittingApproved = true; global.__vingestBusy = false; app.quit(); }
+  }).finally(() => { quitPending = null; });
 });
 
 app.on('window-all-closed', () => {
@@ -160,7 +195,8 @@ app.on('window-all-closed', () => {
 
 // ------------------------------------------------------------------ IPC
 
-ipcMain.handle('py:call', async (_e, { method, params, id }) => {
+handle('py:call', async (_e, { method, params, id }) => {
+  if (closer && closer.pending && method === 'execute_plan') return { ok: false, error: 'The app is preparing to close.' };
   try {
     const result = await bridge.call(method, params, id);
     return { ok: true, result };
@@ -169,18 +205,18 @@ ipcMain.handle('py:call', async (_e, { method, params, id }) => {
   }
 });
 
-ipcMain.handle('py:reserveId', () => bridge.reserveId());
-ipcMain.handle('py:cancel', (_e, targetId) => { bridge.cancel(targetId); return true; });
-ipcMain.handle('py:restart', async () => {
+handle('py:reserveId', () => bridge.reserveId());
+handle('py:cancel', (_e, targetId) => { bridge.cancel(targetId); return true; });
+handle('py:restart', async () => {
   if (bridge) bridge.stop();
   createBridge();
   try { return { ok: true, result: await bridge.start() }; }
   catch (err) { return { ok: false, error: err.message }; }
 });
 
-ipcMain.handle('app:setBusy', (_e, busy) => { global.__vingestBusy = !!busy; return true; });
+handle('app:setBusy', (_e, busy) => { global.__vingestBusy = !!busy; return true; });
 
-ipcMain.handle('dialog:pickFolder', async (_e, title) => {
+handle('dialog:pickFolder', async (_e, title) => {
   const label = title || 'Choose a folder';
   const r = await dialog.showOpenDialog(win, {
     title: label,
@@ -193,7 +229,7 @@ ipcMain.handle('dialog:pickFolder', async (_e, title) => {
   return r.canceled ? null : r.filePaths[0];
 });
 
-ipcMain.handle('dialog:pickVideoFiles', async () => {
+handle('dialog:pickVideoFiles', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose footage',
     message: 'Choose footage',   // macOS shows `message`, not `title`
@@ -214,7 +250,7 @@ ipcMain.handle('dialog:pickVideoFiles', async () => {
   return r.canceled ? [] : r.filePaths;
 });
 
-ipcMain.handle('dialog:pickZip', async () => {
+handle('dialog:pickZip', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose a zip archive',
     message: 'Choose a zip archive',   // macOS shows `message`, not `title`
@@ -225,7 +261,7 @@ ipcMain.handle('dialog:pickZip', async () => {
   return r.canceled ? null : r.filePaths[0];
 });
 
-ipcMain.handle('dialog:pickCsv', async () => {
+handle('dialog:pickCsv', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose the duration list exported from Frappe (CSV or Excel)',
     message: 'Choose the duration list exported from Frappe (CSV or Excel)',
@@ -241,7 +277,7 @@ ipcMain.handle('dialog:pickCsv', async () => {
   return r.canceled ? null : r.filePaths[0];
 });
 
-ipcMain.handle('dialog:pickExecutable', async () => {
+handle('dialog:pickExecutable', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Locate ffprobe',
     message: 'Locate ffprobe',   // macOS shows `message`, not `title`
@@ -250,7 +286,7 @@ ipcMain.handle('dialog:pickExecutable', async () => {
   return r.canceled ? null : r.filePaths[0];
 });
 
-ipcMain.handle('dialog:confirm', async (_e, { message, detail, confirmLabel, cancelLabel, danger }) => {
+handle('dialog:confirm', async (_e, { message, detail, confirmLabel, cancelLabel, danger }) => {
   const r = await dialog.showMessageBox(win, {
     type: danger ? 'warning' : 'question',
     buttons: [confirmLabel || 'Continue', cancelLabel || 'Cancel'],
@@ -262,14 +298,14 @@ ipcMain.handle('dialog:confirm', async (_e, { message, detail, confirmLabel, can
   return r.response === 0;
 });
 
-ipcMain.handle('shell:reveal', (_e, p) => {
+handle('shell:reveal', (_e, p) => {
   fs.existsSync(p) ? shell.showItemInFolder(p) : shell.openPath(path.dirname(p));
   return true;
 });
-ipcMain.handle('shell:open', (_e, p) => shell.openPath(p));
+handle('shell:open', (_e, p) => shell.openPath(p));
 
 // Open each existing folder as its own window (Finder on macOS, Explorer on Win).
-ipcMain.handle('shell:openFolders', async (_e, paths) => {
+handle('shell:openFolders', async (_e, paths) => {
   const opened = [];
   const missing = [];
   for (const p of paths || []) {
@@ -281,17 +317,17 @@ ipcMain.handle('shell:openFolders', async (_e, paths) => {
 
 // Open groups of folders as tabbed windows — one window per group (destinations
 // in one, camera cards in another), the folders inside it as tabs.
-ipcMain.handle('shell:openFolderGroups', (_e, groups) =>
+handle('shell:openFolderGroups', (_e, groups) =>
   openFolderGroups(groups, shell, process.platform));
 
-ipcMain.handle('settings:get', () => loadSettings());
-ipcMain.handle('settings:set', (_e, patch) => saveSettings(patch));
+handle('settings:get', () => loadSettings());
+handle('settings:set', (_e, patch) => saveSettings(patch));
 
 // ------------------------------------------------------- event schedules
 
 const SCHEDULE_IMAGES = ['png', 'jpg', 'jpeg'];
 
-ipcMain.handle('dialog:pickSchedule', async () => {
+handle('dialog:pickSchedule', async () => {
   const r = await dialog.showOpenDialog(win, {
     title: 'Choose the event schedule',
     message: 'Choose the event schedule',   // macOS shows `message`, not `title`
@@ -306,7 +342,7 @@ ipcMain.handle('dialog:pickSchedule', async () => {
   return r.canceled ? null : r.filePaths[0];
 });
 
-ipcMain.handle('dialog:saveXlsx', async (_e, defaultName, title) => {
+handle('dialog:saveXlsx', async (_e, defaultName, title) => {
   const label = title || "Save the event's sheet";
   const r = await dialog.showSaveDialog(win, {
     title: label,
@@ -327,10 +363,10 @@ async function readSchedulePicture(image) {
   return scheduleOcr.read(image.toPNG(), { width, height, data: image.toBitmap(), order: 'bgra' });
 }
 
-ipcMain.handle('schedule:ocrFile', (_e, file) => readSchedulePicture(nativeImage.createFromPath(file)));
-ipcMain.handle('schedule:ocrImage', (_e, dataUrl) => readSchedulePicture(nativeImage.createFromDataURL(dataUrl)));
+handle('schedule:ocrFile', (_e, file) => readSchedulePicture(nativeImage.createFromPath(file)));
+handle('schedule:ocrImage', (_e, dataUrl) => readSchedulePicture(nativeImage.createFromDataURL(dataUrl)));
 // The PDF's bytes for pdf.js in the renderer, which has no file access of its own.
-ipcMain.handle('schedule:readPdf', (_e, file) => {
+handle('schedule:readPdf', (_e, file) => {
   if (!/\.pdf$/i.test(String(file))) throw new Error('Not a PDF.');
   return new Uint8Array(fs.readFileSync(file));
 });
@@ -339,21 +375,18 @@ ipcMain.handle('schedule:readPdf', (_e, file) => {
 // assignment until the operator deletes it) and an imported city list.
 const STORES = new Set(['schedules', 'cities']);
 const storeFile = (name) => path.join(app.getPath('userData'), `${name}.json`);
-ipcMain.handle('store:get', (_e, name) => {
+handle('store:get', (_e, name) => {
   if (!STORES.has(name)) throw new Error(`Unknown store: ${name}`);
   try { return JSON.parse(fs.readFileSync(storeFile(name), 'utf8')); } catch { return null; }
 });
-ipcMain.handle('store:set', (_e, name, data) => {
+handle('store:set', (_e, name, data) => {
   if (!STORES.has(name)) throw new Error(`Unknown store: ${name}`);
   const file = storeFile(name);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  // Write then rename, so a crash mid-write never leaves a half file behind.
-  fs.writeFileSync(`${file}.tmp`, JSON.stringify(data));
-  fs.renameSync(`${file}.tmp`, file);
+  writeAtomic(fs, file, JSON.stringify(data));
   return true;
 });
 
-ipcMain.handle('dialog:pickTable', async (_e, title) => {
+handle('dialog:pickTable', async (_e, title) => {
   const label = title || 'Choose a spreadsheet';
   const r = await dialog.showOpenDialog(win, {
     title: label,

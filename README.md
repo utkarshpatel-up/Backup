@@ -286,6 +286,8 @@ the target machine needs ffmpeg on `PATH`.
 python3 -m venv .venv && .venv/bin/pip install pytest xxhash
 .venv/bin/python -m pytest tests/ -q
 npm run test:renderer
+npm run test:electron   # isolated real-Electron local-mode smoke; needs a desktop
+tests/supabase/run.sh   # sync database rules, on a throwaway local PostgreSQL 16+
 ```
 
 156 Python tests plus 19 renderer tests covering duration formatting,
@@ -321,8 +323,40 @@ responsive.
 | `python/vingest/master_sheet.py` | Schedule tables, drive scan and the event's .xlsx |
 | `python/vingest/server.py` | JSON-lines RPC loop |
 
+## Team account usage
+
+Open **Account**, enable team mode, enter the office HTTPS server address and public
+anon/publishable key, save, and sign in. Never enter a service-role/secret key. Local
+schedules are not imported automatically. **Preview local import…** shows the schedules,
+rows, report records and duplicate warnings before confirmation; the original local
+files stay unchanged. A remembered local XLSX report source is parsed as part of this
+explicit import. Use **Sync now** to retry a connection and review pending/held entries.
+
+All operators can edit all team schedules and add/remove rows. Conflicts show alternatives;
+choose one, then edit the schedule normally. Whole-schedule deletion/restoration requires
+an online admin and a verified authenticator code. Use **Set up authenticator** to obtain
+the setup secret, add it to your authenticator app, then **Verify authenticator**.
+
+A prepared backup pauses schedule editing and account/server changes. Finish it, or use
+**Account → Put aside prepared backup** when it is idle. Failed/cancelled copies remain
+prepared for retry. Completion is saved against the revision used for preparation, so a
+remote edit or deletion becomes a conflict. Closing the app saves locally first and does
+not wait for an upload.
+
+Sign out before changing servers or turning team mode off. Unsent account drafts stay
+encrypted and are isolated from the next person; local files reappear only when local
+mode is explicitly restored. Offline account access uses the encrypted cache:
+**revocation cannot be discovered until the server is reached**. Once discovered, access
+locks and unsent drafts are held. Machine paths and preferences stay local.
+
 ## Known limits
 
+- Team sync is opt-in through **Account**; local files remain the default. No server is
+  deployed. See [server preparation](docs/SELF_HOSTED_SUPABASE.md), the
+  [protocol](supabase/SYNC_CONTRACT.md), and [client status/testing](docs/SYNC_CLIENT_STATUS.md).
+  Live Supabase authentication/MFA, Windows and a second physical device remain unverified.
+  Deleted schedules are listed only on devices that previously saw them; fresh-device
+  deleted-history listing is not available.
 - Cam assignment is manual by design, with auto-suggest as a hint only.
 - Checksum verification between the ProRes and H.265 drives is meaningless
   (different encodings); use it to verify a copy against its own source.

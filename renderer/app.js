@@ -965,6 +965,7 @@ function wireSources() {
   $('btnRemoveTemplate')?.addEventListener('click', () => {
     state.sources = state.sources.filter((source) => source.role !== 'template');
     state.scheduleRun = null;
+    if (typeof syncRelease === 'function') syncRelease().catch(() => {});
     state.template = null;
     state.templates = [];
     state.plan = null; state.namingPreview = null;
@@ -1065,6 +1066,7 @@ async function addZipSource() {
     // but remove the prior extracted template before registering the new one.
     // A zip picked by hand is not a schedule row's backup.
     state.scheduleRun = null;
+    if (typeof syncRelease === 'function') syncRelease().catch(() => {});
     state.sources = state.sources.filter((source) => source.role !== 'template');
     state.template = null;
     state.templates = [];
@@ -1213,6 +1215,7 @@ function clipsOnlyCardHtml() {
 async function enterClipsOnly() {
   // Chosen by hand here, so it is not a schedule row's backup.
   state.scheduleRun = null;
+  if (typeof syncRelease === 'function') await syncRelease();
   if (isInformal()) {
     const folder = await window.api.pickFolder(
       'Choose the existing session folder to add clips to');
@@ -3837,6 +3840,7 @@ function showSchedule() {
 }
 
 function render() {
+  if (typeof syncUI !== 'undefined' && state.view !== 'account') syncUI.enrollmentSecret = '';
   const onSchedule = state.view === 'schedule';
   const onReport = state.view === 'report';
   $('backupMode').textContent = isInformal() ? 'Informal backup' : 'Formal backup';
@@ -3844,7 +3848,7 @@ function render() {
   $('steps').innerHTML = `
     <li class="${onSchedule ? 'active' : ''} ${state.busy ? 'disabled' : ''}" data-view="schedule">
       <span class="num">≡</span><span>Event schedule</span></li>
-    ${run ? `<li class="step-note mono" title="This backup was started from the event schedule">${esc(run.id)}</li>` : ''}`
+    ${run ? `<li class="step-note mono" title="This backup was started from the event schedule">${esc(typeof syncAccount === 'function' && syncAccount() && !syncAvailable() ? 'Backup in progress' : run.id)}</li>` : ''}`
     + STEPS.map((s, i) => `
     <li class="${!onSchedule && !onReport && i === state.step ? 'active' : ''} ${state.busy || !stepReady(i) ? 'disabled' : ''}
         ${i < state.step && stepReady(i) ? 'done' : ''}" data-step="${i}">
@@ -3859,10 +3863,20 @@ function render() {
   $('topActions').innerHTML = `
     ${state.engine.info && !state.engine.info.ffprobe
       ? '<button class="sm" id="btnFindFfprobe">Locate ffprobe</button>' : ''}
-    <button class="sm ghost" id="btnRestart">Restart engine</button>`;
+    <button class="sm ghost" id="btnRestart">Restart engine</button>
+    ${typeof showSync === 'function' ? '<button class="sm" id="btnAccount">Account</button>' : ''}`;
+  $('btnAccount')?.addEventListener('click', () => showSync().catch(() => toast('Save failed; account view could not open.', 'err')));
   $('btnRestart').addEventListener('click', restartEngine);
   $('btnFindFfprobe')?.addEventListener('click', locateFfprobe);
 
+  if (state.view === 'account') {
+    $('stepTitle').textContent = 'Account'; $('stepHint').textContent = 'Team sync settings and review';
+    $('content').innerHTML = renderSyncPage(); wireSyncPage(); $('footer').innerHTML = ''; return;
+  }
+  if (typeof syncAccount === 'function' && syncAccount() && !syncAvailable() && (onSchedule || onReport)) {
+    $('content').innerHTML = '<div class="card">Team data is unavailable. Open Account to sign in or check access.</div>';
+    $('footer').innerHTML = ''; return;
+  }
   if (onSchedule) {
     $('stepTitle').textContent = 'Event schedule';
     $('stepHint').textContent = 'Read the schedule, check every row, then start each session\'s backup from its row.';
@@ -4376,6 +4390,12 @@ function renderVerifyModal() {
 
 /* ------------------------------------------------------------------- boot */
 
+if (typeof window.api.onBeforeClose === 'function') window.api.onBeforeClose(async () => {
+  if (typeof scheduleFlush === 'function') await scheduleFlush();
+  if (typeof colWidthSaveTimer !== 'undefined') clearTimeout(colWidthSaveTimer);
+  if (state.colWidths) await window.api.setSettings({ colWidths: state.colWidths });
+});
+
 window.api.onProgress(({ id, data }) => {
   if (!state.busy || state.busy.id !== id) return;
   const b = state.busy;
@@ -4445,7 +4465,7 @@ if (typeof window.addEventListener === 'function') {
   render();
   try {
     const settings = await window.api.getSettings();
-    await restoreSchedules(settings);
+    if (!(typeof syncInit === 'function' && await syncInit())) await restoreSchedules(settings);
     render();
     let info = await call('ping');
     if (settings.ffprobe && !info.ffprobe) {

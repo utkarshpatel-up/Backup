@@ -59,6 +59,7 @@ async function reportExport() {
 
 /** Read the existing-data file the operator chose (remembered in settings). */
 async function reportLoad(file) {
+  if (typeof syncAccount === 'function' && syncAccount()) return;
   const r = reportState();
   r.file = file;
   r.loading = true;
@@ -78,6 +79,7 @@ async function reportLoad(file) {
 }
 
 async function reportChooseFile() {
+  if (typeof syncAccount === 'function' && syncAccount()) { await showSync(); return; }
   const file = await window.api.pickTable('Choose the existing data: the Raw Satsang Master, or a download of the Raw Video Data Report');
   if (!file) return;
   window.api.setSettings({ reportSource: file }).catch(() => {});
@@ -87,6 +89,7 @@ async function reportChooseFile() {
 /** At start-up: read the remembered existing data in the background, so its
  * topics and places are offered on the schedule page too. */
 async function reportPreload() {
+  if (typeof syncAccount === 'function' && syncAccount()) return;
   const r = reportState();
   if (r.existing || r.loading) return;
   const settings = await window.api.getSettings().catch(() => ({}));
@@ -99,7 +102,7 @@ async function showReport() {
   state.view = 'report';
   const r = reportState();
   render();
-  if (!r.existing && !r.loading && !r.error) {
+  if (!(typeof syncAccount === 'function' && syncAccount()) && !r.existing && !r.loading && !r.error) {
     const settings = await window.api.getSettings().catch(() => ({}));
     if (settings.reportSource) await reportLoad(settings.reportSource);
   }
@@ -201,8 +204,8 @@ function renderReportPage() {
       <div class="row" style="align-items:center;flex-wrap:wrap">
         <div style="flex:1 1 320px;min-width:0"><h3 style="margin:0">Raw Video Data Report</h3>
           <div class="hint" style="margin:4px 0 0">Existing data: ${source} · Event schedules: <b>${scheduled}</b> sessions</div></div>
-        <button class="sm" id="repFile">${r.existing ? 'Change file…' : 'Choose existing data…'}</button>
-        ${r.file ? '<button class="sm ghost" id="repReload" title="Read the file again">Refresh</button>' : ''}
+        <button class="sm" id="repFile">${typeof syncAccount === 'function' && syncAccount() ? 'Import via Account…' : r.existing ? 'Change file…' : 'Choose existing data…'}</button>
+        ${r.file && !(typeof syncAccount === 'function' && syncAccount()) ? '<button class="sm ghost" id="repReload" title="Read the file again">Refresh</button>' : ''}
         <button class="sm" id="repExport" ${shown.length ? '' : 'disabled'}
           title="Save the entries these filters leave as an .xlsx. It can be chosen again later as the existing data.">Export ${shown.length.toLocaleString()} entries…</button>
         ${r.exported ? '<button class="sm ghost" id="repExported">Show exported file</button>' : ''}

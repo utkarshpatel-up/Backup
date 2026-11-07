@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "test:renderer": "node --test tests/*.test.js",
+    "test:electron": "node scripts/test-electron.js",
     "bundle:python": "node scripts/build-python.js",
     "dist": "npm run bundle:python && electron-builder",
     "dist:mac": "bash scripts/macos.sh build",

@@ -30,7 +30,7 @@ function scheduleCities() {
 
 /* ------------------------------------------------------- assignments */
 
-const newScheduleId = () => `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const newScheduleId = () => (typeof syncAccount === 'function' && syncAccount()) ? crypto.randomUUID() : `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /** "15/10/2026 – 03/11/2026": the first and last day a schedule holds. */
 function scheduleRange(item) {
@@ -83,22 +83,39 @@ async function restoreSchedules(settings) {
 }
 
 let scheduleRememberTimer = null;
+let scheduleSaveChain = Promise.resolve();
 /** Write every assignment to disk: a backup day spans many app sessions. */
 function scheduleRemember() {
+  if (typeof syncAccount === 'function' && syncAccount()) syncUI.dirty = true;
   clearTimeout(scheduleRememberTimer);
   scheduleRememberTimer = setTimeout(() => {
-    const all = state.schedules || { openId: null, items: [] };
-    const items = all.items.filter((x) => !x.busy).map((x) => {
-      const out = { ...x };
-      for (const k of SCHEDULE_RUNTIME) delete out[k];
-      if (out.read) out.read = { skipped: out.read.skipped || [] };
-      return out;
+    scheduleFlush().catch(() => {
+      if (typeof toast === 'function') toast('Changes could not be saved. Check the disk and try again.', 'err');
     });
-    window.api.setStore('schedules', { openId: state.schedule ? state.schedule.id : null, items }).catch(() => {});
   }, 400);
 }
 
+/** Await the latest local snapshot on close, including any already-running save. */
+function scheduleFlush() {
+  clearTimeout(scheduleRememberTimer);
+  scheduleRememberTimer = null;
+  if (typeof syncAccount === 'function' && syncAccount()) return syncCommit();
+  if (!state.schedules) return scheduleSaveChain;
+  const items = state.schedules.items.filter((x) => !x.busy).map((x) => {
+    const out = { ...x };
+    for (const k of SCHEDULE_RUNTIME) delete out[k];
+    if (out.read) out.read = { skipped: out.read.skipped || [] };
+    return out;
+  });
+  const snapshot = JSON.parse(JSON.stringify({ openId: state.schedule ? state.schedule.id : null, items }));
+  scheduleSaveChain = scheduleSaveChain.catch(() => {}).then(() => window.api.setStore('schedules', snapshot));
+  return scheduleSaveChain;
+}
+
 async function openSchedule(file) {
+  return typeof syncOperation === 'function' ? syncOperation(() => openScheduleInner(file)) : openScheduleInner(file);
+}
+async function openScheduleInner(file) {
   if (state.schedule && state.schedule.busy) return;
   if (state.schedule && !await window.api.confirm({
     message: `Close the schedule ${scheduleRange(state.schedule)} and read a new one?`,
@@ -107,7 +124,8 @@ async function openSchedule(file) {
   })) return;
   const path = file || await window.api.pickSchedule();
   if (!path) return;
-  const settings = await window.api.getSettings().catch(() => ({}));
+  if (typeof syncAccount === 'function' && syncAccount() && !syncAvailable()) return;
+  const settings = typeof syncSettings === 'function' ? syncSettings(await window.api.getSettings().catch(() => ({}))) : await window.api.getSettings().catch(() => ({}));
   const prev = state.schedule;
   const item = scheduleHydrate({
     id: newScheduleId(), created: new Date().toISOString(), file: path, rows: [], read: null,
@@ -218,6 +236,10 @@ function reopenSchedule(id) {
 }
 
 async function deleteSchedule(id) {
+  if (typeof syncAccount === 'function' && syncAccount()) {
+    try { await syncDelete(id); } catch (_) { toast('Schedule could not be deleted. Review it again.', 'err'); }
+    return;
+  }
   const item = state.schedules.items.find((x) => x.id === id);
   if (!item) return;
   const done = item.sessions.filter((r) => r.backedUp).length;
@@ -261,6 +283,7 @@ function scheduleDatePart(row, part, value) {
 }
 
 function scheduleSet(key, field, value) {
+  if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) return;
   const row = scheduleFind(key);
   if (!row) return;
   if (field === 'include') row.include = !!value;
@@ -366,6 +389,8 @@ function scheduleAddRow(key) {
     events: [], languages: [], author: s.defaults.author || 'DD', format: s.defaults.format || 'HD',
     folder: null, camPlan: null,
   };
+  if (typeof syncAccount === 'function' && syncAccount()) { copy.uid = crypto.randomUUID(); delete copy.orderKey; }
+  delete copy.startedAt;
   copy.key = s.sessions.reduce((m, x) => Math.max(m, x.key), 0) + 1;
   copy.include = true;
   copy.session = null;
@@ -389,6 +414,10 @@ function scheduleAddRow(key) {
  * next one), so a slip costs nothing; a row that was already backed up asks first.
  */
 async function scheduleDeleteRows(keys) {
+  return typeof syncOperation === 'function' ? syncOperation(() => scheduleDeleteRowsInner(keys)) : scheduleDeleteRowsInner(keys);
+}
+async function scheduleDeleteRowsInner(keys) {
+  if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) return;
   const s = state.schedule;
   const want = new Set(keys.map(Number));
   const rows = s.sessions.filter((r) => want.has(r.key));
@@ -473,7 +502,7 @@ function scheduleApplyDefaults() {
   s.defaults.author = $('schAuthor').value.trim() || 'DD';
   s.defaults.format = $('schFormat').value;
   for (const row of s.sessions) { row.author = s.defaults.author; row.format = s.defaults.format; }
-  window.api.setSettings({ scheduleDefaults: s.defaults }).catch(() => {});
+  syncTeamSettings({ scheduleDefaults: s.defaults }).catch(() => {});
   scheduleRemember();
   render();
 }
@@ -498,6 +527,9 @@ const hardOf = (problems) => Object.values(problems || {}).filter((p) => p.hard)
 const blocksStart = (problems) => hardOf(problems).filter((p) => !p.after);
 
 async function scheduleFillFromDrive() {
+  return typeof syncOperation === 'function' ? syncOperation(() => scheduleFillFromDriveInner()) : scheduleFillFromDriveInner();
+}
+async function scheduleFillFromDriveInner() {
   const s = state.schedule;
   const root = await window.api.pickFolder('Choose the drive or folder holding this event\'s filed sessions');
   if (!root) return;
@@ -519,14 +551,18 @@ async function scheduleFillFromDrive() {
 
 /** Replace the built-in city list with a newer export of Frappe's City doctype. */
 async function scheduleImportCities() {
+  return typeof syncOperation === 'function' ? syncOperation(() => scheduleImportCitiesInner()) : scheduleImportCitiesInner();
+}
+async function scheduleImportCitiesInner() {
   const file = await window.api.pickTable('Choose the city list exported from Frappe (ID, City Name, State, Country)');
   if (!file) return;
   try {
     const rows = (await call('schedule_read_table', { path: file })).rows;
     const cities = SCHEDULE.parseCities(rows);
     if (!cities.length) throw new Error('No City column was found in that file.');
-    await window.api.setStore('cities', { file, rows });
+    if (!syncAccount()) await window.api.setStore('cities', { file, rows });
     state.cities = cities;
+    scheduleRemember();
     state.citySource = file;
     // Rows whose city the new list knows get its record.
     for (const item of (state.schedules || { items: [] }).items) {
@@ -544,6 +580,9 @@ async function scheduleImportCities() {
 }
 
 async function scheduleSave() {
+  return typeof syncOperation === 'function' ? syncOperation(() => scheduleSaveInner()) : scheduleSaveInner();
+}
+async function scheduleSaveInner() {
   const s = state.schedule;
   const rows = SCHEDULE.sheetRows(s.sessions, s.starts, scheduleCities());
   if (!rows.length) { toast('Tick at least one session to save.', 'warn'); return; }
@@ -588,7 +627,7 @@ async function scheduleSave() {
       if (used.length) next[type === 'Formal' ? 'formal' : 'informal'] = Math.max(...used) + 1;
     }
     // The next schedule starts after this one; this one keeps its own numbers.
-    await window.api.setSettings({ scheduleMemory: s.memory, scheduleStarts: { ...s.starts, ...next } });
+    await syncTeamSettings({ scheduleMemory: s.memory, scheduleStarts: { ...s.starts, ...next } });
     toast(`Saved ${rows.filter((r) => r[0]).length} sessions.`, 'ok');
   } catch (e) {
     toast(scheduleError(e), 'err');
@@ -605,6 +644,9 @@ async function scheduleSave() {
  * loaded as the template, then the backup carries on from Sources as usual.
  */
 async function scheduleStartBackup(key) {
+  return typeof syncPreparation === 'function' ? syncPreparation(() => scheduleStartBackupInner(key)) : scheduleStartBackupInner(key);
+}
+async function scheduleStartBackupInner(key) {
   const s = state.schedule;
   const row = scheduleFind(key);
   if (!row || state.busy) return;
@@ -620,6 +662,7 @@ async function scheduleStartBackup(key) {
     confirmLabel: 'Start backup', danger: false,
   })) return;
   try {
+    if (typeof syncProtect === 'function') await syncProtect(s, row, true);
     const r = await call('schedule_structure',
       { job: plan.jobName, session: plan.sessionName, cams: plan.cams },
       { label: `Preparing ${plan.id}` });
@@ -634,15 +677,23 @@ async function scheduleStartBackup(key) {
     await loadTemplate(added);
     if (!state.template) return;
     state.scheduleRun = { key: row.key, id: plan.id, scheduleId: s.id };
+    if (typeof syncUI !== 'undefined') syncUI.prepUndo = null;   // set up now: keep its numbers, as local mode does
     // Started but not yet finished: if this backup is interrupted, the row
     // offers "Clips only" to complete the session already on the drive.
-    row.startedAt = new Date().toISOString();
+    row.startedAt = row.startedAt || new Date().toISOString();
     scheduleHoldNumbers(s);
     scheduleRemember();
     toast(`${plan.id}: add the ${plan.type === 'Informal' ? 'output folder' : 'drives'} and carry on as usual.`, 'ok');
     goStep(0);
   } catch (e) {
     toast(scheduleError(e), 'err');
+  } finally {
+    // Not set up (an error, or no template came of it): the row is put back as it was.
+    if (!state.scheduleRun && typeof syncUnprepare === 'function') {
+      try { await syncUnprepare(); } catch (_) { toast('The row could not be put back as it was; check its folder number.', 'err'); }
+    }
+    if (typeof syncRelease === 'function' && !state.scheduleRun) await syncRelease();
+    if (typeof syncUI !== 'undefined') syncUI.preparing = false;
   }
 }
 
@@ -655,6 +706,9 @@ async function scheduleStartBackup(key) {
  * name are left as they are.
  */
 async function scheduleClipsOnly(key) {
+  return typeof syncPreparation === 'function' ? syncPreparation(() => scheduleClipsOnlyInner(key)) : scheduleClipsOnlyInner(key);
+}
+async function scheduleClipsOnlyInner(key) {
   const s = state.schedule;
   const row = scheduleFind(key);
   if (!row || state.busy) return;
@@ -694,6 +748,7 @@ async function scheduleClipsOnly(key) {
       paths = [d.session_path || folder];
     } catch (e) { toast(scheduleError(e), 'err'); return; }
   }
+  if (typeof syncProtect === 'function') await syncProtect(s, row);
   // The row takes its duration, clips and cameras from the folder as it is now.
   try {
     const res = await call('schedule_scan', { root: parentDir(paths[0]) });
@@ -704,7 +759,7 @@ async function scheduleClipsOnly(key) {
   scheduleRemember();
   setBackupType(informal ? 'informal' : 'formal');
   state.scheduleRun = { key: row.key, id: plan.id, scheduleId: s.id, clipsOnly: true };
-  await clipsOnlyInto(paths);
+  try { await clipsOnlyInto(paths); } finally { if (typeof syncUI !== 'undefined') syncUI.preparing = false; }
   toast(`${plan.id}: ${row.duration ? `${row.duration}, ${row.clips} clip${Number(row.clips) === 1 ? '' : 's'} so far. ` : ''}`
     + 'Bring in the camera clips (Import camera cards, or Add files).', 'ok');
 }
@@ -733,6 +788,12 @@ async function scheduleAfterRun(plan) {
   row.backedUp = new Date().toISOString();
   s.saved = null;
   scheduleRemember();
+  if (typeof syncAccount === 'function' && syncAccount()) {
+    clearTimeout(scheduleRememberTimer); scheduleRememberTimer = null;
+    await syncCommit(syncUI.backupBase);
+  } else await scheduleFlush();
+  state.scheduleRun = null;
+  if (typeof syncRelease === 'function') await syncRelease();
   toast(row.duration
     ? `${run.id}: ${row.duration}, ${row.clips} clip${row.clips === 1 ? '' : 's'} — written to the event schedule.`
     : `${run.id}: backed up, but its duration could not be read — use Fill durations from drive.`,
@@ -1063,7 +1124,7 @@ function schedulePastHtml() {
           <td>${done}${ticked ? ` of ${ticked}` : ''}</td>
           <td class="mono sch-past-file" title="${esc(x.file || '')}">${esc(String(x.file || '').split(/[\\/]/).pop())}</td>
           <td class="sch-past-acts"><button class="sm primary" data-reopen="${x.id}">Open</button>
-            <button class="sm ghost" data-delete="${x.id}">Delete</button></td></tr>`;
+            <button class="sm ghost" data-delete="${x.id}" ${typeof syncAccount === 'function' && syncAccount() && !syncCanDelete() ? 'disabled' : ''}>Delete</button></td></tr>`;
       }).join('')}</tbody>
     </table>
   </div>`;
@@ -1151,6 +1212,10 @@ function renderSchedulePage() {
 }
 
 function wireSchedulePage() {
+  if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) {
+    document.querySelectorAll('#content input, #content select, #content button, #content textarea').forEach((el) => { el.disabled = true; });
+    return;
+  }
   if (state.schedule && !state.schedule.busy) scheduleDatalists();
   $('btnSchedule')?.addEventListener('click', () => openSchedule());
   const host = $('content');
@@ -1191,7 +1256,7 @@ function wireSchedulePage() {
     $(id)?.addEventListener('change', (e) => {
       const v = Number(e.target.value.trim());
       s.defaults[key] = Number.isFinite(v) && v >= 0 ? v : undefined;
-      window.api.setSettings({ scheduleDefaults: s.defaults }).catch(() => {});
+      syncTeamSettings({ scheduleDefaults: s.defaults }).catch(() => {});
       scheduleRemember();
       scheduleRerender();
     });

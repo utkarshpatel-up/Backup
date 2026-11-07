@@ -1,10 +1,10 @@
 #!/bin/bash
 # Behavioural tests of the sync migration on a throwaway local PostgreSQL: Unix socket
-# only, deleted on exit. Tests the database rules, not a deployed Supabase/PostgREST.
-#   tests/supabase/run.sh     (PG_BIN=/path/to/postgres/bin to pick the binaries)
+# only, deleted on exit. Tests the database rules, not a real Neon project, its Data API or Better Auth.
+#   tests/db/run.sh     (PG_BIN=/path/to/postgres/bin to pick the binaries)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-migration="${MIGRATION:-$here/../../supabase/migrations/20261107000000_av_backup_sync_v1.sql}"
+migration="${MIGRATION:-$here/../../db/migrations/20261107000000_av_backup_sync_v1.sql}"
 PG_BIN="${PG_BIN:-$(pg_config --bindir 2>/dev/null || echo /opt/homebrew/Cellar/postgresql@16/16.14/bin)}"
 dir="$(mktemp -d /private/tmp/avb-pg.XXXXXX 2>/dev/null || mktemp -d)"
 trap '"$PG_BIN/pg_ctl" -D "$dir/data" -m immediate stop >/dev/null 2>&1 || true; rm -rf "$dir"' EXIT
@@ -16,7 +16,7 @@ q() { "$PG_BIN/psql" -h "$dir" -v ON_ERROR_STOP=1 -X -q "$@"; }
 echo "PostgreSQL: $(q -U test_super -d avb_test -Atc 'show server_version') (socket only, disposable)"
 
 q -U test_super -d avb_test -f "$here/shim.sql"
-q -U postgres -d avb_test -f "$migration"
+q -U neondb_owner -d avb_test -f "$migration"
 q -U test_super -d avb_test -At -f "$here/behavior.sql" > "$dir/behavior.out" 2>&1 || { cat "$dir/behavior.out"; echo "behavior.sql aborted"; exit 1; }
 # Two real connections racing each other, then real schedule content round-tripped (needs node).
 "$here/concurrency.sh" "$PG_BIN" "$dir" > "$dir/concurrency.out" 2>&1 || { cat "$dir/concurrency.out"; echo "concurrency.sh aborted"; exit 1; }

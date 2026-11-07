@@ -1,10 +1,41 @@
 # Desktop sync client: implementation status
 
 > **Status: sync core, secured Electron integration, account screens and renderer
-> schedule/report hooks are implemented.** Local mode remains the default; account mode
-> is an explicit opt-in. No server is deployed. PostgreSQL tests use fake GoTrue and
-> PostgREST routing. Real Electron transport and local startup/shutdown have passed on
-> macOS; real Supabase authentication, Windows and a second physical device remain unverified.
+> schedule/report hooks are implemented, now for Neon** (hosted Postgres, Data API and
+> Managed Better Auth; no MFA, by decision). Local mode remains the default; account mode
+> is an explicit opt-in. PostgreSQL tests use a fake Better Auth and a Data API-shaped
+> router. Real Electron transport and local startup/shutdown have passed on macOS; a real
+> Neon project, Windows and a second physical device remain unverified. Setup:
+> [NEON_SETUP.md](NEON_SETUP.md).
+
+## Moving from Supabase to Neon (8 Nov 2026)
+
+The user chose hosted Neon over a self-hosted Supabase on the office PC, to avoid running
+a server and a VPN, and dropped the MFA requirement. What changed:
+
+- **Database:** identity is the JWT `sub` as text, from `auth.user_id()` (Neon's
+  `pg_session_jwt`). Members are no longer tied to an auth table by a foreign key, and
+  `set_member` takes the user id **and** e-mail. Sign-up is open on Neon, so an e-mail
+  alone could belong to whoever registered it first. Switching someone off needs no
+  auth account. Admin delete and restore need only the admin role. Roles are
+  `authenticated` and `anonymous`; there is no `service_role`. Moved to `db/` and
+  `tests/db/`.
+- **Sign-in:** Better Auth keeps its session in a cookie, and the Data API takes a JWT
+  of about 15 minutes. `client.js` treats the cookie as the refresh token and the JWT as
+  the access token, so the engine's token handling is unchanged. The paths used are
+  `POST sign-in/email`, `POST sign-up/email`, `GET token` and `POST sign-out`.
+  Neon documents only its SDK, so these paths must be confirmed on a real project.
+  An account with Neon Auth's own "admin" role is refused at sign-in with a clear
+  message, because the Data API would run its requests as a missing database role.
+- **Transport:** Node's own fetch instead of Electron's `net.fetch`, because Chromium
+  hides and manages `Set-Cookie`. Neon's certificates are public, so Node's bundled CAs
+  verify them. The office-CA concern is gone; an HTTPS-intercepting proxy is not supported.
+- **Config:** two public addresses (Auth URL, Data API URL) replace the server address
+  and publishable key. Any old `sync-config.json` reads as "not set up".
+- **Removed:** MFA enrolment and verification (engine, IPC, preload, Account page), the
+  Supabase runbook and the Windows server checker.
+- **Added:** **Create account** on the Account page. It signs up and signs straight out;
+  the account has no access until the maintainer adds it.
 
 ## Renderer account integration
 
@@ -13,12 +44,10 @@
   prepared/running-backup view. The revision advances only after that view is applied
   or its own commit succeeds. Busy assignments are explicitly excluded from diffs.
 - The Account button opens opt-in server configuration, sign-in/out, status and pending/
-  held/failed counts, Sync now, authenticator enrollment and verification, conflict
-  alternatives and saved-draft review. Remote values are escaped text; passwords and
-  authenticator codes are cleared after use. The enrollment secret is memory-only and
-  cleared on leaving/reopening the account flow, verification or account reset.
+  held/failed counts, Sync now, Create account, conflict alternatives and saved-draft
+  review. Remote values are escaped text; passwords are cleared after use.
 - All operators can view/edit team schedules and add/remove rows. Assignments and rows
-  use UUIDs, and copied rows receive fresh UUIDs. Only an online admin with `aal2` can
+  use UUIDs, and copied rows receive fresh UUIDs. Only an online admin can
   request whole-schedule delete/restore; the engine rechecks membership online. Deletion
   uses the displayed view's aggregate revision. Conflicts can be resolved using a shown
   alternative and then edited normally; no manual-combine editor is provided.
@@ -53,15 +82,15 @@ changes were made in this phase.
 | file | job |
 |---|---|
 | `spec.js` | The server's payload rules (`payload_spec`, `validate_payload`, `check_target`), checked before anything is queued. A test checks that the table matches the migration's. |
-| `source-pack.js` | "What was read" as `source_line` / `source_skip` targets. Same algorithm as the reviewed reference in `tests/supabase/roundtrip.js`, without loading anything from `tests/`. |
+| `source-pack.js` | "What was read" as `source_line` / `source_skip` targets. Same algorithm as the reviewed reference in `tests/db/roundtrip.js`, without loading anything from `tests/`. |
 | `model.js` | Converts renderer snapshots to sync targets and back. File paths, saved/scan state and numeric row keys stay in a device overlay. Order keys are fractional, so inserting a row changes only that row. A schedule left out of a snapshot is never treated as deleted. |
 | `vault.js` | Files written atomically (with fsync). The cache is AES-256-GCM, bound to the account and server, under a random key wrapped by Electron `safeStorage`. The session file is a `safeStorage` blob. When no OS key store exists (including Linux `basic_text`), it refuses; it never falls back to plaintext. |
-| `client.js` | GoTrue and the six RPCs over an **injected** fetch. HTTPS only; HTTP only to loopback. Rejects secret and `service_role` keys, refuses every redirect, never leaves its origin, and maps errors to offline, expired, revoked, forbidden, refused, busy or server. |
-| `engine.js` | `SyncEngine`: config, sign-in through `avb_me`, refresh, sign-out, offline-first start, `commit(baseRev, snapshot, busy)`, the durable exact-body queue, pull, conflicts, resolve and review, admin delete and restore, TOTP, backup protection, lock on revoke, and the one-time import. |
+| `client.js` | Managed Better Auth (session cookie, JWT) and the six RPCs through the Neon Data API, over an **injected** fetch. HTTPS only; HTTP only to loopback. Refuses every redirect, never leaves either base path, sends the cookie only to Auth and the JWT only to the Data API, and maps errors to offline, expired, revoked, forbidden, refused, busy or server. |
+| `engine.js` | `SyncEngine`: config, sign-in through `avb_me`, refresh, sign-out, offline-first start, `commit(baseRev, snapshot, busy)`, the durable exact-body queue, pull, conflicts, resolve and review, admin delete and restore, account creation, backup protection, lock on revoke, and the one-time import. |
 
 ## Electron integration
 
-- `sync/host.js` injects Electron `net.fetch`; initialization errors leave local files
+- `sync/host.js` injects Node's fetch with `redirect: 'error'`; initialization errors leave local files
   available. With accounts disabled, startup makes no account network requests.
 - `sync/ipc.js` and `preload.js` expose typed account actions and status subscriptions,
   with argument bounds and fixed error messages. Tokens stay in the main process.
@@ -82,22 +111,23 @@ this does not change the normal workflow in `AGENTS.md`.
 ## Network transport contract
 
 `Client` takes `fetch` as a parameter; nothing in `electron/sync/` opens a connection by
-itself. The host passes **Electron's `net.fetch`**:
+itself. The host passes **Node's own fetch** (undici):
 
-- It uses Chromium's network stack, which trusts the **OS certificate store**. A
-  private office CA installed in Windows (Trusted Root store) or the macOS keychain is
-  then accepted with full verification. Node's built-in fetch trusts only Node's bundled
-  CAs, plus `NODE_EXTRA_CA_CERTS`.
-- The adapter enforces `redirect: 'error'`, omits cookies and disables caching, keeping
-  `Client`'s origin check. The Electron 33 smoke test confirmed a redirect destination
-  received neither a request nor a token. Installing and trusting the office CA still
-  needs verification on the actual machines.
+- Better Auth's session is a cookie that this code must read (`Set-Cookie`) and send
+  (`Cookie`). Chromium's `net.fetch` hides and manages both, so it cannot be used here.
+- Node verifies certificates against its bundled CA list. Neon's certificates are
+  public, so that is enough. A company proxy that intercepts HTTPS would make every
+  call fail; it is not supported.
+- The adapter enforces `redirect: 'error'`, omits credentials and disables caching,
+  keeping `Client`'s base-path check. The Electron 33 smoke test confirmed a redirect
+  destination received neither a request nor a token, and that an untrusted certificate
+  is refused.
 - **Never** set `NODE_TLS_REJECT_UNAUTHORIZED=0`, never pass a fetch or agent that skips
   verification, and never handle `app.on('certificate-error')` or
   `session.setCertificateVerifyProc` in a way that trusts a failed certificate. A
   certificate problem must show as a connection error.
-- The server address is limited to HTTPS (or `http://127.0.0.1` / `localhost` / `[::1]`
-  for a test server on the same computer). A plain-HTTP office hostname is refused.
+- Both addresses are limited to HTTPS (or `http://127.0.0.1` / `localhost` / `[::1]`
+  for a test server on the same computer), with no user, query or fragment.
 
 ## How the engine keeps edits safe
 
@@ -129,7 +159,6 @@ These are the behaviours the tests check.
   - A conflict that someone else closed is moved to a review list.
 - **Whole-schedule delete and restore.**
   - Each one checks `avb_me` online first; a cached admin role is never enough.
-  - It needs `aal2`.
   - It uses the `aggregate_rev` of the view the admin reviewed. A late edit makes delete
     a stale conflict, and makes restore answer "review again".
   - Operators are refused both by the engine and by the server.
@@ -217,7 +246,7 @@ npm run test:electron                   # real Electron; isolated temporary app 
 ```
 
 - **Harness.** `tests/sync/harness.js` starts a socket-only cluster under `/private/tmp`
-  and deletes it afterwards. It loads `tests/supabase/shim.sql` and the unchanged
+  and deletes it afterwards. It loads `tests/db/shim.sql` (a stand-in for Neon) and the
   migration, and clones one database per test.
 - **Mutation checks.** Four of the fixed bugs were re-introduced one at a time; each was
   caught by a failing test:
@@ -243,7 +272,7 @@ npm run test:electron                   # real Electron; isolated temporary app 
   loopback HTTP transport, redirect refusal, untrusted TLS refusal, blocked navigation
   and popups, and saving focused/debounced edits before window close and macOS Quit.
   Only temporary userData/sessionData and loopback test servers are used. Expected
-  denied-IPC and TLS errors appear in the log. This is not a live Supabase test or a
+  denied-IPC and TLS errors appear in the log. This is not a live Neon test or a
   packaged Windows build test.
 
 The reviewed SQL, its tests and the Windows checker are unchanged.
@@ -252,11 +281,12 @@ not installed in this Python. No Python file changed.
 
 ## Known gaps
 
-- Windows startup, shutdown, DPAPI and the office CA remain unverified. The local-mode
+- Windows startup, shutdown and DPAPI remain unverified. The local-mode
   smoke does not exercise real safeStorage sign-in or auth against a running stack.
-- The fake GoTrue only imitates the shapes of sign-in, refresh rotation, logout, `/user`
-  factors and TOTP challenge/verify. The fake router only imitates PostgREST's error
-  mapping (42501 → 403, P0001 → 400). Both must be checked against the real stack.
+- The fake Better Auth only imitates sign-up, sign-in, the session cookie, `GET token`,
+  sign-out and the Origin check. The fake Data API router only imitates PostgREST-style
+  errors (42501 → 403, P0001 → 400, expired JWT → 401). All must be checked on a real
+  Neon project (docs/NEON_SETUP.md, step 7).
 - The admin's list of deleted schedules shows only schedules this device saw while they
   existed. A fresh device needs `avb_target_history` to name the others.
 - Learned-memory order within one upload batch falls back to key order (one server
@@ -286,9 +316,9 @@ not installed in this Python. No Python file changed.
   spurious self-conflict, and preview/confirmed import of parsed report records.
 - `npm run test:renderer` passed **141/141**, with no skips; `npm run test:electron`
   exited 0 on macOS Electron 33.4.11 using its isolated temporary profile. Account UI behavior is exercised by
-  the VM/engine harness, not a live authenticated Supabase browser session. The Electron
+  the VM/engine harness, not a live authenticated Neon session. The Electron
   smoke exercises real local-mode startup, PDF/OCR, secured IPC, TLS/redirect refusal,
   navigation restrictions, focused/debounced close saves and macOS app.quit.
-- Windows, office-CA trust on deployed machines, real GoTrue/PostgREST/MFA integration,
+- Windows, a real Neon project (Better Auth and the Data API),
   a second physical device and fresh-device deleted-history listing remain unverified
   or unavailable. No backend history API or schema was invented.

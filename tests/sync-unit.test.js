@@ -8,13 +8,13 @@ const path = require('node:path');
 const spec = require('../electron/sync/spec');
 const pack = require('../electron/sync/source-pack');
 const model = require('../electron/sync/model');
-const { Client, parseServerUrl, checkPublishableKey, classify } = require('../electron/sync/client');
+const { Client, parseBaseUrl, classify, sessionCookie } = require('../electron/sync/client');
 const { SealedFile, SessionStore, osProtectionAvailable } = require('../electron/sync/vault');
-const { fakeSafeStorage, faultyFs, tmpDir, PUBLISHABLE } = require('./sync/harness');
+const { fakeSafeStorage, faultyFs, tmpDir } = require('./sync/harness');
 const S = require('../renderer/schedule-logic');
 const fixtures = require('./fixtures/schedule-ocr.json');
 
-const MIGRATION = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations', '20261107000000_av_backup_sync_v1.sql'), 'utf8');
+const MIGRATION = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations', '20261107000000_av_backup_sync_v1.sql'), 'utf8');
 const uuid = () => require('node:crypto').randomUUID();
 
 test('the JS payload table is exactly the migration\'s payload_spec', () => {
@@ -134,51 +134,83 @@ test('learned corrections come back newest first; a report ID twice keeps the la
   assert.equal(b.warnings[0].code, 'duplicate_report_id');
 });
 
-test('server address: HTTPS, or HTTP to this computer only; nothing else in the URL', () => {
-  assert.equal(parseServerUrl(' https://avb.example.org/ '), 'https://avb.example.org');
-  assert.equal(parseServerUrl('http://127.0.0.1:54321'), 'http://127.0.0.1:54321');
-  for (const bad of ['http://office-pc:8000', 'http://192.168.1.20', 'ftp://x', 'https://u:p@avb.example.org', 'https://avb.example.org/rest/v1', 'https://avb.example.org/?a=1', 'avb.example.org']) {
-    assert.throws(() => parseServerUrl(bad), (e) => e.kind === 'config', bad);
+test('Neon addresses: HTTPS, or HTTP to this computer only; a path but nothing after it', () => {
+  assert.equal(parseBaseUrl(' https://ep-x.neonauth.aws.neon.tech/neondb/auth/ ', 'Auth URL'), 'https://ep-x.neonauth.aws.neon.tech/neondb/auth');
+  assert.equal(parseBaseUrl('https://ep-x.apirest.aws.neon.tech/neondb/rest/v1', 'Data API URL'), 'https://ep-x.apirest.aws.neon.tech/neondb/rest/v1');
+  assert.equal(parseBaseUrl('http://127.0.0.1:54321/neondb/auth', 'Auth URL'), 'http://127.0.0.1:54321/neondb/auth');
+  for (const bad of ['http://office-pc/neondb/auth', 'http://192.168.1.20/x', 'ftp://x/y', 'https://u:p@ep.neon.tech/neondb/auth',
+    'https://ep.neon.tech/neondb/auth?x=1', 'https://ep.neon.tech/neondb/auth#a', 'ep.neon.tech/neondb/auth', '']) {
+    assert.throws(() => parseBaseUrl(bad, 'Auth URL'), (e) => e.kind === 'config', bad);
   }
 });
 
-test('only a publishable or legacy anon key is accepted', () => {
-  const jwt = (role) => `x.${Buffer.from(JSON.stringify({ role })).toString('base64url')}.y`;
-  assert.equal(checkPublishableKey(PUBLISHABLE), PUBLISHABLE);
-  assert.equal(checkPublishableKey(jwt('anon')), jwt('anon'));
-  for (const bad of ['sb_secret_abcdefghijklmnop', jwt('service_role'), jwt('authenticated'), 'hello', '']) {
-    assert.throws(() => checkPublishableKey(bad), (e) => e.kind === 'config', bad);
-  }
-  assert.throws(() => checkPublishableKey('sb_secret_abcdefghijk'), /SECRET/);
+const AUTH = 'https://ep-x.neonauth.test/neondb/auth', DATA = 'https://ep-x.apirest.test/neondb/rest/v1';
+const jwtWith = (claims) => `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.s`;
+
+test('Better Auth sign-in: the session cookie comes back as the refresh token, the JWT as the access token', async () => {
+  const seen = [];
+  const fetch = async (url, init) => {
+    seen.push({ url, init });
+    if (url.endsWith('/sign-in/email')) {
+      return new Response('{"token":"raw"}', { status: 200, headers: [['Set-Cookie', '__Secure-neon-auth.session_data=x; Path=/'],
+        ['Set-Cookie', '__Secure-neon-auth.session_token=abc.sig; Path=/; HttpOnly; Secure']] });
+    }
+    if (url.endsWith('/token')) return new Response(JSON.stringify({ token: jwtWith({ sub: 'u-1', role: 'authenticated', exp: 99 }) }), { status: 200 });
+    return new Response('{}', { status: 200 });
+  };
+  const c = new Client({ authUrl: AUTH, dataUrl: DATA, fetch });
+  const tok = await c.signIn('a@b.c', 'pw');
+  assert.equal(seen[0].url, `${AUTH}/sign-in/email`);
+  assert.equal(seen[0].init.method, 'POST');
+  assert.equal(seen[0].init.headers.Origin, 'https://ep-x.neonauth.test', 'Better Auth checks the Origin of writes');
+  assert.equal(seen[1].url, `${AUTH}/token`);
+  assert.equal(seen[1].init.headers.Cookie, '__Secure-neon-auth.session_token=abc.sig', 'only the session cookie is sent');
+  assert.equal(tok.refresh_token, '__Secure-neon-auth.session_token=abc.sig');
+  assert.equal(tok.user.id, 'u-1');
+  assert.equal(tok.expires_at, 99);
+  await c.signOut(tok.refresh_token);
+  assert.equal(seen[2].url, `${AUTH}/sign-out`);
+  assert.equal(seen[2].init.headers.Cookie, tok.refresh_token);
+  // A Better Auth "admin" role would make the Data API refuse every call: say so up front.
+  const adminRole = new Client({ authUrl: AUTH, dataUrl: DATA, fetch: async (url) => (url.endsWith('/token')
+    ? new Response(JSON.stringify({ token: jwtWith({ sub: 'u', role: 'admin' }) }), { status: 200 })
+    : new Response('{}', { status: 200, headers: { 'Set-Cookie': 'better-auth.session_token=z; Path=/' } })) });
+  await assert.rejects(adminRole.signIn('a@b.c', 'pw'), (e) => e.code === 'bad_role');
+  const noCookie = new Client({ authUrl: AUTH, dataUrl: DATA, fetch: async () => new Response('{}', { status: 200 }) });
+  await assert.rejects(noCookie.signIn('a@b.c', 'pw'), (e) => e.code === 'bad_token');
+  assert.equal(sessionCookie(new Response('', { headers: { 'Set-Cookie': 'other=1' } })), null);
 });
 
-test('the client never follows a redirect, stays on its origin and leaks no token in errors', async () => {
+test('the client never follows a redirect, stays inside its base path and leaks no token in errors', async () => {
   const seen = [];
   const reply = (status, body) => async (url, init) => { seen.push({ url, init }); return new Response(JSON.stringify(body), { status }); };
-  const c = (f) => new Client({ origin: 'https://avb.example.org', apikey: PUBLISHABLE, fetch: f });
+  const c = (f) => new Client({ authUrl: AUTH, dataUrl: DATA, fetch: f });
   await c(reply(200, { ok: 1 })).rpc('TOKEN-abc', 'avb_me');
   assert.equal(seen[0].init.redirect, 'error');
-  assert.equal(seen[0].url, 'https://avb.example.org/rest/v1/rpc/avb_me');
+  assert.equal(seen[0].url, `${DATA}/rpc/avb_me`);
   assert.equal(seen[0].init.headers.Authorization, 'Bearer TOKEN-abc');
+  assert.equal(seen[0].init.headers.Cookie, undefined, 'the session cookie never goes to the Data API');
+  assert.equal(seen[0].init.headers.apikey, undefined);
   await assert.rejects(c(reply(302, {})).rpc('t', 'avb_me'), (e) => e.code === 'redirect');
   const followed = async () => ({ ok: true, status: 200, redirected: true, url: 'https://elsewhere.example/x', text: async () => '{}' });
   await assert.rejects(c(followed).rpc('t', 'avb_me'), (e) => e.code === 'redirect');
-  assert.throws(() => c(reply(200, {})).rpc('t', 'avb_secret_stuff'), (e) => e.code === 'bad_rpc');
-  await assert.rejects(c(reply(200, {})).request('GET', 'https://evil.example/x'), (e) => e.code === 'bad_url');
+  await assert.rejects(c(reply(200, {})).rpc('t', 'avb_secret_stuff'), (e) => e.code === 'bad_rpc');
+  await assert.rejects(c(reply(200, {})).request(DATA, 'GET', '../../../neondb_owner'), (e) => e.code === 'bad_url');
   await assert.rejects(c(async () => { throw new TypeError('fetch failed'); }).rpc('t', 'avb_me'), (e) => e.kind === 'offline');
   const long = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz0123456789';
   await assert.rejects(c(reply(418, { message: `bad token ${long}` })).rpc('t', 'avb_me'), (e) => !e.message.includes(long));
-  assert.throws(() => new Client({ origin: 'https://a.b', apikey: 'k' }), (e) => e.code === 'no_transport');
+  assert.throws(() => new Client({ authUrl: AUTH, dataUrl: DATA }), (e) => e.code === 'no_transport');
 });
 
 test('server errors map to offline / expired / revoked / forbidden / refused / busy', () => {
   assert.equal(classify(403, { code: '42501', message: 'avb:not_member' }).kind, 'revoked');
-  assert.equal(classify(403, { code: '42501', message: 'avb:aal2_required' }).code, 'aal2_required');
+  assert.equal(classify(403, { code: '42501', message: 'avb:admin_required' }).code, 'admin_required');
   assert.equal(classify(401, { code: 'PGRST303', message: 'JWT expired' }).kind, 'unauthorized');
   assert.equal(classify(400, { code: 'P0001', message: 'avb:invalid_field' }).kind, 'refused');
   assert.equal(classify(500, { code: '55P03', message: 'lock' }).kind, 'busy');
   assert.equal(classify(503, {}).kind, 'server');
-  assert.equal(classify(400, { error_code: 'invalid_credentials' }).kind, 'unauthorized');
+  assert.equal(classify(401, { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid email or password' }).code, 'invalid_credentials');
+  assert.equal(classify(401, { code: 'UNAUTHORIZED' }).kind, 'unauthorized');
 });
 
 test('encrypted cache: no plaintext on disk, tamper and another account\'s file refused, no OS key store refused', () => {
@@ -265,6 +297,6 @@ test('server error text is never echoed: short secrets and unknown codes become 
     const e = classify(status, body);
     assert.ok(!`${e.message} ${e.code}`.includes('hunter2') && !e.message.includes('pw-1a2b'), JSON.stringify(body));
   }
-  assert.equal(classify(422, { error_code: 'mfa_verification_failed', msg: 'Invalid TOTP code 123456' }).message, 'The authenticator code was not accepted.');
+  assert.equal(classify(401, { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'no user hunter2' }).message, 'Wrong e-mail or password.');
   assert.equal(classify(400, { code: 'P0001', message: 'avb:invalid_field', details: 'session.topic hunter2' }).message, 'avb:invalid_field');
 });

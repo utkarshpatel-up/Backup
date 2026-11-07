@@ -1,12 +1,18 @@
 'use strict';
 const { SyncEngine } = require('./engine');
 
-/** Created after Electron ready. No account configuration means no network calls. */
-function createSyncHost({ dir, net, safeStorage, Engine = SyncEngine }) {
+/**
+ * Created after Electron ready. No account configuration means no network calls.
+ * Transport: Node's own fetch, not Chromium's net.fetch. Better Auth's session lives in a
+ * cookie that this code must read (Set-Cookie) and send (Cookie), and Chromium hides and
+ * manages both. Neon's certificates are public, so Node's bundled CAs verify them; a
+ * TLS-intercepting office proxy would make every request fail, never pass unverified.
+ */
+function createSyncHost({ dir, safeStorage, fetch: fetchImpl = globalThis.fetch, Engine = SyncEngine }) {
   let engine = null;
   let failed = false;
   try {
-    engine = new Engine({ dir, safeStorage, fetch: (url, init) => net.fetch(url, {
+    engine = new Engine({ dir, safeStorage, fetch: (url, init) => fetchImpl(url, {
       ...init, redirect: 'error', credentials: 'omit', cache: 'no-store',
     }) });
     engine.init();

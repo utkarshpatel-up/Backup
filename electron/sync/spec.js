@@ -1,5 +1,5 @@
 'use strict';
-// The server's payload rules (supabase/migrations/…_av_backup_sync_v1.sql, payload_spec,
+// The server's payload rules (db/migrations/…_av_backup_sync_v1.sql, payload_spec,
 // validate_payload, check_target), checked here BEFORE anything is queued: one bad
 // value refuses a whole batch on the server. tests/sync-spec.test.js compares this
 // table with the migration's, so the two cannot drift apart silently.

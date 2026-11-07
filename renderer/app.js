@@ -3840,7 +3840,6 @@ function showSchedule() {
 }
 
 function render() {
-  if (typeof syncUI !== 'undefined' && state.view !== 'account') syncUI.enrollmentSecret = '';
   const onSchedule = state.view === 'schedule';
   const onReport = state.view === 'report';
   $('backupMode').textContent = isInformal() ? 'Informal backup' : 'Formal backup';

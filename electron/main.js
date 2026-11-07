@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage, net, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -170,7 +170,7 @@ app.whenReady().then(() => {
   applyTheme(currentTheme());   // force dark (default) before the window paints
   buildMenu();
   createBridge();
-  syncHost = createSyncHost({ dir: app.getPath('userData'), net, safeStorage });
+  syncHost = createSyncHost({ dir: app.getPath('userData'), safeStorage });
   registerSyncIpc({ ipcMain, getWindow: () => win, appUrl: APP_URL, getHost: () => syncHost, isClosing: () => !!(closer && closer.pending) });
   createWindow();
   app.on('activate', () => {

@@ -1,5 +1,8 @@
 # Renderer account integration phase report
 
+> **Historical.** Written for the Supabase design. The app has since moved to Neon
+> with no MFA; see [SYNC_CLIENT_STATUS.md](SYNC_CLIENT_STATUS.md) for the current state.
+
 Implemented the approved account/settings and schedule/report integration phase under
 the coordinator's explicit Codex exception. No commits, deployments, dependencies,
 backend changes or schema changes. Existing uncommitted/untracked work was preserved.

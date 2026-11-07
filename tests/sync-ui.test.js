@@ -8,7 +8,7 @@ const deferred = () => { let resolve; const promise = new Promise((r) => { resol
 function fixture() {
   const calls = [], state = { schedules: { openId: null, items: [] } };
   let rev = 10;
-  const account = { mode: 'account', phase: 'online', signedIn: true, locked: false, user: { role: 'operator', aal: 'aal1' } };
+  const account = { mode: 'account', phase: 'online', signedIn: true, locked: false, user: { role: 'operator' } };
   const api = { getSettings: async () => ({}), setSettings: async (...args) => calls.push(['settings', ...args]),
     getStore: async () => ({ items: [] }), setStore: async (...args) => calls.push(['store', ...args]),
     confirm: async () => false,
@@ -93,10 +93,11 @@ test('backup protection is durable before protect and captures the displayed bas
   f.run('syncUI.rev=12'); await f.run('syncCommit(syncUI.backupBase)');
   assert.equal(f.calls[2][1].baseRev, 11);
 });
-test('operators cannot delete whole schedules and admin requires aal2 and idle state', () => {
+test('operators cannot delete whole schedules; an admin can when online and idle', () => {
   const f = fixture(); assert.equal(f.run('syncCanDelete()'), false);
-  f.run('syncUI.status.user={role:"admin",aal:"aal1"}'); assert.equal(f.run('syncCanDelete()'), false);
-  f.run('syncUI.status.user.aal="aal2"'); assert.equal(f.run('syncCanDelete()'), true);
+  f.run('syncUI.status.user={role:"admin"}'); assert.equal(f.run('syncCanDelete()'), true);
+  f.run('syncUI.status.phase="offline"'); assert.equal(f.run('syncCanDelete()'), false, 'never from a cached role offline');
+  f.run('syncUI.status.phase="online"; state.busy={}'); assert.equal(f.run('syncCanDelete()'), false);
   f.run('state.scheduleRun={}'); assert.equal(f.run('syncCanDelete()'), false);
 });
 test('local import previews and never confirms without explicit approval', async () => {

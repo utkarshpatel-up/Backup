@@ -25,16 +25,20 @@ function jsonData(v, depth = 0) {
 }
 
 function validate(action, p) {
-  const noArgs = ['status', 'getConfig', 'signOut', 'view', 'syncNow', 'conflicts', 'reviews', 'mfaStatus', 'mfaEnroll'];
+  const noArgs = ['status', 'getConfig', 'signOut', 'view', 'syncNow', 'conflicts', 'reviews'];
   if (noArgs.includes(action)) { fields(p, []); return; }
   switch (action) {
     case 'setConfig':
-      fields(p, ['enabled', 'url', 'key']);
-      if (typeof p.enabled !== 'boolean' || !string(p.url, 2048) || !string(p.key, 8192)) invalid();
+      fields(p, ['enabled', 'authUrl', 'dataUrl']);
+      if (typeof p.enabled !== 'boolean' || !string(p.authUrl, 2048) || !string(p.dataUrl, 2048)) invalid();
       return;
     case 'signIn':
       fields(p, ['email', 'password']);
       if (!string(p.email, 320) || !string(p.password, 1024)) invalid();
+      return;
+    case 'signUp':
+      fields(p, ['email', 'password', 'name']);
+      if (!string(p.email, 320) || !string(p.password, 1024) || !string(p.name, 200)) invalid();
       return;
     case 'commit':
       fields(p, ['baseRev', 'snapshot', 'busy']);
@@ -58,7 +62,6 @@ function validate(action, p) {
       fields(p, ['id', 'action', 'expectedHead']);
       if (!string(p.id, 512) || !p.id.includes('/') || !['discard', 'retry'].includes(p.action) || !head(p.expectedHead)) invalid();
       return;
-    case 'mfaVerify': fields(p, ['code']); if (!/^\d{6}$/.test(p.code) || typeof p.code !== 'string') invalid(); return;
     case 'importLocal':
       fields(p, ['confirm', 'report']); if (typeof p.confirm !== 'boolean') invalid();
       if (p.report !== undefined) {
@@ -99,6 +102,7 @@ function registerSyncIpc({ ipcMain, getWindow, appUrl, getHost, isClosing = () =
         case 'getConfig': result = engine.publicConfig(); break;
         case 'setConfig': result = engine.setConfig(p); break;
         case 'signIn': result = await engine.signIn(p.email, p.password); break;
+        case 'signUp': result = await engine.signUp(p.email, p.password, p.name); break;
         case 'signOut': result = await engine.signOut(); break;
         case 'view': result = engine.view(); break;
         case 'commit': result = engine.commit(p); break;
@@ -109,9 +113,6 @@ function registerSyncIpc({ ipcMain, getWindow, appUrl, getHost, isClosing = () =
         case 'review': result = engine.review(p); break;
         case 'deleteAssignment': result = await engine.deleteAssignment(p); break;
         case 'restoreAssignment': result = await engine.restoreAssignment(p); break;
-        case 'mfaStatus': result = await engine.mfaStatus(); break;
-        case 'mfaEnroll': result = await engine.mfaEnroll(); break;
-        case 'mfaVerify': result = await engine.mfaVerify(p.code); break;
         case 'protect': result = engine.protect(Object.keys(p).length ? p : null); break;
         case 'importLocal': result = engine.importLocal(p); break;
         default: invalid();

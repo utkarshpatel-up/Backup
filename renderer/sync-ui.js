@@ -5,7 +5,7 @@
 const syncUI = {
   operations: 0, status: { mode: 'local' }, rev: null, epoch: 0, dirty: false, saving: 0,
   chain: Promise.resolve(), loading: false, changing: false, preparing: false,
-  backupBase: null, prepUndo: null, teamCities: false, enrollmentSecret: '', team: {}, deleted: [], conflicts: [], reviews: [], error: '', waiting: false,
+  backupBase: null, prepUndo: null, teamCities: false, team: {}, deleted: [], conflicts: [], reviews: [], error: '', waiting: false,
 };
 function syncAccount() { return syncUI.status.mode === 'account'; }
 function syncAvailable() { return syncAccount() && syncUI.status.signedIn && !syncUI.status.locked && syncUI.rev != null; }
@@ -32,7 +32,7 @@ function syncTeamSettings(patch) {
   return Promise.resolve();
 }
 function syncClear() {
-  syncUI.epoch++; syncUI.rev = null; syncUI.enrollmentSecret = ''; syncUI.team = {}; syncUI.deleted = [];
+  syncUI.epoch++; syncUI.rev = null; syncUI.team = {}; syncUI.deleted = [];
   syncUI.conflicts = []; syncUI.reviews = []; syncUI.dirty = false;
   clearTimeout(scheduleRememberTimer); scheduleRememberTimer = null;
   state.schedules = { openId: null, items: [] }; state.schedule = null;
@@ -183,9 +183,9 @@ async function syncRelease() {
     else await syncRefresh();
   }
 }
-function syncCanDelete() { return syncAvailable() && syncUI.status.user?.role === 'admin' && syncUI.status.user?.aal === 'aal2' && syncUI.status.phase === 'online' && !syncBusy(); }
+function syncCanDelete() { return syncAvailable() && syncUI.status.user?.role === 'admin' && syncUI.status.phase === 'online' && !syncBusy(); }
 async function syncDelete(id) {
-  if (!syncCanDelete()) { toast('Deleting schedules requires an online admin with authenticator verification.', 'warn'); return; }
+  if (!syncCanDelete()) { toast('Only an admin who is online can delete a whole schedule.', 'warn'); return; }
   syncUI.changing = true;
   try {
     await scheduleFlush();
@@ -221,7 +221,7 @@ async function syncImport() {
 }
 async function showSync() {
   await scheduleFlush();
-  state.view = 'account'; syncUI.enrollmentSecret = '';
+  state.view = 'account';
   syncUI.conflicts = await window.api.sync.conflicts();
   syncUI.reviews = await window.api.sync.reviews();
   render();
@@ -236,15 +236,15 @@ function renderSyncPage() {
     ${s.user ? ` · ${esc(s.user.displayName || '')} (${esc(s.user.role || '')})` : ''} · Pending: ${Number(s.pending || 0)} · Held: ${Number(s.held || 0)} · Conflicts: ${Number(s.conflicts || 0)} · Failed: ${Number(s.failed?.length || 0)}</p>
     <p class="note">${esc(syncUI.error || (s.error ? 'Connection or account action failed. Your saved edits remain on this computer.' : ''))}</p>
     <label><input id="syncEnabled" type="checkbox" ${enabled ? 'checked' : ''} ${disabled}> Use team account</label>
-    <p><input id="syncUrl" placeholder="https://office.example" value="${esc(s.config?.url || '')}" ${disabled}>
-    <input id="syncKey" placeholder="Public anon key" type="password" autocomplete="off" ${disabled}>
+    <p><input id="syncAuthUrl" placeholder="Neon Auth URL (https://…/neondb/auth)" value="${esc(s.config?.authUrl || '')}" ${disabled}>
+    <input id="syncDataUrl" placeholder="Neon Data API URL (https://…/neondb/rest/v1)" value="${esc(s.config?.dataUrl || '')}" ${disabled}>
     <button id="syncConfig" ${disabled}>Save server settings</button></p>
     ${enabled ? `<p><input id="syncEmail" type="email" autocomplete="off" placeholder="Email" ${disabled}>
     <input id="syncPassword" type="password" autocomplete="off" placeholder="Password" ${disabled}>
     <button id="syncSignIn" ${disabled}>Sign in</button><button id="syncSignOut" ${disabled}>Sign out</button></p>
+    <p class="hint">New here? Enter your e-mail and a password above, your name here, and create an account. It has no access until the maintainer adds you.</p>
+    <p><input id="syncName" autocomplete="off" placeholder="Your name" ${disabled}><button id="syncSignUp" ${disabled}>Create account</button></p>
     <p><button id="syncNow" ${disabled}>Sync now</button><button id="syncImport" ${disabled}>Preview local import…</button></p>
-    <p><button id="syncEnroll" ${disabled}>Set up authenticator</button><input id="syncCode" inputmode="numeric" maxlength="6" placeholder="6-digit code">
-    <button id="syncVerify" ${disabled}>Verify authenticator</button></p><pre id="syncSecret">${esc(syncUI.enrollmentSecret ? `Authenticator setup secret: ${syncUI.enrollmentSecret}` : '')}</pre>
     ${state.scheduleRun && !state.busy ? '<button id="syncPutAside">Put aside prepared backup</button>' : ''}` : ''}</div>
     ${(syncAvailable() ? syncUI.conflicts : []).map((c, i) => `<div class="card sync-panel"><h3>Conflict: ${esc(c.schedule || c.targetType)}</h3>
       <p>Choose an alternative, then return to the schedule to edit it.</p>
@@ -260,19 +260,21 @@ function wireSyncPage() {
     catch (_) { syncUI.error = 'Action could not be completed. Check the connection, account permissions and saved entries, then try again.'; }
     render();
   });
-  act('syncConfig', () => { const enabled = $('syncEnabled').checked; const c = { enabled, url: enabled ? $('syncUrl').value : '', key: enabled ? $('syncKey').value : '' }; $('syncKey').value = ''; return syncTransition(() => window.api.sync.setConfig(c)); });
+  act('syncConfig', () => { const enabled = $('syncEnabled').checked; const c = { enabled, authUrl: enabled ? $('syncAuthUrl').value : '', dataUrl: enabled ? $('syncDataUrl').value : '' }; return syncTransition(() => window.api.sync.setConfig(c)); });
   act('syncSignIn', () => { const email = $('syncEmail').value, password = $('syncPassword').value; $('syncPassword').value = ''; return syncTransition(() => window.api.sync.signIn(email, password)); });
   act('syncSignOut', () => syncTransition(() => window.api.sync.signOut()));
+  act('syncSignUp', async () => {
+    const email = $('syncEmail').value, password = $('syncPassword').value, name = $('syncName').value;
+    $('syncPassword').value = '';
+    const r = await window.api.sync.signUp(email, password, name);
+    syncUI.error = `Account created for ${r.email}. Ask the maintainer to add you to the team, then sign in.`;
+  });
   act('syncNow', async () => { await scheduleFlush(); await window.api.sync.syncNow(); await syncRefresh(); });
   act('syncImport', syncImport);
   act('syncPutAside', async () => {
     if (state.busy) return;
     await scheduleFlush(); state.scheduleRun = null; await syncRelease();
   });
-  act('syncEnroll', async () => { const e = await window.api.sync.mfaEnroll(); syncUI.enrollmentSecret = e.secret; });
-  // Enrollment secret is ephemeral: never stored or inserted as remote markup.
-  $('syncEnroll')?.addEventListener('click', (e) => e.stopPropagation());
-  act('syncVerify', async () => { const code = $('syncCode').value; $('syncCode').value = ''; await window.api.sync.mfaVerify(code); syncUI.enrollmentSecret = ''; });
   document.querySelectorAll('[data-conflict]').forEach((b) => b.addEventListener('click', async () => {
     const c = syncUI.conflicts[+b.dataset.conflict];
     if (syncBusy() || (c.kind === 'assignment_delete_stale' && !syncCanDelete())) return;
@@ -292,6 +294,6 @@ function wireSyncPage() {
     if (!syncCanDelete()) return;
     const s = syncUI.deleted[+b.dataset.restore];
     try { const r = await window.api.sync.restoreAssignment({ id: s.id, rev: s.aggregateRev }); if (!r.ok) throw new Error(); await syncRefresh(); }
-    catch (_) { toast('Restore needs an online admin with authenticator verification. Review the schedule again.', 'err'); }
+    catch (_) { toast('Restore needs an admin who is online. Review the schedule again.', 'err'); }
   }));
 }

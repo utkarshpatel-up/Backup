@@ -118,19 +118,20 @@ async function run() {
     if (redirect) { res.writeHead(302, { Location: target }); res.end(); }
     else { res.setHeader('Content-Type', 'application/json'); res.end('{"protocol_version":1}'); }
   }));
-  const host = createSyncHost({ dir: path.join(dir, 'transport'), net, safeStorage: electron.safeStorage });
-  const client = new Client({ origin: source, apikey: 'smoke', fetch: host.engine.fetchImpl });
+  const host = createSyncHost({ dir: path.join(dir, 'transport'), safeStorage: electron.safeStorage });
+  const client = new Client({ authUrl: `${source}/neondb/auth`, dataUrl: `${source}/neondb/rest/v1`, fetch: host.engine.fetchImpl });
   assert.deepEqual(await client.rpc('smoke-only-token', 'avb_me'), { protocol_version: 1 });
   redirect = true;
   await assert.rejects(client.rpc('smoke-only-token', 'avb_me'));
   assert.equal(destinationRequests, 0);
-  console.log('PASS net.fetch redirect:error: redirect destination receives no request or token');
+  console.log('PASS app transport (Node fetch) redirect:error: redirect destination receives no request or token');
 
   const key = path.join(dir, 'tls-key.pem'), cert = path.join(dir, 'tls-cert.pem');
   execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=localhost', '-keyout', key, '-out', cert], { stdio: 'pipe' });
   const tls = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (_req, res) => res.end('{}'));
   await listen(tls);
-  const badTls = new Client({ origin: `https://127.0.0.1:${tls.address().port}`, apikey: 'smoke', fetch: host.engine.fetchImpl });
+  const tlsBase = `https://127.0.0.1:${tls.address().port}`;
+  const badTls = new Client({ authUrl: `${tlsBase}/neondb/auth`, dataUrl: `${tlsBase}/neondb/rest/v1`, fetch: host.engine.fetchImpl });
   await assert.rejects(badTls.rpc('smoke-only-token', 'avb_me'));
   console.log('PASS untrusted TLS certificate is refused, with no certificate bypass');
 

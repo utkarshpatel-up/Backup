@@ -1,16 +1,21 @@
--- AV Backup team metadata sync, protocol v1. See supabase/SYNC_CONTRACT.md.
+-- AV Backup team metadata sync, protocol v1, for Neon (Data API + Managed Better Auth).
+-- See db/SYNC_CONTRACT.md.
 --
--- Apply once, as the database owner role (`postgres` on Supabase), never from the
--- app:  psql -v ON_ERROR_STOP=1 -f <this file>
+-- Apply once, as the database owner role (`neondb_owner` on Neon), never from the
+-- app:  psql "$OWNER_URL" -v ON_ERROR_STOP=1 -f <this file>
 -- Additive: touches no existing table, imports nothing, and stores no key.
--- Needs PostgreSQL 16+ (pg_input_is_valid). Tested on local PG 16 only, not on Supabase PG 17.
+-- Needs PostgreSQL 16+ (pg_input_is_valid) and Neon's pg_session_jwt (auth.user_id()),
+-- which Neon installs when the Data API is enabled. Tested on local PG 16 with a stand-in
+-- for pg_session_jwt only, not on Neon.
 --
 -- Shape: every table is in the unexposed schema avb_private with no grants, and
 -- RLS on with no policies as a second lock. The only way in for the app is the
--- public.avb_* SECURITY INVOKER wrappers, which PostgREST exposes, around private
--- SECURITY DEFINER functions (Supabase: never put a definer function in an exposed
--- schema). Each entry point re-reads live membership from auth.uid(); role claims
--- and user_metadata are never read. Only `aal` is read from the JWT.
+-- public.avb_* SECURITY INVOKER wrappers, which the Data API exposes, around private
+-- SECURITY DEFINER functions (a definer function never sits in an exposed schema).
+-- Each entry point re-reads live membership for auth.user_id() (the JWT's `sub`). No
+-- other claim is read: not `role`, `email` or anything a user could influence.
+-- Anyone can create a Better Auth account (Neon cannot restrict sign-up yet); an
+-- account alone gets nothing here until the maintainer adds it with set_member.
 
 begin;
 
@@ -21,7 +26,9 @@ grant usage on schema avb_private to authenticated;
 -- ---------------------------------------------------------------- tables
 
 create table avb_private.members (
-  user_id      uuid primary key references auth.users (id) on delete cascade,
+  -- The Better Auth user id (neon_auth.user.id), as the JWT's `sub`. No foreign key:
+  -- neon_auth is Better Auth's own schema. Removing access is set_member(..., false).
+  user_id      text primary key check (char_length(user_id) between 1 and 255),
   role         text not null check (role in ('admin', 'operator')),
   is_active    boolean not null default true,
   display_name text not null default '' check (char_length(display_name) <= 200),
@@ -31,7 +38,7 @@ create table avb_private.members (
 
 create table avb_private.member_audit (
   audit_id     bigint generated always as identity primary key,
-  user_id      uuid not null,
+  user_id      text not null,
   action       text not null,
   old_role     text,
   new_role     text,
@@ -65,7 +72,7 @@ create index on avb_private.targets (assignment_key);
 
 create table avb_private.mutations (
   mutation_id  uuid primary key,
-  actor_id     uuid not null,
+  actor_id     text not null,
   request_hash bytea not null,
   response     jsonb not null,
   created_at   timestamptz not null default now()
@@ -79,7 +86,7 @@ create table avb_private.target_versions (
   action            text not null check (action in ('create', 'update', 'delete', 'restore', 'resolve')),
   accepted          boolean not null,  -- false: kept only as a conflict's incoming value
   payload           jsonb,             -- null: a deletion
-  actor_id          uuid not null,
+  actor_id          text not null,
   mutation_id       uuid not null references avb_private.mutations (mutation_id)
                       deferrable initially deferred,
   created_at        timestamptz not null default now()
@@ -102,7 +109,7 @@ create table avb_private.conflicts (
   status                text not null default 'open' check (status in ('open', 'resolved')),
   resolution            text check (resolution in ('keep_current', 'accept_incoming', 'merged')),
   resolution_version_id uuid references avb_private.target_versions (version_id),
-  resolved_by           uuid,
+  resolved_by           text,
   resolved_at           timestamptz,
   created_at            timestamptz not null default now(),
   check ((status = 'resolved') = (resolution is not null))
@@ -148,21 +155,24 @@ end $$;
 create trigger audit after insert or update or delete on avb_private.members
   for each row execute function avb_private.audit_member();
 
--- Maintainer-only (SQL console/Studio, never the app): no role but the owner can run it.
-create function avb_private.set_member(p_email text, p_role text, p_active boolean, p_display_name text default null)
-returns uuid language plpgsql set search_path = '' as $$
-declare v_id uuid;
+-- Maintainer-only (Neon SQL Editor or psql as the owner, never the app): no other role can run it.
+-- Takes the user id AND the e-mail, which must name the same Better Auth account. Sign-up is
+-- open on Neon, so an e-mail alone could belong to someone who registered it first.
+create function avb_private.set_member(p_user_id text, p_email text, p_role text, p_active boolean,
+                                       p_display_name text default null)
+returns text language plpgsql set search_path = '' as $$
 begin
-  select id into v_id from auth.users where lower(email) = lower(p_email);
-  if v_id is null then
-    raise exception 'avb:no_such_auth_user' using errcode = 'P0001', detail = p_email;
+  -- Switching someone off needs no auth account: theirs may already be deleted.
+  if p_active and not exists (select from neon_auth."user" u where u.id::text = p_user_id and lower(u.email) = lower(p_email)) then
+    raise exception 'avb:no_such_auth_user' using errcode = 'P0001',
+      detail = 'No Better Auth user has both that id and that e-mail.';
   end if;
   insert into avb_private.members (user_id, role, is_active, display_name)
-  values (v_id, p_role, p_active, coalesce(p_display_name, ''))
+  values (p_user_id, p_role, p_active, coalesce(p_display_name, ''))
   on conflict (user_id) do update
     set role = excluded.role, is_active = excluded.is_active, updated_at = now(),
         display_name = coalesce(p_display_name, avb_private.members.display_name);
-  return v_id;
+  return p_user_id;
 end $$;
 
 -- ---------------------------------------------------------------- helpers
@@ -176,7 +186,7 @@ end $$;
 -- The live membership check: a still-valid token of a revoked user stops here.
 create function avb_private.current_member() returns avb_private.members
 language plpgsql stable set search_path = '' as $$
-declare v_uid uuid := auth.uid(); m avb_private.members;
+declare v_uid text := nullif(auth.user_id(), ''); m avb_private.members;
 begin
   if v_uid is null then perform avb_private.fail('not_authenticated', null, '42501'); end if;
   select * into m from avb_private.members where user_id = v_uid and is_active;
@@ -184,13 +194,10 @@ begin
   return m;
 end $$;
 
-create function avb_private.require_admin_aal2(m avb_private.members) returns void
+create function avb_private.require_admin(m avb_private.members) returns void
 language plpgsql stable set search_path = '' as $$
 begin
   if m.role <> 'admin' then perform avb_private.fail('admin_required', null, '42501'); end if;
-  if (auth.jwt() ->> 'aal') is distinct from 'aal2' then
-    perform avb_private.fail('aal2_required', null, '42501');
-  end if;
 end $$;
 
 create function avb_private.check_keys(p_obj jsonb, p_allowed text[], p_what text) returns void
@@ -386,7 +393,7 @@ language sql set search_path = '' as $$
 $$;
 
 create function avb_private.add_version(p_target bigint, p_parent uuid, p_action text, p_accepted boolean,
-                                        p_payload jsonb, p_actor uuid, p_mutation uuid) returns uuid
+                                        p_payload jsonb, p_actor text, p_mutation uuid) returns uuid
 language sql set search_path = '' as $$
   insert into avb_private.target_versions (target_id, parent_version_id, action, accepted, payload, actor_id, mutation_id)
   values (p_target, p_parent, p_action, p_accepted, p_payload, p_actor, p_mutation)
@@ -396,7 +403,7 @@ $$;
 -- Keep an incoming value that can't be applied. The same value already waiting on
 -- this target coalesces into that conflict; nothing is ever dropped.
 create function avb_private.open_conflict(t avb_private.targets, p_kind text, p_base uuid, p_action text,
-                                          p_incoming jsonb, p_actor uuid, p_mutation uuid) returns jsonb
+                                          p_incoming jsonb, p_actor text, p_mutation uuid) returns jsonb
 language plpgsql set search_path = '' as $$
 declare v_id uuid; v_kind text; v_incoming uuid;
 begin
@@ -556,7 +563,7 @@ create function avb_private.apply_delete_assignment(m avb_private.members, p_mut
 language plpgsql set search_path = '' as $$
 declare t avb_private.targets; v_rev bigint; v_version uuid;
 begin
-  perform avb_private.require_admin_aal2(m);
+  perform avb_private.require_admin(m);
   perform avb_private.check_keys(p_op, array['op', 'assignment_key', 'expected_aggregate_rev'], 'operation');
   t := avb_private.assignment_target(p_op);
   v_rev := avb_private.int_field(p_op, 'expected_aggregate_rev', 0, 9007199254740991);
@@ -575,7 +582,7 @@ create function avb_private.apply_restore_assignment(m avb_private.members, p_mu
 language plpgsql set search_path = '' as $$
 declare t avb_private.targets; v_rev bigint; v_version uuid; v_payload jsonb;
 begin
-  perform avb_private.require_admin_aal2(m);
+  perform avb_private.require_admin(m);
   perform avb_private.check_keys(p_op, array['op', 'assignment_key', 'expected_aggregate_rev'], 'operation');
   t := avb_private.assignment_target(p_op);
   v_rev := avb_private.int_field(p_op, 'expected_aggregate_rev', 0, 9007199254740991);
@@ -610,7 +617,7 @@ begin
   -- A deletion attempt that lost its race is the admin's to close, and it can only be
   -- closed. To delete, send delete_assignment again against the current revision.
   if c.kind = 'assignment_delete_stale' then
-    perform avb_private.require_admin_aal2(m);
+    perform avb_private.require_admin(m);
     if v_res <> 'keep_current' then perform avb_private.fail('use_delete_assignment', null, '42501'); end if;
   end if;
 
@@ -813,7 +820,7 @@ language plpgsql stable security definer set search_path = '' as $$
 declare m avb_private.members := avb_private.current_member();
 begin
   return jsonb_build_object('protocol_version', 1, 'user_id', m.user_id, 'role', m.role,
-    'display_name', m.display_name, 'aal', coalesce(auth.jwt() ->> 'aal', 'aal1'));
+    'display_name', m.display_name);
 end $$;
 
 create function avb_private.team_members() returns jsonb
@@ -825,7 +832,7 @@ begin
                      from avb_private.members x), '[]');
 end $$;
 
--- ---------------------------------------------------------------- what PostgREST sees
+-- ---------------------------------------------------------------- what the Data API sees
 
 create function public.avb_sync_apply(p_request jsonb) returns jsonb
 language sql security invoker set search_path = '' as $$ select avb_private.sync_apply(p_request) $$;
@@ -842,8 +849,8 @@ language sql stable security invoker set search_path = '' as $$ select avb_priva
 
 -- ---------------------------------------------------------------- grants, last so nothing is missed
 
--- Supabase's default privileges hand new public functions to anon, authenticated and
--- service_role, and Postgres hands every function to PUBLIC: take all of that back.
+-- Postgres hands every function to PUBLIC, and Neon's optional "Grant public schema
+-- access" adds default privileges for authenticated: take all of that back.
 do $$
 declare f regprocedure;
 begin
@@ -851,11 +858,11 @@ begin
     select p.oid::regprocedure from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'avb_private' or (n.nspname = 'public' and p.proname like 'avb\_%')
   loop
-    execute format('revoke all on function %s from public, anon, authenticated, service_role', f);
+    execute format('revoke all on function %s from public, anonymous, authenticated', f);
   end loop;
 end $$;
-revoke all on all tables in schema avb_private from public, anon, authenticated, service_role;
-revoke all on all sequences in schema avb_private from public, anon, authenticated, service_role;
+revoke all on all tables in schema avb_private from public, anonymous, authenticated;
+revoke all on all sequences in schema avb_private from public, anonymous, authenticated;
 
 grant execute on function
   public.avb_sync_apply(jsonb), public.avb_sync_pull(jsonb), public.avb_target_history(jsonb),

@@ -1,6 +1,6 @@
 'use strict';
 // "What was read" (assignment.rows and read.skipped) as source_line / source_skip
-// targets. Same algorithm as the reviewed reference, tests/supabase/roundtrip.js:
+// targets. Same algorithm as the reviewed reference, tests/db/roundtrip.js:
 // each part's JSON stays under BUDGET bytes (room for jsonb's spacing under 32 KiB);
 // a line splits by whole cells first, then inside a cell by code point. Nothing is cut.
 

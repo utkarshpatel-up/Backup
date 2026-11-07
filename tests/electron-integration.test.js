@@ -84,7 +84,7 @@ test('account IPC accepts only typed bounded actions and returns safe errors', a
   for (const [action, args] of [
     ['arbitrary', {}], ['status', { token: 'x' }], ['signIn', { email: 'a', password: 'b', url: 'https://evil.invalid' }],
     ['deleteAssignment', { id: ID, rev: -1 }], ['commit', { baseRev: 1, snapshot: {}, busy: ['bad'] }],
-    ['mfaVerify', { code: 123456 }], ['protect', { assignmentId: ID }],
+    ['mfaVerify', { code: '123456' }], ['signUp', { email: 'a@b.c', password: 'pw' }], ['setConfig', { enabled: true, url: 'https://x.test', key: 'k' }], ['protect', { assignmentId: ID }],
     ['commit', { baseRev: 1, snapshot: JSON.parse('{"__proto__":{}}') }],
   ]) assert.equal((await invoke(eventFor(w), action, args)).error.code, 'invalid_arguments');
   assert.equal((await invoke(eventFor(windowFixture()), 'signIn', { email: 'a', password: 'b' })).error.code, 'untrusted_frame');
@@ -149,7 +149,7 @@ test('preload commits the focused field before flushing and hides callback error
   assert.equal(status.phase, 'offline');
 });
 
-test('sync host uses Electron transport and startup errors leave local mode available', async () => {
+test('sync host forces redirect:error and omitted credentials on its fetch, and startup errors leave local mode available', async () => {
   const calls = [];
   class Engine {
     constructor(args) { this.args = args; }
@@ -157,7 +157,7 @@ test('sync host uses Electron transport and startup errors leave local mode avai
     status() { return { mode: 'local' }; }
     flushLocal() { calls.push('local disk barrier'); }
   }
-  const host = createSyncHost({ dir: '/tmp/test', safeStorage: {}, net: { fetch: (...a) => { calls.push(a); return Promise.resolve('ok'); } }, Engine });
+  const host = createSyncHost({ dir: '/tmp/test', safeStorage: {}, fetch: (...a) => { calls.push(a); return Promise.resolve('ok'); }, Engine });
   assert.equal(host.engine.didInit, true);
   assert.equal(calls.length, 0, 'initialization does not itself send any request');
   await host.engine.args.fetch('https://team.invalid', { redirect: 'follow', credentials: 'include' });

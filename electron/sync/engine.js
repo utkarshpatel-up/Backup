@@ -1,6 +1,6 @@
 'use strict';
 // Account mode: one signed-in team account, its encrypted offline cache and its
-// durable upload queue. Main process only. See supabase/SYNC_CONTRACT.md for the
+// durable upload queue. Main process only. See db/SYNC_CONTRACT.md for the
 // server rules this follows.
 //
 // Per target the engine keeps what the server last said (`server[id]`) and, while
@@ -22,7 +22,7 @@ const EventEmitter = require('node:events');
 const nodeCrypto = require('node:crypto');
 const nodeFs = require('node:fs');
 const path = require('node:path');
-const { Client, SyncError, parseServerUrl, checkPublishableKey, jwtClaims } = require('./client');
+const { Client, SyncError, parseBaseUrl, jwtClaims } = require('./client');
 const { SealedFile, SessionStore, writeAtomic, osProtectionAvailable } = require('./vault');
 const { fromSnapshot, inScope, toView, canon, tid } = require('./model');
 const { MAX_OPS, jsonbBytes, CHILD_TYPES } = require('./spec');
@@ -66,25 +66,29 @@ class SyncEngine extends EventEmitter {
     this.timer = null;
     this.backoff = 0;
     this.outcomes = new Map();   // mutation_id -> {ok, results|error}
-    this.pendingFactor = null;
   }
 
   /* ------------------------------------------------------------ config */
 
+  /**
+   * The Neon project's two addresses. `url` is not stored: it names the server for the
+   * account cache and session (both addresses, so changing either is another server).
+   */
   config() {
-    try {
-      const c = JSON.parse(this.fs.readFileSync(this.cfgFile, 'utf8'));
-      return { enabled: !!c.enabled, url: typeof c.url === 'string' ? c.url : '', key: typeof c.key === 'string' ? c.key : '' };
-    } catch (_) { return { enabled: false, url: '', key: '' }; }
+    let c = {};
+    try { c = JSON.parse(this.fs.readFileSync(this.cfgFile, 'utf8')) || {}; } catch (_) { /* not set up */ }
+    const authUrl = typeof c.authUrl === 'string' ? c.authUrl : '';
+    const dataUrl = typeof c.dataUrl === 'string' ? c.dataUrl : '';
+    return { enabled: !!c.enabled && !!authUrl && !!dataUrl, authUrl, dataUrl, url: authUrl && dataUrl ? `${authUrl} ${dataUrl}` : '' };
   }
 
-  setConfig({ enabled, url, key }) {
+  setConfig({ enabled, authUrl, dataUrl }) {
     if (this.acct || this.session) throw new SyncError('config', 'signed_in', 'Sign out before changing the server or turning account mode off.');
     if (this.protected) throw new SyncError('config', 'busy', 'Finish or put aside the backup that is set up first.');
-    const next = { enabled: !!enabled, url: '', key: '' };
-    if (url || key || enabled) {
-      next.url = parseServerUrl(url);
-      next.key = checkPublishableKey(key);
+    const next = { enabled: !!enabled, authUrl: '', dataUrl: '' };
+    if (authUrl || dataUrl || enabled) {
+      next.authUrl = parseBaseUrl(authUrl, 'Auth URL');
+      next.dataUrl = parseBaseUrl(dataUrl, 'Data API URL');
     }
     writeAtomic(this.fs, this.cfgFile, JSON.stringify(next, null, 2));
     this.gen += 1;   // an unfinished sign-in belongs to the previous configuration
@@ -92,16 +96,16 @@ class SyncEngine extends EventEmitter {
     return this.publicConfig();
   }
 
-  /** What the renderer may see of the config: the publishable key is public, but it needs no more than a hint. */
+  /** What the renderer may see of the config: both addresses are public. */
   publicConfig() {
     const c = this.config();
-    return { enabled: c.enabled, url: c.url, keyHint: c.key ? `${c.key.slice(0, 15)}…` : '' };
+    return { enabled: c.enabled, authUrl: c.authUrl, dataUrl: c.dataUrl };
   }
 
   client() {
     const c = this.config();
-    if (!c.enabled || !c.url || !c.key) throw new SyncError('config', 'not_configured', 'Account mode is not set up.');
-    return new Client({ origin: c.url, apikey: c.key, fetch: this.fetchImpl });
+    if (!c.enabled) throw new SyncError('config', 'not_configured', 'Account mode is not set up.');
+    return new Client({ authUrl: c.authUrl, dataUrl: c.dataUrl, fetch: this.fetchImpl });
   }
 
   /* ------------------------------------------------------------ start, sign in, sign out */
@@ -156,7 +160,6 @@ class SyncEngine extends EventEmitter {
     this.session = null;
     this.views.clear();
     this.outcomes.clear();
-    this.pendingFactor = null;
     if (this.timer) { this.clearT(this.timer); this.timer = null; }
     this.emit('reset');
   }
@@ -167,6 +170,19 @@ class SyncEngine extends EventEmitter {
   flushLocal() {
     if (this.acct) this._save();
     return { ok: true };
+  }
+
+  /**
+   * Create a Better Auth account (Neon cannot restrict sign-up, so this grants nothing).
+   * Returns the e-mail to pass to the maintainer, who adds the account by id and e-mail.
+   */
+  async signUp(email, password, name) {
+    if (typeof email !== 'string' || typeof password !== 'string' || typeof name !== 'string' || !email.includes('@')
+      || password.length < 8 || password.length > 1024 || email.length > 320 || !name.trim() || name.length > 200) {
+      throw new SyncError('config', 'bad_login', 'Enter your name, e-mail and a password of at least 8 characters.');
+    }
+    await this.client().signUp(email.trim(), password, name.trim());
+    return { ok: true, email: email.trim() };
   }
 
   async signIn(email, password) {
@@ -183,13 +199,13 @@ class SyncEngine extends EventEmitter {
     const gen = this.gen;
     const tok = await client.signIn(email.trim(), password);
     try { this._live(gen); } catch (e) {
-      if (tok && typeof tok.access_token === 'string') client.signOut(tok.access_token).catch(() => {});
+      if (tok && typeof tok.refresh_token === 'string') client.signOut(tok.refresh_token).catch(() => {});
       throw e;
     }
     const session = this._sessionFrom(c.url, tok);
     let me;
     try { me = await client.rpc(session.access_token, 'avb_me'); this._live(gen); } catch (e) {
-      client.signOut(session.access_token).catch(() => {});
+      client.signOut(session.refresh_token).catch(() => {});
       if (e.kind === 'revoked') throw new SyncError('revoked', 'not_member', 'This account is not an active team member. Ask the maintainer to add you.');
       throw e;
     }
@@ -199,14 +215,14 @@ class SyncEngine extends EventEmitter {
       if (!this.acct) this._open(c.url, me.user_id);
       this.sessions.save(session);
     } catch (e) {
-      client.signOut(session.access_token).catch(() => {});
+      client.signOut(session.refresh_token).catch(() => {});
       if (this.acct && !this.session) this._close();
       throw e;
     }
     this.gen += 1;   // anything still in flight from before this sign-in is stale now
     this.session = session;
     const d = this.acct.data;
-    d.identity = { role: me.role, display_name: me.display_name, aal: me.aal, verifiedAt: new Date(this.now()).toISOString() };
+    d.identity = { role: me.role, display_name: me.display_name, verifiedAt: new Date(this.now()).toISOString() };
     d.locked = false;   // the server just accepted this person again: held work may go
     this._save();
     this.phase = 'online';
@@ -227,7 +243,7 @@ class SyncEngine extends EventEmitter {
   async signOut() {
     if (this.protected) throw new SyncError('config', 'busy', 'Finish or put aside the backup that is set up before signing out.');
     const pending = this.acct ? this.pendingCount() : 0;
-    const token = this.session && this.session.access_token;
+    const token = this.session && this.session.refresh_token;   // the session cookie ends the server session
     let client;
     if (token) { try { client = this.client(); } catch (_) { /* still sign out locally if config is damaged */ } }
     // Invalidate local access before waiting for the old server. No response to this
@@ -282,8 +298,6 @@ class SyncEngine extends EventEmitter {
     return this._authed((client, token) => client.rpc(token, name, request, raw));
   }
 
-  async _goTrue(fn) { return this._authed(fn); }
-
   /** Every answer is checked against the account it was asked for before anyone uses it. */
   async _authed(fn) {
     const gen = this.gen;
@@ -311,12 +325,12 @@ class SyncEngine extends EventEmitter {
     const local = d ? Object.entries(d.local) : [];
     return {
       mode: c.enabled ? 'account' : 'local',
-      configured: !!(c.url && c.key),
+      configured: !!c.url,
       config: this.publicConfig(),
       encryption: osProtectionAvailable(this.safeStorage),
       signedIn: !!this.acct,
       phase: this.phase,
-      user: d && d.identity ? { displayName: d.identity.display_name, role: d.identity.role, aal: d.identity.aal, verifiedAt: d.identity.verifiedAt } : null,
+      user: d && d.identity ? { displayName: d.identity.display_name, role: d.identity.role, verifiedAt: d.identity.verifiedAt } : null,
       locked: !!(d && d.locked),
       pending: local.filter(([, l]) => !l.held && !l.error).length,
       sending: local.filter(([, l]) => l.inflight).length,
@@ -540,7 +554,7 @@ class SyncEngine extends EventEmitter {
     const me = await this._call('avb_me');
     if (this.acct !== acct) return;
     if (!me || me.user_id !== acct.userId) throw new SyncError('protocol', 'other_user', 'The server answered for another account.');
-    acct.data.identity = { role: me.role, display_name: me.display_name, aal: me.aal, verifiedAt: new Date(this.now()).toISOString() };
+    acct.data.identity = { role: me.role, display_name: me.display_name, verifiedAt: new Date(this.now()).toISOString() };
     if (acct.data.locked) { acct.data.locked = false; }
     this._save();
     this._setPhase('online');
@@ -893,10 +907,9 @@ class SyncEngine extends EventEmitter {
     if (!this.acct || this.acct.data.locked) throw new SyncError('config', 'signed_out', 'Not signed in.');
     const me = await this._call('avb_me');   // online, now: a cached role never unlocks this
     if (!me || me.user_id !== this.acct.userId) throw new SyncError('protocol', 'other_user', 'The server answered for another account.');
-    this.acct.data.identity = { role: me.role, display_name: me.display_name, aal: me.aal, verifiedAt: new Date(this.now()).toISOString() };
+    this.acct.data.identity = { role: me.role, display_name: me.display_name, verifiedAt: new Date(this.now()).toISOString() };
     this._save();
     if (me.role !== 'admin') throw new SyncError('forbidden', 'admin_required', 'Only an admin can delete or restore a whole schedule.');
-    if (me.aal !== 'aal2') throw new SyncError('forbidden', 'aal2_required', 'Confirm with your authenticator code first.');
   }
 
   /**
@@ -928,50 +941,6 @@ class SyncEngine extends EventEmitter {
       throw e;
     }
     return { ok: true };
-  }
-
-  /* ------------------------------------------------------------ MFA (TOTP) */
-
-  async mfaStatus() {
-    const user = await this._goTrue((c, t) => c.user(t));
-    const factors = (user && user.factors || []).filter((f) => f.factor_type === 'totp');
-    const verified = factors.find((f) => f.status === 'verified');
-    return { enrolled: !!verified, aal: this.acct && this.acct.data.identity ? this.acct.data.identity.aal : null };
-  }
-
-  async mfaEnroll() {
-    const r = await this._goTrue((c, t) => c.enrollTotp(t));
-    if (!r || !r.id || !r.totp) throw new SyncError('protocol', 'protocol', 'The server did not start the enrolment (is TOTP turned on in Auth?).');
-    this.pendingFactor = r.id;
-    const qr = typeof r.totp.qr_code === 'string' && /^data:image\/svg\+xml/.test(r.totp.qr_code) ? r.totp.qr_code : null;
-    return { qr, secret: String(r.totp.secret || ''), uri: String(r.totp.uri || '') };
-  }
-
-  async mfaVerify(code) {
-    if (!/^\d{6}$/.test(String(code || ''))) throw new SyncError('refused', 'bad_code', 'Enter the 6-digit code from the authenticator app.');
-    const gen = this.gen;
-    let factorId = this.pendingFactor;
-    if (!factorId) {
-      const user = await this._goTrue((c, t) => c.user(t));
-      const f = (user && user.factors || []).find((x) => x.factor_type === 'totp' && x.status === 'verified');
-      if (!f) throw new SyncError('refused', 'no_factor', 'Set up the authenticator first.');
-      factorId = f.id;
-    }
-    const tok = await this._goTrue(async (c, t) => {
-      const ch = await c.challenge(t, factorId);
-      return c.verify(t, factorId, ch.id, String(code));
-    });
-    this._live(gen);
-    const s = this._sessionFrom(this.session.origin, tok);
-    if (s.userId !== this.session.userId) throw new SyncError('protocol', 'bad_token', 'The server returned another account.');
-    this.sessions.save(s);
-    this.session = s;
-    this.pendingFactor = null;
-    const me = await this._call('avb_me');
-    this.acct.data.identity = { role: me.role, display_name: me.display_name, aal: me.aal, verifiedAt: new Date(this.now()).toISOString() };
-    this._save();
-    this.emit('status');
-    return this.status();
   }
 
   /* ------------------------------------------------------------ one-time import of this computer's data */

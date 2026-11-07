@@ -4,7 +4,7 @@
 set client_min_messages = warning;
 
 create schema t;
-grant usage on schema t to anon, authenticated, service_role, postgres;
+grant usage on schema t to anonymous, authenticated, neondb_owner;
 create table t.results (id serial primary key, name text, passed boolean, detail text);
 
 create function t.ok(p_name text, p_pass boolean, p_detail text default null) returns void
@@ -13,10 +13,11 @@ language sql security definer set search_path = '' as $$
 create function t.eq(p_name text, p_got anyelement, p_want anyelement) returns void
 language sql as $$ select t.ok(p_name, p_got is not distinct from p_want, format('got %s want %s', p_got, p_want)) $$;
 
-create function t.uid(p_name text) returns uuid language sql stable security definer set search_path = '' as $$
-  select id from auth.users where email = p_name || '@test.invalid' $$;
+create function t.uid(p_name text) returns text language sql stable security definer set search_path = '' as $$
+  select id from neon_auth."user" where email = p_name || '@test.invalid' $$;
 
--- A verified JWT as PostgREST would present it: sub and aal, plus claims that must be ignored.
+-- A verified JWT as the Data API presents it: sub and role, plus claims that must be ignored
+-- (aal, a Supabase leftover, and admin roles in metadata). p_aal is only ever an ignored claim.
 create function t.login(p_name text, p_aal text default 'aal1', p_role text default 'authenticated') returns void
 language plpgsql as $$
 begin
@@ -26,8 +27,8 @@ begin
 end $$;
 create function t.anon() returns void language plpgsql as $$
 begin
-  perform set_config('request.jwt.claims', '{"role":"anon"}', false);
-  perform set_config('role', 'anon', false);
+  perform set_config('request.jwt.claims', '{}', false);   -- no role claim: the Data API's anonymous
+  perform set_config('role', 'anonymous', false);
 end $$;
 create function t.super() returns void language plpgsql as $$
 begin
@@ -90,22 +91,22 @@ end $$;
 create function t.open_conflicts(p_a uuid default null) returns jsonb language sql as $$
   select public.avb_conflicts(jsonb_strip_nulls(jsonb_build_object('protocol_version', 1, 'assignment_key', p_a, 'limit', 100))) -> 'items' $$;
 
-grant execute on all functions in schema t to anon, authenticated, service_role, postgres;
-grant select on t.results to anon, authenticated, service_role, postgres;
+grant execute on all functions in schema t to anonymous, authenticated, neondb_owner;
+grant select on t.results to anonymous, authenticated, neondb_owner;
 
-insert into auth.users (email) values
+insert into neon_auth."user" (email) values
   ('admin1@test.invalid'), ('op1@test.invalid'), ('op2@test.invalid'), ('gone@test.invalid'),
   ('stranger@test.invalid'), ('deleted@test.invalid');
 
 -- ---------------------------------------------------------------- bootstrap by the maintainer
 
-set role postgres;
+set role neondb_owner;
 \o /dev/null
-select avb_private.set_member('admin1@test.invalid', 'admin', true, 'Admin One');
-select avb_private.set_member('op1@test.invalid', 'operator', true, 'Op One');
-select avb_private.set_member('op2@test.invalid', 'operator', true, 'Op Two');
-select avb_private.set_member('gone@test.invalid', 'operator', true, 'Soon Gone');
-select avb_private.set_member('deleted@test.invalid', 'operator', true, 'Deleted Later');
+select avb_private.set_member(t.uid('admin1'), 'admin1@test.invalid', 'admin', true, 'Admin One');
+select avb_private.set_member(t.uid('op1'), 'op1@test.invalid', 'operator', true, 'Op One');
+select avb_private.set_member(t.uid('op2'), 'op2@test.invalid', 'operator', true, 'Op Two');
+select avb_private.set_member(t.uid('gone'), 'gone@test.invalid', 'operator', true, 'Soon Gone');
+select avb_private.set_member(t.uid('deleted'), 'deleted@test.invalid', 'operator', true, 'Deleted Later');
 \o
 reset role;
 
@@ -118,7 +119,7 @@ begin
    where s.nspname = 'avb_private' and c.relkind = 'r' and not c.relrowsecurity;
   perform t.eq('catalog: RLS on for every private table', n, 0);
 
-  select count(*) into n from pg_class c join pg_namespace s on s.oid = c.relnamespace, unnest(array['anon', 'authenticated', 'service_role', 'public']) r(role)
+  select count(*) into n from pg_class c join pg_namespace s on s.oid = c.relnamespace, unnest(array['anonymous', 'authenticated', 'public']) r(role)
    where s.nspname = 'avb_private' and c.relkind in ('r', 'S')
      and (case when r.role = 'public' then c.relacl is not null and exists (
             select from aclexplode(c.relacl) a where a.grantee = 0)
@@ -138,10 +139,10 @@ begin
    where s.nspname = 'public' and p.proname like 'avb\_%' and p.prosecdef;
   perform t.eq('catalog: no definer function in the exposed schema', n, 0);
 
-  select count(*) into n from pg_proc p join pg_namespace s on s.oid = p.pronamespace, unnest(array['anon', 'service_role']) r(role)
+  select count(*) into n from pg_proc p join pg_namespace s on s.oid = p.pronamespace, unnest(array['anonymous']) r(role)
    where (s.nspname = 'avb_private' or (s.nspname = 'public' and p.proname like 'avb\_%'))
      and has_function_privilege(r.role, p.oid, 'execute');
-  perform t.eq('catalog: anon and service_role can execute no avb function', n, 0);
+  perform t.eq('catalog: anonymous can execute no avb function', n, 0);
 
   select count(*) into n from pg_proc p join pg_namespace s on s.oid = p.pronamespace
    where (s.nspname = 'avb_private' or (s.nspname = 'public' and p.proname like 'avb\_%'))
@@ -184,10 +185,6 @@ begin
   perform set_config('request.jwt.claims', '', false);
   perform t.raises('authenticated role, no uid: denied', 'select public.avb_me()', 'avb:not_authenticated');
 
-  -- service_role is not an app identity: no execute, and it cannot touch private tables.
-  perform t.login('admin1', 'aal2', 'service_role');
-  perform t.raises('service_role: no RPC', 'select public.avb_me()', '42501');
-  perform t.raises('service_role: no private tables', 'select * from avb_private.members', '42501');
   perform t.super();
 end $$;
 
@@ -204,7 +201,7 @@ begin
   r := t.apply(jsonb_build_array(t.c_assign(a, t.meta('Event')), t.c_row(a, r1, t.row('a', 'one')), t.c_row(a, r2, t.row('b', 'two'))));
   perform t.eq('operator: creates assignment and rows', r #>> '{results,2,status}', 'applied');
   perform t.eq('server sets the actor to the caller',
-    (public.avb_target_history(jsonb_build_object('protocol_version', 1, 'type', 'session', 'key', r1)) #>> '{items,0,actor_id}')::uuid, t.uid('op1'));
+    (public.avb_target_history(jsonb_build_object('protocol_version', 1, 'type', 'session', 'key', r1)) #>> '{items,0,actor_id}'), t.uid('op1'));
 
   perform t.login('op2');
   perform t.eq('other operator reads the whole team''s schedule', t.head('session', r1::text) #>> '{payload,topic}', 'one');
@@ -272,22 +269,20 @@ begin
   perform t.raises('op: direct SELECT member audit', 'select * from avb_private.member_audit', '42501');
   perform t.raises('op: helper denied', format('select avb_private.apply_delete_assignment(null, %L, %L)', gen_random_uuid(), t.del_a(a, rev)), '42501');
   perform t.raises('op: touch denied', 'select avb_private.touch(1)', '42501');
-  perform t.raises('op: set_member denied', $s$select avb_private.set_member('op1@test.invalid', 'admin', true)$s$, '42501');
+  perform t.raises('op: set_member denied', $s$select avb_private.set_member('x', 'op1@test.invalid', 'admin', true)$s$, '42501');
 
-  -- Admin, aal1: refused; no aal claim: refused.
+  -- A token's `sub` must be present: no sub, no access, whatever else it carries.
+  perform set_config('request.jwt.claims', '{"role":"authenticated","email":"admin1@test.invalid"}', false);
+  perform t.raises('token without sub: refused', t.q(t.del_a(a, 0)), 'avb:not_authenticated');
   perform t.login('admin1', 'aal1');
-  h := t.head('assignment', a::text); rev := (h ->> 'aggregate_rev')::bigint;
-  perform t.raises('admin aal1: delete refused', t.q(t.del_a(a, rev)), 'avb:aal2_required');
-  perform t.raises('admin aal1: restore refused', t.q(t.res_a(a, rev)), 'avb:aal2_required');
-  perform set_config('request.jwt.claims', jsonb_build_object('sub', t.uid('admin1'), 'role', 'authenticated')::text, false);
-  perform t.raises('admin without aal: delete refused', t.q(t.del_a(a, rev)), 'avb:aal2_required');
   perform t.eq('assignment survived all of that', (t.head('assignment', a::text) ->> 'deleted')::boolean, false);
   perform t.eq('child survived all of that', t.head('session', r1::text) #>> '{payload,topic}', 'kept');
 
-  -- Admin, aal2: allowed, children untouched, restore brings all back.
-  perform t.login('admin1', 'aal2');
+  -- Admin (no MFA needed): allowed, children untouched, restore brings all back.
+  perform t.login('admin1', 'aal1');
+  h := t.head('assignment', a::text); rev := (h ->> 'aggregate_rev')::bigint;
   r := t.one(t.del_a(a, rev));
-  perform t.eq('admin aal2: delete applied', r ->> 'status', 'applied');
+  perform t.eq('admin: delete applied', r ->> 'status', 'applied');
   h := t.head('assignment', a::text);
   perform t.eq('assignment tombstone visible', (h ->> 'deleted')::boolean, true);
   perform t.eq('no cascade: child head unchanged', t.head('session', r1::text) #>> '{payload,topic}', 'kept');
@@ -298,7 +293,7 @@ begin
 
   perform t.login('admin1', 'aal2');
   r := t.one(t.res_a(a, (h ->> 'aggregate_rev')::bigint));
-  perform t.eq('admin aal2: restore applied', r ->> 'status', 'applied');
+  perform t.eq('admin: restore applied', r ->> 'status', 'applied');
   perform t.eq('restore brings metadata back', t.head('assignment', a::text) #>> '{payload,label}', 'Keep me');
   perform t.super();
 end $$;
@@ -324,8 +319,8 @@ begin
   perform t.apply(jsonb_build_array(t.c_assign(a, t.meta('By gone')), t.c_row(a, r1, t.row('a', 'x'))));
   v_base := t.head('session', r1::text) ->> 'head_version_id';
   perform t.super();
-  set local role postgres;
-  perform avb_private.set_member('gone@test.invalid', 'operator', false);
+  set local role neondb_owner;
+  perform avb_private.set_member(t.uid('gone'), 'gone@test.invalid', 'operator', false);
   perform t.super();
 
   perform t.login('gone', 'aal2');
@@ -340,19 +335,19 @@ begin
   perform t.eq('revoked upload wrote nothing', t.head('session', r1::text) #>> '{payload,topic}', 'x');
 
   perform t.super();
-  set local role postgres;
-  perform avb_private.set_member('admin1@test.invalid', 'operator', true);
+  set local role neondb_owner;
+  perform avb_private.set_member(t.uid('admin1'), 'admin1@test.invalid', 'operator', true);
   perform t.login('admin1', 'aal2');
   perform t.raises('demoted admin: delete refused at once', t.q(t.del_a(a, 0)), 'avb:admin_required');
   perform t.super();
-  set local role postgres;
-  perform avb_private.set_member('admin1@test.invalid', 'admin', true);
+  set local role neondb_owner;
+  perform avb_private.set_member(t.uid('admin1'), 'admin1@test.invalid', 'admin', true);
 
   -- Reactivate; the audit trail recorded each change, naming the database role.
-  perform avb_private.set_member('gone@test.invalid', 'operator', true);
+  perform avb_private.set_member(t.uid('gone'), 'gone@test.invalid', 'operator', true);
   select count(*) into n from avb_private.member_audit where user_id = t.uid('gone');
   perform t.eq('role changes are audited', n, 3);
-  perform t.eq('audit names the maintainer role', (select db_user from avb_private.member_audit where user_id = t.uid('gone') order by audit_id desc limit 1), 'postgres');
+  perform t.eq('audit names the maintainer role', (select db_user from avb_private.member_audit where user_id = t.uid('gone') order by audit_id desc limit 1), 'neondb_owner');
   perform t.raises('audit is append-only even for the owner', 'delete from avb_private.member_audit', 'avb:append_only');
   perform t.raises('versions are append-only even for the owner', 'update avb_private.target_versions set payload = null', 'avb:append_only');
   perform t.super();
@@ -360,19 +355,28 @@ begin
 end $$;
 
 do $$
-declare n int; v_id uuid := t.uid('deleted');
+declare n int; v_id text := t.uid('deleted');
 begin
-  set local role postgres;
+  set local role neondb_owner;
   perform t.raises('history cannot be truncated by the owner', 'truncate avb_private.mutations cascade', 'avb:append_only');
-  perform t.super();
 
-  -- Removing the login removes access, for a token that would still verify as well.
-  delete from auth.users where id = v_id;
-  perform t.ok('auth user removal drops membership', not exists (select from avb_private.members where user_id = v_id));
-  perform t.eq('and leaves an audit row', (select count(*)::int from avb_private.member_audit where user_id = v_id and action = 'DELETE'), 1);
-  perform set_config('request.jwt.claims', jsonb_build_object('sub', v_id, 'role', 'authenticated', 'aal', 'aal2')::text, false);
+  -- Sign-up is open on Neon: someone may register a future member's e-mail first. The
+  -- maintainer names the account by id as well, so that account is not the one let in.
+  perform t.raises('set_member refuses an e-mail that belongs to another id',
+    format('select avb_private.set_member(%L, %L, ''operator'', true)', t.uid('stranger'), 'op1@test.invalid'), 'avb:no_such_auth_user');
+  perform t.raises('set_member refuses an unknown id', $s$select avb_private.set_member('nobody', 'op1@test.invalid', 'operator', true)$s$, 'avb:no_such_auth_user');
+
+  -- A deleted Better Auth account can still be switched off (its last token lives ~15 min).
+  perform t.super();
+  delete from neon_auth."user" where id = v_id;
+  set local role neondb_owner;
+  perform avb_private.set_member(v_id, '', 'operator', false);
+  perform t.eq('switching off is audited', (select count(*)::int from avb_private.member_audit where user_id = v_id and action = 'UPDATE'), 1);
+  perform t.raises('and cannot switch back on without the account', format('select avb_private.set_member(%L, ''deleted@test.invalid'', ''operator'', true)', v_id), 'avb:no_such_auth_user');
+  perform t.super();
+  perform set_config('request.jwt.claims', jsonb_build_object('sub', v_id, 'role', 'authenticated')::text, false);
   perform set_config('role', 'authenticated', false);
-  perform t.raises('deleted user with a live token: denied', 'select public.avb_me()', 'avb:not_member');
+  perform t.raises('switched-off user with a live token: denied', 'select public.avb_me()', 'avb:not_member');
   perform t.super();
 
   -- RLS is the second lock: if a grant slips in one day, there is still no policy.
@@ -414,7 +418,7 @@ begin
   perform t.eq('conflict lists incoming', c #>> '{incoming,payload,topic}', 'op2 stale value');
   perform t.eq('conflict lists current', c #>> '{current_head,payload,topic}', 'op1 value');
   perform t.eq('conflict lists base', c #>> '{base,payload,topic}', 'base');
-  perform t.eq('conflict names who sent it', (c #>> '{incoming,actor_id}')::uuid, t.uid('op2'));
+  perform t.eq('conflict names who sent it', (c #>> '{incoming,actor_id}'), t.uid('op2'));
 
   -- Same stale value again: coalesced. Same as head: no conflict at all.
   perform t.eq('same stale value coalesces', t.one(t.u('session', r1::text, v_b1, t.row('a', 'op2 stale value'))) ->> 'conflict_id', v_cid);
@@ -512,8 +516,6 @@ begin
   perform t.raises('op cannot dismiss a delete attempt', t.q(t.resolve(r ->> 'conflict_id', t.head('assignment', a::text) ->> 'head_version_id', 'keep_current')), 'avb:admin_required');
   perform t.login('admin1', 'aal2');
   perform t.raises('admin cannot accept it either: redo the delete', t.q(t.resolve(r ->> 'conflict_id', t.head('assignment', a::text) ->> 'head_version_id', 'accept_incoming')), 'avb:use_delete_assignment');
-  perform t.login('admin1', 'aal1');
-  perform t.raises('admin aal1 cannot dismiss', t.q(t.resolve(r ->> 'conflict_id', t.head('assignment', a::text) ->> 'head_version_id', 'keep_current')), 'avb:aal2_required');
   perform t.login('admin1', 'aal2');
   perform t.one(t.resolve(r ->> 'conflict_id', t.head('assignment', a::text) ->> 'head_version_id', 'keep_current'));
 
@@ -751,7 +753,7 @@ create function t.line(p_a uuid, p_line int, p_part int, p_cells jsonb, p_cont b
 create function t.skip(p_a uuid, p_i int, p_days jsonb) returns jsonb language sql as $$
   select jsonb_build_object('op', 'create', 'type', 'source_skip', 'key', format('%s:%s', p_a, p_i), 'assignment_key', p_a,
     'payload', jsonb_build_object('index', p_i, 'days', p_days, 'reason', 'break', 'rowText', '20" Oct, Tue | us')) $$;
-grant execute on all functions in schema t to anon, authenticated, service_role, postgres;
+grant execute on all functions in schema t to anonymous, authenticated, neondb_owner;
 
 do $$
 declare

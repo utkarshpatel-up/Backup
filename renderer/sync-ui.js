@@ -257,7 +257,8 @@ function renderSyncPage() {
 function wireSyncPage() {
   const act = (id, fn) => $(id)?.addEventListener('click', async () => {
     try { syncUI.error = ''; await fn(); }
-    catch (_) { syncUI.error = 'Action could not be completed. Check the connection, account permissions and saved entries, then try again.'; }
+    // Account errors from preload carry a kind and a fixed, server-text-free message (ipc.js safeError): show it.
+    catch (e) { syncUI.error = e && e.kind && e.kind !== 'local' && e.message ? e.message : 'Action could not be completed. Check the connection, account permissions and saved entries, then try again.'; }
     render();
   });
   act('syncConfig', () => { const enabled = $('syncEnabled').checked; const c = { enabled, authUrl: enabled ? $('syncAuthUrl').value : '', dataUrl: enabled ? $('syncDataUrl').value : '' }; return syncTransition(() => window.api.sync.setConfig(c)); });

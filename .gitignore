@@ -11,3 +11,5 @@ __pycache__/
 .DS_Store
 .pytest_cache/
 .ffmpeg-mac/
+.neon
+.env.local

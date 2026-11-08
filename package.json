@@ -45,7 +45,8 @@
         "dmg"
       ],
       "artifactName": "AV-Backup-${version}-mac-${arch}.${ext}",
-      "icon": "renderer/assets/icon.icns"
+      "icon": "renderer/assets/icon.icns",
+      "x64ArchFiles": "Contents/Resources/python/vingest-core-*"
     },
     "win": {
       "target": [

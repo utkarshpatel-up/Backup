@@ -70,10 +70,11 @@ def check_app(app: Path, ceiling: tuple) -> list:
                     rel = path.relative_to(app)
                     problems.append(f"{rel} needs macOS {version[0]}.{version[1]}")
                     break
-    engine = app / "Contents" / "Resources" / "python" / "vingest-core"
-    if engine.exists():
-        problems += [f"engine: {p}" for p in macos_too_new(engine)]
-    else:
+    # One engine, or one per chip in a universal app (vingest-core-arm64, vingest-core-x64).
+    engines = sorted((app / "Contents" / "Resources" / "python").glob("vingest-core*"))
+    for engine in engines:
+        problems += [f"{engine.name}: {p}" for p in macos_too_new(engine)]
+    if not engines:
         problems.append("engine (Resources/python/vingest-core) is missing")
     return problems
 

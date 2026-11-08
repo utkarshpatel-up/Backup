@@ -36,9 +36,12 @@ function parseRelease(json, arch = process.arch) {
   if (!json || typeof json.tag_name !== 'string' || typeof json.html_url !== 'string' || !json.html_url.startsWith(PAGE_PREFIX)) {
     throw new Error('unexpected release');
   }
-  const dmg = (Array.isArray(json.assets) ? json.assets : []).find((a) => a && typeof a.name === 'string'
-    && a.name.endsWith(`-mac-${arch}.dmg`) && typeof a.browser_download_url === 'string'
-    && a.browser_download_url.startsWith(DOWNLOAD_PREFIX) && Number.isSafeInteger(a.size) && a.size > 0);
+  const ok = (a, suffix) => a && typeof a.name === 'string' && a.name.endsWith(suffix)
+    && typeof a.browser_download_url === 'string' && a.browser_download_url.startsWith(DOWNLOAD_PREFIX)
+    && Number.isSafeInteger(a.size) && a.size > 0;
+  const assets = Array.isArray(json.assets) ? json.assets : [];
+  // Releases from 1.7.2 carry one universal DMG; earlier ones one per chip.
+  const dmg = assets.find((a) => ok(a, '-mac-universal.dmg')) || assets.find((a) => ok(a, `-mac-${arch}.dmg`));
   return {
     version: json.tag_name.replace(/^v/, ''),
     notes: typeof json.body === 'string' ? json.body.slice(0, 20000) : '',

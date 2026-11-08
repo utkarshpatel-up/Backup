@@ -17,8 +17,11 @@ class PythonBridge {
 
   resolveCommands() {
     const exe = process.platform === 'win32' ? 'vingest-core.exe' : 'vingest-core';
-    const bundled = path.join(process.resourcesPath || '', 'python', exe);
-    if (fs.existsSync(bundled)) return [{ cmd: bundled, args: [] }];
+    // A universal Mac app carries one engine per chip (vingest-core-arm64 / -x64).
+    for (const name of [`${exe}-${process.arch}`, exe]) {
+      const bundled = path.join(process.resourcesPath || '', 'python', name);
+      if (fs.existsSync(bundled)) return [{ cmd: bundled, args: [] }];
+    }
 
     const script = path.join(__dirname, '..', 'python', 'main.py');
     if (process.env.VINGEST_PYTHON) {

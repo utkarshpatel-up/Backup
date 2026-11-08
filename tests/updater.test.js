@@ -37,6 +37,9 @@ test('parseRelease keeps only this repo\'s assets for this arch', () => {
   const foreign = release({ assets: [{ ...release().assets[0], browser_download_url: 'https://evil.example/x.dmg' }] });
   assert.equal(parseRelease(foreign, 'arm64').dmg, null);
   assert.throws(() => parseRelease(release({ html_url: 'https://evil.example/' })));
+  // From 1.7.2 one universal DMG serves both chips, and wins over a per-chip one.
+  const uni = { name: 'AV-Backup-1.7.2-mac-universal.dmg', size: 7, browser_download_url: `${REL}download/v1.7.2/AV-Backup-1.7.2-mac-universal.dmg` };
+  for (const arch of ['arm64', 'x64']) assert.equal(parseRelease(release({ assets: [...release().assets, uni] }), arch).dmg.name, uni.name);
 });
 
 function fakeUpdater({ size, bytes, json = release() }) {

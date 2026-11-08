@@ -20,7 +20,13 @@
       <span class="dot" id="engineDot"></span>
       <span id="engineText">Starting engine&hellip;</span>
     </div>
+    <div class="update" id="update" aria-live="polite"></div>
   </nav>
+  <dialog class="update-notes" id="updateNotes" aria-labelledby="updateNotesTitle">
+    <h3 id="updateNotesTitle"></h3>
+    <pre id="updateNotesBody"></pre>
+    <form method="dialog"><button class="primary">Close</button></form>
+  </dialog>
 
   <main class="main">
     <header class="topbar">
@@ -44,6 +50,7 @@
   <script src="schedule-ui.js"></script>
   <script src="report-ui.js"></script>
   <script src="sync-ui.js"></script>
+  <script src="update-ui.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

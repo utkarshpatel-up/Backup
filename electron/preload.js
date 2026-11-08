@@ -104,6 +104,16 @@ contextBridge.exposeInMainWorld('api', {
     onStatus: (fn) => subscribe('sync:status', fn),
   },
 
+  // In-app updates (electron/updater.js): fixed actions, no URLs from the page.
+  update: {
+    status: () => ipcRenderer.invoke('update:status'),
+    check: () => ipcRenderer.invoke('update:check'),
+    download: () => ipcRenderer.invoke('update:download'),
+    restart: () => ipcRenderer.invoke('update:restart'),
+    openPage: () => ipcRenderer.invoke('update:openPage'),
+    onStatus: (fn) => subscribe('update:status', fn),
+  },
+
   // A dropped File no longer carries .path (Electron 32+); ask for it here.
   pathForFile: (file) => webUtils.getPathForFile(file),
 

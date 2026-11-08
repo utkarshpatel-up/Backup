@@ -40,8 +40,8 @@ the app or the engine needs a newer macOS (`scripts/check_macos_min.py`). Never
 bundle Homebrew's ffmpeg: it is built for the build Mac's own macOS. `npm run dist:mac` uses the same
 flow once Node is installed. Each build targets the Mac's native architecture:
 
-- Apple Silicon: `AV Backup-1.0.0-mac-arm64.dmg`
-- Intel: `AV Backup-1.0.0-mac-x64.dmg`
+- Apple Silicon: `AV-Backup-<version>-mac-arm64.dmg`
+- Intel: `AV-Backup-<version>-mac-x64.dmg`
 
 Use a native Terminal on Apple Silicon (disable Open using Rosetta). Build each
 architecture on its matching Mac; these are separate installers, not a universal

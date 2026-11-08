@@ -323,6 +323,12 @@ responsive.
 | `python/vingest/master_sheet.py` | Schedule tables, drive scan and the event's .xlsx |
 | `python/vingest/server.py` | JSON-lines RPC loop |
 
+## Updates
+
+From 1.7.0 the app checks GitHub Releases at start-up and offers new versions in the
+sidebar, with the version's notes from [CHANGELOG.md](CHANGELOG.md). To publish one, see
+[docs/RELEASING.md](docs/RELEASING.md).
+
 ## Team account usage
 
 Open **Account**, enable team mode, enter the team's Neon **Auth URL** and **Data API

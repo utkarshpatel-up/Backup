@@ -465,3 +465,17 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 /* Account values and conflict alternatives remain readable without stretching the grid. */
 .sync-panel input { max-width: 100%; margin: 4px 6px 4px 0; }
 .sync-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+
+/* ------------------------------------------------------------------ in-app update (update-ui.js) */
+.update { margin: 8px 14px 0; padding: 9px 11px; border-radius: 8px; background: var(--panel-2); font-size: 11px; color: var(--muted); }
+.update:empty { display: none; }
+.update-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.update-err { color: var(--err); margin-top: 5px; }
+.update-notes {
+  width: min(640px, calc(100vw - 64px)); max-height: calc(100vh - 96px); padding: 16px 18px;
+  background: var(--panel); color: inherit; border: 1px solid var(--line); border-radius: var(--radius);
+}
+.update-notes::backdrop { background: color-mix(in srgb, #000 42%, transparent); }
+.update-notes h3 { margin: 0 0 10px; }
+.update-notes pre { white-space: pre-wrap; font: inherit; max-height: 60vh; overflow-y: auto; margin: 0 0 14px; }
+.update-notes form { display: flex; justify-content: flex-end; }

@@ -92,9 +92,9 @@ npm run dist:win
 
 Output (the version number matches `version` in `package.json`):
 
-- **`dist\AV Backup Setup <version>.exe`** — the installer. Copy it to the other
+- **`dist\AV-Backup-Setup-<version>.exe`** — the installer. Copy it to the other
   PC and run it. It installs for the current user only, so it needs no admin rights.
-- **`dist\AV Backup-<version>-win.zip`** — the portable copy. Nothing is installed:
+- **`dist\AV-Backup-<version>-win.zip`** — the portable copy. Nothing is installed:
   unzip it anywhere you can write (Desktop, Documents, a USB drive) and run
   `AV Backup.exe` inside. Use this where installers are blocked. Settings are
   kept in `%APPDATA%\AV Backup` either way.

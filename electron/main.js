@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage, safeStorage, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -11,6 +11,7 @@ const { FlushHandshake, CloseCoordinator } = require('./close-coordinator');
 const { createSyncHost } = require('./sync/host');
 const { registerSyncIpc } = require('./sync/ipc');
 const { writeAtomic } = require('./sync/vault');
+const { createUpdater } = require('./updater');
 app.setName('AV Backup');
 const primaryInstance = app.requestSingleInstanceLock();
 if (!primaryInstance) app.quit();
@@ -19,6 +20,7 @@ let win = null;
 let bridge = null;
 let scheduleOcr = null;   // started on the first schedule picture
 let syncHost = null;
+let updater = null;
 let closer = null;
 let quittingApproved = false;
 let quitPending = null;
@@ -172,7 +174,17 @@ app.whenReady().then(() => {
   createBridge();
   syncHost = createSyncHost({ dir: app.getPath('userData'), safeStorage });
   registerSyncIpc({ ipcMain, getWindow: () => win, appUrl: APP_URL, getHost: () => syncHost, isClosing: () => !!(closer && closer.pending) });
+  updater = createUpdater({
+    app, shell, net, send: (s) => send('update:status', s),
+    approveQuit: async () => {
+      if (!closer || !await closer.request()) return false;
+      quittingApproved = true; global.__vingestBusy = false;
+      return true;
+    },
+  });
   createWindow();
+  // Look once shortly after start; a failed check only shows in the sidebar.
+  if (app.isPackaged) setTimeout(() => updater.check(), 10000);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -213,6 +225,12 @@ handle('py:restart', async () => {
   try { return { ok: true, result: await bridge.start() }; }
   catch (err) { return { ok: false, error: err.message }; }
 });
+
+handle('update:status', () => updater.status());
+handle('update:check', () => updater.check());
+handle('update:download', () => updater.download());
+handle('update:restart', () => updater.restart());
+handle('update:openPage', () => updater.openPage());
 
 handle('app:setBusy', (_e, busy) => { global.__vingestBusy = !!busy; return true; });
 

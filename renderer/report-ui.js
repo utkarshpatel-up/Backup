@@ -79,11 +79,16 @@ async function reportLoad(file) {
 }
 
 async function reportChooseFile() {
-  if (typeof syncAccount === 'function' && syncAccount()) { await showSync(); return; }
+  const account = typeof syncAccount === 'function' && syncAccount();
+  if (account && !syncAvailable()) { toast('Sign in under Account first, then import the file.', 'warn'); await showSync(); return; }
   const file = await window.api.pickTable('Choose the existing data: the Raw Satsang Master, or a download of the Raw Video Data Report');
   if (!file) return;
-  window.api.setSettings({ reportSource: file }).catch(() => {});
-  await reportLoad(file);
+  await window.api.setSettings({ reportSource: file }).catch(() => {});
+  if (!account) { await reportLoad(file); return; }
+  // Team mode: preview, confirm, then queue every record for upload (syncImport in sync-ui.js).
+  try { await syncImport(); toast('Import queued. The records upload in the background; see Account for progress.', 'ok'); }
+  catch (e) { toast(e && e.message ? e.message : 'The import could not be completed.', 'err'); }
+  render();
 }
 
 /** At start-up: read the remembered existing data in the background, so its
@@ -204,7 +209,7 @@ function renderReportPage() {
       <div class="row" style="align-items:center;flex-wrap:wrap">
         <div style="flex:1 1 320px;min-width:0"><h3 style="margin:0">Raw Video Data Report</h3>
           <div class="hint" style="margin:4px 0 0">Existing data: ${source} · Event schedules: <b>${scheduled}</b> sessions</div></div>
-        <button class="sm" id="repFile">${typeof syncAccount === 'function' && syncAccount() ? 'Import via Account…' : r.existing ? 'Change file…' : 'Choose existing data…'}</button>
+        <button class="sm" id="repFile">${typeof syncAccount === 'function' && syncAccount() ? 'Import file to team…' : r.existing ? 'Change file…' : 'Choose existing data…'}</button>
         ${r.file && !(typeof syncAccount === 'function' && syncAccount()) ? '<button class="sm ghost" id="repReload" title="Read the file again">Refresh</button>' : ''}
         <button class="sm" id="repExport" ${shown.length ? '' : 'disabled'}
           title="Save the entries these filters leave as an .xlsx. It can be chosen again later as the existing data.">Export ${shown.length.toLocaleString()} entries…</button>

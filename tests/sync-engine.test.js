@@ -931,6 +931,24 @@ test('explicit local import previews parsed report records without queuing and k
   assert.equal(fs.readFileSync(path.join(legacy,'settings.json'),'utf8'),original);
 });
 
+test('a 17,000-record existing-data sheet imports in batches and reaches another device; duplicate IDs keep the last', opts, async () => {
+  const server = world(), legacy = tmpDir();
+  const a = await device(server, 'op1@t.invalid', { legacyDir: legacy });
+  const report = Array.from({ length: 17000 }, (_, i) => ({ id: `DD-F-HD-${i + 1}-M`, folder: i + 1, session: 'M', type: 'Formal', author: 'DD',
+    format: 'HD', date: '2019-01-01', topic: `Topic ${i}`, events: [], languages: ['Gujarati'] }));
+  report.push({ ...report[5], topic: 'Corrected' });   // a repeated ID, as old sheets have
+  const preview = a.importLocal({ confirm: false, report });
+  assert.equal(preview.ok, true);
+  assert.equal(preview.warnings.filter((w) => w.code === 'duplicate_report_id').length, 1);
+  assert.equal(a.importLocal({ confirm: true, report }).ok, true);
+  for (let i = 0; i < 60 && a.status().pending; i += 1) await a.syncNow();
+  assert.equal(a.status().pending, 0);
+  const b = await device(server, 'op2@t.invalid');
+  const got = b.view().data.report;
+  assert.equal(got.length, 17000);
+  assert.equal(got.find((r) => r.id === report[5].id).topic, 'Corrected');
+});
+
 test('completion against the protected base follows our own preparation commit without a spurious conflict', opts, async () => {
   const server=world(), a=await device(server,'op1@t.invalid');
   const s=schedule(); edit(a,d=>d.schedules.items.push(s)); await a.syncNow();

@@ -206,13 +206,18 @@ async function syncImport() {
     if (settings.reportSource) {
       const localCities = await window.api.getStore('cities');
       const cities = SCHEDULE.parseCities(localCities?.rows || window.VIngestCityRows || []);
-      report = SCHEDULE.parseReport((await call('schedule_read_table', { path: settings.reportSource })).rows, cities);
-      if (!report.length) throw new Error('The local report source did not contain readable report records.');
+      report = SCHEDULE.parseReport((await call('schedule_read_table', { path: settings.reportSource }, { label: 'Reading the report file' })).rows, cities);
+      if (!report.length) throw new Error('No Raw Video Id / ID column was found in the report file.');
     }
     const preview = await window.api.sync.importLocal(false, report);
-    if (!preview.ok) throw new Error('Local data contains entries that need correction before import.');
+    if (!preview.ok) {
+      const list = (preview.problems || []).slice(0, 5).map((p) => `${p.where || ''} ${p.field}: ${p.code}`.trim()).join('; ');
+      throw new Error(`Some entries need correcting before import${list ? `: ${list}` : ''}.`);
+    }
+    const warns = preview.warnings || [];
+    // A large old sheet can carry thousands of duplicate-ID warnings: show the first few.
     const details = `${preview.counts.schedules} schedules, ${preview.counts.rows} rows, ${report.length} report records. Originals stay unchanged.\n`
-      + (preview.warnings || []).map((w) => w.text).join('\n');
+      + warns.slice(0, 10).map((w) => w.text).join('\n') + (warns.length > 10 ? `\n…and ${warns.length - 10} more notes.` : '');
     if (!await window.api.confirm({ message: 'Import this computer’s local data into the team?', detail: details, confirmLabel: 'Import', danger: false })) return;
     const result = await window.api.sync.importLocal(true, report);
     if (!result.ok) throw new Error('Import needs review.');

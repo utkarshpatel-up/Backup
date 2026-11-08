@@ -1,6 +1,6 @@
 name: Release
 # Push a tag vX.Y.Z (matching package.json "version", with a "## X.Y.Z" section in
-# CHANGELOG.md). Builds Windows and one universal Mac DMG, uploads them to a draft release whose notes
+# CHANGELOG.md). Builds Windows and both Macs, uploads them to a draft release whose notes
 # are that changelog section, and publishes it only when every build passed. The apps'
 # in-app updater (electron/updater.js) then offers it. See docs/RELEASING.md.
 on:
@@ -69,7 +69,6 @@ jobs:
             dist/latest.yml "dist/AV-Backup-$V-win.zip"
 
   mac:
-    # Each chip's engine (PyInstaller + ffmpeg) is built natively on its own runner.
     needs: prepare
     strategy:
       fail-fast: true
@@ -83,51 +82,15 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies, test, and freeze the engine
-        run: bash scripts/macos.sh engine
-      - uses: actions/upload-artifact@v4
-        with:
-          name: engine-${{ matrix.arch }}
-          path: dist-python/vingest-core
-          if-no-files-found: error
-          retention-days: 1
-
-  mac-universal:
-    # One DMG for Apple Silicon and Intel: both engines inside, the app starts the one for
-    # this Mac's chip (electron/python-bridge.js). Electron itself is merged by electron-builder.
-    needs: mac
-    runs-on: macos-15
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: engine-*
-          path: engines
-      - name: Build the universal DMG
-        run: |
-          mkdir -p dist-python
-          for a in arm64 x64; do install -m 755 "engines/engine-$a/vingest-core" "dist-python/vingest-core-$a"; done
-          file dist-python/*
-          npm ci
-          npx --no-install electron-builder --mac dmg --universal --publish never
+      - name: Install dependencies, test, and build native DMG
+        run: bash scripts/macos.sh build
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - name: Every binary runs on macOS 12
-        run: |
-          python -m pip install pyinstaller macholib
-          python scripts/check_macos_min.py dist
       - name: Upload to the draft release
-        run: gh release upload "$TAG" --clobber "dist/AV-Backup-${TAG#v}-mac-universal.dmg"
+        run: gh release upload "$TAG" --clobber "dist/AV-Backup-${TAG#v}-mac-${{ matrix.arch }}.dmg"
 
   publish:
-    needs: [windows, mac-universal]
+    needs: [windows, mac]
     runs-on: ubuntu-latest
     steps:
       - name: Publish the release

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-run}"
-case "$MODE" in setup|run|build|engine) ;; *) echo 'Usage: bash scripts/macos.sh [setup|run|build|engine]' >&2; exit 2 ;; esac
+case "$MODE" in setup|run|build) ;; *) echo 'Usage: bash scripts/macos.sh [setup|run|build]' >&2; exit 2 ;; esac
 if [ "$(uname -s)" != Darwin ]; then
   echo 'This script requires macOS. Use the Build macOS workflow from Windows.' >&2
   exit 1
@@ -124,13 +124,12 @@ npm ci
 case "$MODE" in
   setup) echo 'Dependencies are ready. Use Start AV Backup.command to launch.' ;;
   run) npm start ;;
-  build|engine)
+  build)
     ARCH="$(node -p 'process.arch')"
     "$VINGEST_PYTHON" -m pip install pytest
     "$VINGEST_PYTHON" -m pytest tests/ -q
     npm run test:renderer
     npm run bundle:python -- --with-ffmpeg "$FFMPEG_BIN"
-    if [ "$MODE" = engine ]; then echo "Engine built in $ROOT/dist-python ($ARCH)."; exit 0; fi
     npx --no-install electron-builder --mac dmg "--$ARCH" --publish never
     # Every binary in the finished app must run on the oldest supported macOS
     # (12, Monterey); fail here rather than ship a DMG that cannot start there.

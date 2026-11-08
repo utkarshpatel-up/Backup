@@ -4,6 +4,13 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 1.7.2
+
+- **Sign in and Create account are separate.** The Account page shows one form at a
+  time, and hides them once you are signed in.
+- **Account errors name the reason** in more cases, including when the Mac's Keychain
+  refuses access.
+
 ## 1.7.1
 
 - **Exported Excel files import into Frappe.** A schedule or report export with a

@@ -123,7 +123,7 @@ async function syncInit() {
   return syncAccount();
 }
 async function syncTransition(action) {
-  if (syncBusy() || syncUI.changing) throw new Error('Finish or put aside the backup first.');
+  if (syncBusy() || syncUI.changing) throw Object.assign(new Error('Finish or put aside the backup first.'), { kind: 'busy' });
   syncUI.changing = true;
   try {
     await scheduleFlush();
@@ -232,6 +232,24 @@ async function showSync() {
   syncUI.reviews = await window.api.sync.reviews();
   render();
 }
+/** One form at a time: sign in, or (after asking for it) create an account. Hidden while the session is good. */
+function syncAuthForm(s, disabled) {
+  if (s.signedIn && !s.locked && s.phase !== 'expired') return '';
+  if (syncUI.authMode === 'create') {
+    return `<h4>Create your account</h4>
+    <p><input id="syncName" autocomplete="off" placeholder="Your name" ${disabled}>
+    <input id="syncEmail" type="email" autocomplete="off" placeholder="Email" ${disabled}>
+    <input id="syncPassword" type="password" autocomplete="off" placeholder="Password (8+ chars)" ${disabled}>
+    <button id="syncSignUp" class="primary" ${disabled}>Create account</button></p>
+    <p class="hint">Your account has no access until the maintainer adds you to the team.</p>
+    <p><button id="syncToSignIn" class="sm ghost" ${disabled}>Already have an account? Sign in</button></p>`;
+  }
+  return `<h4>Sign in</h4>
+    <p><input id="syncEmail" type="email" autocomplete="off" placeholder="Email" ${disabled}>
+    <input id="syncPassword" type="password" autocomplete="off" placeholder="Password" ${disabled}>
+    <button id="syncSignIn" class="primary" ${disabled}>Sign in</button></p>
+    <p><button id="syncToCreate" class="sm ghost" ${disabled}>New here? Create an account</button></p>`;
+}
 function renderSyncPage() {
   const s = syncUI.status, enabled = syncAccount();
   const disabled = syncBusy() || syncUI.changing ? 'disabled' : '';
@@ -246,12 +264,8 @@ function renderSyncPage() {
     <p><input id="syncAuthUrl" placeholder="Neon Auth URL (https://…/neondb/auth)" value="${esc(s.config?.authUrl || '')}" ${disabled}>
     <input id="syncDataUrl" placeholder="Neon Data API URL (https://…/neondb/rest/v1)" value="${esc(s.config?.dataUrl || '')}" ${disabled}>
     <button id="syncConfig" ${disabled}>Save server settings</button></p>
-    ${enabled ? `<p><input id="syncEmail" type="email" autocomplete="off" placeholder="Email" ${disabled}>
-    <input id="syncPassword" type="password" autocomplete="off" placeholder="Password" ${disabled}>
-    <button id="syncSignIn" ${disabled}>Sign in</button><button id="syncSignOut" ${disabled}>Sign out</button></p>
-    <p class="hint">New here? Enter your e-mail and a password above, your name here, and create an account. It has no access until the maintainer adds you.</p>
-    <p><input id="syncName" autocomplete="off" placeholder="Your name" ${disabled}><button id="syncSignUp" ${disabled}>Create account</button></p>
-    <p><button id="syncNow" ${disabled}>Sync now</button><button id="syncImport" ${disabled}>Preview local import…</button></p>
+    ${enabled ? `${syncAuthForm(s, disabled)}
+    ${s.signedIn ? `<p><button id="syncNow" ${disabled}>Sync now</button><button id="syncImport" ${disabled}>Preview local import…</button><button id="syncSignOut" ${disabled}>Sign out</button></p>` : ''}
     ${state.scheduleRun && !state.busy ? '<button id="syncPutAside">Put aside prepared backup</button>' : ''}` : ''}</div>
     ${(syncAvailable() ? syncUI.conflicts : []).map((c, i) => `<div class="card sync-panel"><h3>Conflict: ${esc(c.schedule || c.targetType)}</h3>
       <p>Choose an alternative, then return to the schedule to edit it.</p>
@@ -264,18 +278,25 @@ function renderSyncPage() {
 function wireSyncPage() {
   const act = (id, fn) => $(id)?.addEventListener('click', async () => {
     try { syncUI.error = ''; await fn(); }
-    // Account errors from preload carry a kind and a fixed, server-text-free message (ipc.js safeError): show it.
-    catch (e) { syncUI.error = e && e.kind && e.kind !== 'local' && e.message ? e.message : 'Action could not be completed. Check the connection, account permissions and saved entries, then try again.'; }
+    // Fixed texts only: account errors from preload (ipc.js safeError) and this page's own plain Error refusals.
+    catch (e) {
+      const known = e && e.message && (e.kind ? e.kind !== 'local' : e.constructor === Error);
+      syncUI.error = known ? e.message : `Action could not be completed (${id}: ${(e && (e.code || e.name)) || 'unknown'}). Check the connection, account permissions and saved entries, then try again.`;
+    }
     render();
   });
   act('syncConfig', () => { const enabled = $('syncEnabled').checked; const c = { enabled, authUrl: enabled ? $('syncAuthUrl').value : '', dataUrl: enabled ? $('syncDataUrl').value : '' }; return syncTransition(() => window.api.sync.setConfig(c)); });
   act('syncSignIn', () => { const email = $('syncEmail').value, password = $('syncPassword').value; $('syncPassword').value = ''; return syncTransition(() => window.api.sync.signIn(email, password)); });
+  for (const [id, mode] of [['syncToCreate', 'create'], ['syncToSignIn', 'signin']]) {
+    $(id)?.addEventListener('click', () => { syncUI.authMode = mode; syncUI.error = ''; render(); });
+  }
   act('syncSignOut', () => syncTransition(() => window.api.sync.signOut()));
   act('syncSignUp', async () => {
     const email = $('syncEmail').value, password = $('syncPassword').value, name = $('syncName').value;
     $('syncPassword').value = '';
     const r = await window.api.sync.signUp(email, password, name);
     syncUI.error = `Account created for ${r.email}. Ask the maintainer to add you to the team, then sign in.`;
+    syncUI.authMode = 'signin';
   });
   act('syncNow', async () => { await scheduleFlush(); await window.api.sync.syncNow(); await syncRefresh(); });
   act('syncImport', syncImport);

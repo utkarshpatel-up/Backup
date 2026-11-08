@@ -1,6 +1,7 @@
 'use strict';
 const { trustedSender } = require('../ipc-security');
 const { SyncError } = require('./client');
+const { VaultError } = require('./vault');
 const { UUID } = require('./spec');
 
 function invalid() { throw new SyncError('refused', 'invalid_arguments', 'Invalid account action arguments.'); }
@@ -76,7 +77,10 @@ function validate(action, p) {
 
 function safeError(e) {
   if (e instanceof SyncError) return { kind: e.kind, code: e.code, message: e.message };
-  return { kind: 'local', code: 'action_failed', message: 'The account action could not be completed on this computer.' };
+  if (e instanceof VaultError) return { kind: 'storage', code: e.code, message: e.message };   // fixed texts, no secrets
+  // Only a system error code or the error's class name: never its text, which could quote a path or token.
+  const code = e && typeof e.code === 'string' && /^[A-Z][A-Z0-9_]{1,30}$/.test(e.code) ? e.code : (e && e.constructor && e.constructor.name) || 'action_failed';
+  return { kind: 'local', code, message: 'The account action could not be completed on this computer.' };
 }
 
 function registerSyncIpc({ ipcMain, getWindow, appUrl, getHost, isClosing = () => false }) {

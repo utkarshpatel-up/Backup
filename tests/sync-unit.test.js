@@ -233,6 +233,10 @@ test('encrypted cache: no plaintext on disk, tamper and another account\'s file 
   assert.ok(!raw.includes('ACCESS-123') && !raw.includes('REFRESH-456'));
   assert.equal(store.load().refresh_token, 'REFRESH-456');
   assert.throws(() => new SessionStore({ file: path.join(dir, 's2.bin'), safeStorage: fakeSafeStorage({ backend: 'basic_text' }) }).save({}), (e) => e.code === 'no_os_encryption');
+  // Keychain prompt denied: a clear reason, and no file left behind.
+  const refused = { ...fakeSafeStorage(), encryptString() { throw new Error('Encryption not available'); } };
+  assert.throws(() => new SessionStore({ file: path.join(dir, 's3.bin'), safeStorage: refused }).save({}), (e) => e.code === 'os_key_store' && /Always Allow/.test(e.message));
+  assert.equal(fs.existsSync(path.join(dir, 's3.bin')), false);
 });
 
 test('a failed disk write keeps the previous file whole', () => {

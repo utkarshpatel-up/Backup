@@ -102,6 +102,24 @@ test('locked accounts cannot expose their cache by forging backup protection ove
   assert.equal((await invoke(eventFor(w), 'protect', { assignmentId: ID, uid: ID })).error.code, 'locked');
 });
 
+test('a key-store failure reaches the screen with its own message, other local errors stay generic', async () => {
+  const { VaultError } = require('../electron/sync/vault');
+  const w = windowFixture(), ipc = ipcFixture();
+  const engine = new EventEmitter();
+  engine.status = () => ({ locked: false });
+  let thrown = new VaultError('os_key_store', 'refused');
+  engine.signIn = async () => { throw thrown; };
+  const { invoke } = registerSyncIpc({ ipcMain: ipc, getWindow: () => w, appUrl: URL, getHost: () => ({ engine, status: engine.status }) });
+  const args = { email: 'a@b.c', password: 'x' };
+  assert.deepEqual((await invoke(eventFor(w), 'signIn', args)).error, { kind: 'storage', code: 'os_key_store', message: 'refused' });
+  thrown = new Error('secret path /Users/x');
+  assert.equal((await invoke(eventFor(w), 'signIn', args)).error.kind, 'local');
+  assert.equal((await invoke(eventFor(w), 'signIn', args)).error.code, 'Error');
+  thrown = Object.assign(new Error('EACCES: /Users/x'), { code: 'EACCES' });
+  assert.equal((await invoke(eventFor(w), 'signIn', args)).error.code, 'EACCES');
+  assert.doesNotMatch(JSON.stringify((await invoke(eventFor(w), 'signIn', args)).error), /Users/);
+});
+
 test('closing refuses new account actions but accepts the last local commit', async () => {
   const w = windowFixture(), ipc = ipcFixture(), calls = [];
   const engine = new EventEmitter();

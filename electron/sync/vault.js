@@ -11,6 +11,12 @@ class VaultError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
+const KEY_STORE_HELP = 'If macOS asks about "AV Backup Safe Storage", enter your Mac password and choose Always Allow, then try again.';
+/** A key store that refuses (Keychain prompt denied, or locked) is not a damaged file: say what to do. */
+function osCall(fn) {
+  try { return fn(); } catch (_) { throw new VaultError('os_key_store', `This computer refused access to its secure key store. ${KEY_STORE_HELP}`); }
+}
+
 /** safeStorage is usable only with a real OS backend (Linux 'basic_text' is plain obfuscation). */
 function osProtectionAvailable(safeStorage) {
   if (!safeStorage || !safeStorage.isEncryptionAvailable()) return false;
@@ -62,12 +68,12 @@ class SealedFile {
     if (this.fs.existsSync(this.keyFile)) {
       let key;
       try { key = Buffer.from(this.safeStorage.decryptString(this.fs.readFileSync(this.keyFile)), 'base64'); } catch (_) { key = null; }
-      if (!key || key.length !== 32) throw new VaultError('bad_key', 'The account key on this computer is damaged.');
+      if (!key || key.length !== 32) throw new VaultError('bad_key', `The account key on this computer could not be unlocked. ${KEY_STORE_HELP}`);
       this.key = key;
     } else {
       if (!create) return null;
       const key = this.crypto.randomBytes(32);
-      writeAtomic(this.fs, this.keyFile, this.safeStorage.encryptString(key.toString('base64')));
+      writeAtomic(this.fs, this.keyFile, osCall(() => this.safeStorage.encryptString(key.toString('base64'))));
       this.key = key;   // only once it is on disk: a cache must never be written under a key that isn't
     }
     return this.key;
@@ -110,7 +116,7 @@ class SessionStore {
     if (!osProtectionAvailable(this.safeStorage)) {
       throw new VaultError('no_os_encryption', 'This computer cannot protect sign-in tokens (no OS key store), so it cannot stay signed in.');
     }
-    writeAtomic(this.fs, this.file, this.safeStorage.encryptString(JSON.stringify(session)));
+    writeAtomic(this.fs, this.file, osCall(() => this.safeStorage.encryptString(JSON.stringify(session))));
   }
   clear() { this.fs.rmSync(this.file, { force: true }); }
 }

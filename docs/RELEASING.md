@@ -17,9 +17,9 @@ Installed copies of AV Backup check GitHub Releases when they start (and from th
    git push origin HEAD v1.7.1
    ```
 
-4. Watch **Actions → Release** on GitHub (about 20–30 minutes). It builds Windows, the
-   Mac engine on Apple Silicon and on Intel, then one universal Mac DMG holding both;
-   it uploads them to a draft release and publishes it only when every build passes. If one fails, nothing is published: fix it, then delete the tag and
+4. Watch **Actions → Release** on GitHub (about 20–30 minutes). It builds Windows and
+   both Macs, uploads them to a draft release, and publishes it only when all three
+   builds pass. If one fails, nothing is published: fix it, then delete the tag and
    push it again (`git push origin :v1.7.1`, `git tag -f v1.7.1`, `git push origin v1.7.1`).
 
 ## What operators see
@@ -41,7 +41,7 @@ Copies older than 1.7.0 have no updater: install 1.7.0 by hand once on each comp
 |---|---|
 | `AV-Backup-Setup-<v>.exe`, `.exe.blockmap`, `latest.yml` | Windows installer and its in-app updates |
 | `AV-Backup-<v>-win.zip` | Windows portable copy |
-| `AV-Backup-<v>-mac-universal.dmg` | Every Mac, Apple Silicon or Intel (one engine per chip inside; the app starts the right one). Up to 1.7.1 there was one DMG per chip. |
+| `AV-Backup-<v>-mac-arm64.dmg`, `-mac-x64.dmg` | Macs with Apple Silicon or Intel |
 
 Do not rename or remove `latest.yml` or the `.blockmap`: installed Windows copies need
 them to update.

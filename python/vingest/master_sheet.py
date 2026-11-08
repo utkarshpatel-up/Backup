@@ -237,6 +237,10 @@ def write_xlsx(path: str, rows: list[list], columns: list | None = None) -> str:
                    for i, w in enumerate(widths))
     sheet = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
              '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+             # Readers that trust the stated size (openpyxl read-only, so Frappe's Data Import)
+             # pad short rows to it; without it a continuation row ending early is "less values
+             # than columns".
+             f'<dimension ref="A1:{_col(len(heads) - 1)}{len(rows) + 1}"/>'
              '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" '
              'activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
              f"<cols>{cols}</cols><sheetData>{''.join(sheet_rows)}</sheetData></worksheet>")

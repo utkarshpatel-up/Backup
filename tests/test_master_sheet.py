@@ -124,7 +124,11 @@ def test_xlsx_has_master_header_real_dates_and_continuation_rows(tmp_path):
     assert back[1][6] == "46312"
     assert back[2][13] == "Garba" and not any(back[2][:13])
     with zipfile.ZipFile(out) as z:
-        assert 's="2"' in z.read("xl/worksheets/sheet1.xml").decode()
+        sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        assert 's="2"' in sheet
+        # The stated size lets Frappe's Data Import (openpyxl read-only) pad the short
+        # continuation row to all 16 columns instead of refusing it.
+        assert '<dimension ref="A1:P3"/>' in sheet
         # Shown the Indian way, dd/mm/yyyy.
         assert 'formatCode="dd/mm/yyyy"' in z.read("xl/styles.xml").decode()
 

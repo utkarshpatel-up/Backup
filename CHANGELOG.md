@@ -4,6 +4,13 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 1.7.1
+
+- **Exported Excel files import into Frappe.** A schedule or report export with a
+  continuation row (an extra event type or language) was refused by Frappe's Data
+  Import ("Row has less values than columns"). Exports now open the same way as the
+  official Raw Satsang Master.
+
 ## 1.7.0
 
 - **Updates from inside the app.** The sidebar says when a new version is out, shows

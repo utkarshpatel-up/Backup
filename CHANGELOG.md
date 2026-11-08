@@ -12,6 +12,12 @@ update. Add a `## <version>` section here before pushing the version tag (see
   Applications to finish. This version is the last one you install by hand.
 - **Team account (optional).** Sign in under Account to share event schedules and report
   records with the team, through Neon. Local files keep working without it.
+- **Import an existing data report into the team.** On the Report page, **Import file
+  to team…** asks for the Excel file, previews it and uploads it; large sheets (17,000
+  rows and more) upload in the background. The Account page shows how many changes are
+  left to send.
+- **Sync no longer stops after a quiet spell.** The team server pauses when idle; the
+  app now waits for it to start and carries on, instead of asking you to sign in again.
 - **Account messages say what went wrong**, such as "The team server could not be
   reached", instead of one general message.
 - **Event schedule:** several events per row, and session numbers follow added sessions.

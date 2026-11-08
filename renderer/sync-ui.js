@@ -115,6 +115,7 @@ async function syncInit() {
   try { syncUI.status = await window.api.sync.status(); }
   catch (_) { syncUI.error = 'Account status is unavailable. Restart the app to try again.'; }
   window.api.sync.onStatus((s) => { syncStatus(s).catch(() => { syncUI.error = 'Could not refresh account data.'; }); });
+  window.api.sync.onProgress?.((p) => { Object.assign(syncUI.status, p); if (state.view === 'account') render(); });
   document.addEventListener('focusout', () => setTimeout(() => {
     if (syncUI.waiting) syncRefresh().catch(() => {});
   }, 0));
@@ -239,6 +240,7 @@ function renderSyncPage() {
     <p>Offline access uses an encrypted cache. Membership revocation cannot be discovered until the server is reached.</p>
     <p>${esc(enabled ? s.locked ? 'Account locked' : s.signedIn ? 'Signed in' : 'Sign in to view team data' : 'Local files')} · ${esc(s.phase || '')}
     ${s.user ? ` · ${esc(s.user.displayName || '')} (${esc(s.user.role || '')})` : ''} · Pending: ${Number(s.pending || 0)} · Held: ${Number(s.held || 0)} · Conflicts: ${Number(s.conflicts || 0)} · Failed: ${Number(s.failed?.length || 0)}</p>
+    ${s.signedIn && Number(s.pending || 0) ? `<p><b>Uploading to the team: ${Number(s.pending).toLocaleString()} ${Number(s.pending) === 1 ? 'change' : 'changes'} left.</b> This continues in the background${s.phase === 'online' || s.phase === 'connecting' ? '' : ' and resumes when the server can be reached'}.</p>` : ''}
     <p class="note">${esc(syncUI.error || (s.error ? 'Connection or account action failed. Your saved edits remain on this computer.' : ''))}</p>
     <label><input id="syncEnabled" type="checkbox" ${enabled ? 'checked' : ''} ${disabled}> Use team account</label>
     <p><input id="syncAuthUrl" placeholder="Neon Auth URL (https://…/neondb/auth)" value="${esc(s.config?.authUrl || '')}" ${disabled}>

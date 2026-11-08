@@ -941,12 +941,36 @@ test('a 17,000-record existing-data sheet imports in batches and reaches another
   assert.equal(preview.ok, true);
   assert.equal(preview.warnings.filter((w) => w.code === 'duplicate_report_id').length, 1);
   assert.equal(a.importLocal({ confirm: true, report }).ok, true);
+  let progress = 0;
+  a.on('progress', () => { progress += 1; });
   for (let i = 0; i < 60 && a.status().pending; i += 1) await a.syncNow();
+  assert.ok(progress >= 34, `one progress event per 500-record batch (got ${progress})`);
   assert.equal(a.status().pending, 0);
   const b = await device(server, 'op2@t.invalid');
   const got = b.view().data.report;
   assert.equal(got.length, 17000);
   assert.equal(got.find((r) => r.id === report[5].id).topic, 'Corrected');
+});
+
+test('a database waking from idle (not_authenticated with a fresh token) is retried, not treated as an expired sign-in', opts, async () => {
+  const server = world();
+  let hiccups = 0;
+  const fetch = (url, init) => (String(url).includes('/rpc/') && hiccups-- > 0
+    ? Promise.resolve(new Response(JSON.stringify({ code: '42501', message: 'avb:not_authenticated' }), { status: 403, headers: { 'Content-Type': 'application/json' } }))
+    : server.fetch(url, init));
+  const e = new SyncEngine({ dir: tmpDir(), fetch, safeStorage: fakeSafeStorage(), autoSync: false, now: () => server.clock.now });
+  e.setConfig(server.config);
+  await e.signIn('op1@t.invalid', server.users.get('op1@t.invalid').password);
+  await e.syncNow();
+  edit(e, (d) => d.schedules.items.push(schedule()));
+  hiccups = 2;   // the call and its retry with a refreshed token both hit the waking database
+  let s = await e.syncNow();
+  assert.equal(s.phase, 'error');
+  assert.notEqual(s.phase, 'expired');
+  assert.ok(s.pending > 0);
+  s = await e.syncNow();
+  assert.equal(s.phase, 'online');
+  assert.equal(s.pending, 0);
 });
 
 test('completion against the protected base follows our own preparation commit without a spurious conflict', opts, async () => {

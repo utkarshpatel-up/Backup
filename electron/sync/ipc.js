@@ -121,13 +121,19 @@ function registerSyncIpc({ ipcMain, getWindow, appUrl, getHost, isClosing = () =
     } catch (e) { return { ok: false, error: safeError(e) }; }
   };
   ipcMain.handle('sync:invoke', invoke);
-  const publish = () => {
-    const win = getWindow(), host = getHost();
+  const sendTo = (channel, value) => {
+    const win = getWindow();
     if (!win || win.isDestroyed() || !trustedSender({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, win, appUrl)) return;
-    win.webContents.send('sync:status', host.status());
+    win.webContents.send(channel, value());
   };
+  const publish = () => sendTo('sync:status', () => getHost().status());
+  // Upload progress: just the counts, so the page updates without reloading the team data.
+  const progress = () => sendTo('sync:progress', () => { const s = getHost().status(); return { pending: s.pending, sending: s.sending }; });
   const engine = getHost() && getHost().engine;
-  if (engine) for (const event of ['status', 'changed', 'reset']) engine.on(event, publish);
+  if (engine) {
+    for (const event of ['status', 'changed', 'reset']) engine.on(event, publish);
+    engine.on('progress', progress);
+  }
   return { invoke, publish };
 }
 

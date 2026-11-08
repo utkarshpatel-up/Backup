@@ -204,7 +204,16 @@ class SyncEngine extends EventEmitter {
     }
     const session = this._sessionFrom(c.url, tok);
     let me;
-    try { me = await client.rpc(session.access_token, 'avb_me'); this._live(gen); } catch (e) {
+    const meCall = () => client.rpc(session.access_token, 'avb_me');
+    try {
+      // A fresh token answered not_authenticated: the database is waking from idle (see _authed). Once more.
+      me = await meCall().catch(async (e) => {
+        if (e.code !== 'not_authenticated') throw e;
+        await new Promise((r) => this.setT(r, 1500));
+        return meCall().catch((e2) => { throw e2.code === 'not_authenticated' ? new SyncError('server', 'warming_up', 'The team server is starting up. Try again in a few seconds.') : e2; });
+      });
+      this._live(gen);
+    } catch (e) {
       client.signOut(session.refresh_token).catch(() => {});
       if (e.kind === 'revoked') throw new SyncError('revoked', 'not_member', 'This account is not an active team member. Ask the maintainer to add you.');
       throw e;
@@ -308,7 +317,12 @@ class SyncEngine extends EventEmitter {
       this._live(gen);
       if (e.kind !== 'unauthorized' || !this.session) throw e;
       token = live(await this._token(true));
-      return live(await fn(client, token));
+      try { return live(await fn(client, token)); } catch (e2) {
+        // A fresh token the database still can't read: Neon's first query after its compute
+        // wakes from idle (seen live). Not an expired sign-in: back off and retry.
+        if (e2.code === 'not_authenticated') throw new SyncError('server', 'warming_up', 'The team server is starting up; retrying.');
+        throw e2;
+      }
     }
   }
 
@@ -677,6 +691,7 @@ class SyncEngine extends EventEmitter {
       }
       if (this.acct !== acct) return;
       this._apply(m, res);
+      this.emit('progress');   // counts only (ipc.js): a large import shows what is left
     }
   }
 

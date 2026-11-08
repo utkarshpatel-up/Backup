@@ -102,6 +102,7 @@ contextBridge.exposeInMainWorld('api', {
     protect: (target) => accountAction('protect', target || {}),
     importLocal: (confirm, report) => accountAction('importLocal', { confirm, ...(report ? { report } : {}) }),
     onStatus: (fn) => subscribe('sync:status', fn),
+    onProgress: (fn) => subscribe('sync:progress', fn),
   },
 
   // In-app updates (electron/updater.js): fixed actions, no URLs from the page.

@@ -4,6 +4,17 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 1.7.3
+
+- **Redesigned Account, sign-in and create-account pages.** They now fit narrow and wide
+  windows alike.
+- **Typing and focus are kept** when the app refreshes in the background, so a form you
+  are filling in is no longer interrupted.
+- **Reports and schedules render faster** when the lists are large.
+- **Cloudflare DNS setup for Windows and macOS.** The app can set the computer's DNS to
+  Cloudflare. It asks for administrator permission and restarts only AV Backup, not the
+  computer.
+
 ## 1.7.2
 
 - **Sign in and Create account are separate.** The Account page shows one form at a

@@ -114,15 +114,19 @@ async function showReport() {
 }
 
 /** Every record: existing data, then each schedule's ticked rows over it. */
+let reportMemo = null;
 function reportRecords() {
   const r = reportState();
   const cities = scheduleCities();
+  const items = ((state.schedules && state.schedules.items) || []).filter((item) => !item.busy);
+  // Schedule rows are edited in place, so the memo is keyed by their content, not identity.
+  const key = JSON.stringify(items.map((item) => [item.sessions, item.starts, item.file]));
+  if (reportMemo && reportMemo.existing === r.existing && reportMemo.cities === cities && reportMemo.key === key) return reportMemo.value;
   const scheduled = [];
-  for (const item of ((state.schedules && state.schedules.items) || [])) {
-    if (item.busy) continue;
-    scheduled.push(...SCHEDULE.scheduleRecords(item.sessions, item.starts, cities, scheduleRange(item)));
-  }
-  return { all: SCHEDULE.mergeReport(r.existing || [], scheduled), scheduled: scheduled.length };
+  for (const item of items) scheduled.push(...SCHEDULE.scheduleRecords(item.sessions, item.starts, cities, scheduleRange(item)));
+  const all = SCHEDULE.mergeReport(r.existing || [], scheduled);
+  reportMemo = { existing: r.existing, cities, key, value: { all, scheduled: scheduled.length, gaps: SCHEDULE.findGaps(all) } };
+  return reportMemo.value;
 }
 
 function reportValue(rec, key) {
@@ -146,11 +150,11 @@ function reportShown(all) {
         .includes(String(q).trim().toLowerCase())));
 }
 
-function renderReportPage() {
+/** The page as paint regions. The filter boxes' typed values stay out of it: they are the DOM's to keep. */
+function reportRegions() {
   const r = reportState();
-  const { all, scheduled } = reportRecords();
+  const { all, scheduled, gaps } = reportRecords();
   const shown = reportShown(all);
-  const gaps = SCHEDULE.findGaps(all);
   const page = shown.slice(0, r.limit);
   // A gap's yellow line goes under the last listed row of the folder it sits below.
   const lastOf = new Map();
@@ -163,7 +167,7 @@ function renderReportPage() {
     gapAt.get(i).push(g.text);
   }
   const width = REPORT_COLUMNS.length + 2;
-  const body = page.map((rec, i) => {
+  const rows = page.flatMap((rec, i) => {
     // Schedule rows are blue; one that replaces an entry already in the existing
     // data (same ID) is purple and labelled, so it can't be taken for a new one.
     const both = rec.source === 'schedule' && rec.alsoExisting;
@@ -179,62 +183,104 @@ function renderReportPage() {
         const v = reportValue(rec, k);
         return `<td class="c-${k}"${String(v).length > 20 ? ` title="${esc(v)}"` : ''}>${esc(v)}</td>`;
       }).join('')}</tr>`;
-    const notes = gapAt.get(i);
-    return notes ? row + notes.map((t) => `<tr class="rep-gap"><td colspan="${width}">⚠ ${esc(t)}</td></tr>`).join('') : row;
-  }).join('');
-  const filterField = ([k, label, kind]) => {
-    const v = r.filters[k] ?? '';
-    const list = REPORT_LISTS.includes(k) ? ` list="repList_${k}"` : '';
-    if (kind === 'menu') {
-      // A short list (Activity, Author): every value in the data, in a menu.
-      const options = pickValues(all.map((rec) => rec[k]), k === 'activity' ? SCHEDULE_VOCAB.activities : []);
-      return `<select class="sch-in rep-f" data-filter="${k}"><option value="">${label}</option>
-        ${options.map((o) => `<option ${v === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
-    }
-    if (kind.startsWith('select:')) {
-      return `<select class="sch-in rep-f" data-filter="${k}"><option value="">${label}</option>
-        ${kind.slice(7).split(',').map((o) => `<option ${v === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
-    }
-    if (kind === 'date') {
-      return `<input class="sch-in rep-f" data-filter="${k}" placeholder="${label} (dd/mm/yyyy)"
-        value="${esc(v ? SCHEDULE.toIndian(v) : '')}">`;
-    }
-    return `<input class="sch-in rep-f" data-filter="${k}" placeholder="${label}" value="${esc(v)}"${list}>`;
-  };
+    return [row, ...(gapAt.get(i) || []).map((t) => `<tr class="rep-gap"><td colspan="${width}">⚠ ${esc(t)}</td></tr>`)];
+  });
+  if (!rows.length) rows.push(`<tr><td colspan="${width}" class="hint" style="padding:14px">Nothing matches these filters.</td></tr>`);
+  const account = typeof syncAccount === 'function' && syncAccount();
   const source = r.loading ? '<span class="hint" style="margin:0">Reading the existing data…</span>'
     : r.existing ? `<span class="mono" title="${esc(r.file)}">${esc(String(r.file).split(/[\\/]/).pop())}</span>
         · <b>${r.existing.length.toLocaleString()}</b> sessions`
       : '<span class="hint" style="margin:0">No existing data chosen yet — only the event schedules are listed.</span>';
+  return {
+    title: `<div style="flex:1 1 320px;min-width:0"><h3 style="margin:0">Raw Video Data Report</h3>
+          <div class="hint" style="margin:4px 0 0">Existing data: ${source} · Event schedules: <b>${scheduled}</b> sessions</div></div>
+        <button class="sm" id="repFile">${account ? 'Import file to team…' : r.existing ? 'Change file…' : 'Choose existing data…'}</button>
+        ${r.file && !account ? '<button class="sm ghost" id="repReload" title="Read the file again">Refresh</button>' : ''}`,
+    export: `<button class="sm" id="repExport" ${shown.length ? '' : 'disabled'}
+          title="Save the entries these filters leave as an .xlsx. It can be chosen again later as the existing data.">Export ${shown.length.toLocaleString()} entries…</button>`,
+    tail: `${r.exported ? '<button class="sm ghost" id="repExported">Show exported file</button>' : ''}`,
+    error: r.error ? `<div class="note err" style="margin-top:10px">${esc(r.error)}</div>` : '',
+    filters: reportFiltersHtml(all, {}),
+    gaps: gaps.length ? `<div class="rep-gaps"><b>${gaps.length} gap${gaps.length === 1 ? '' : 's'} in the numbering:</b>
+      ${gaps.slice(0, 12).map((g) => esc(g.text)).join(' · ')}${gaps.length > 12 ? ` · and ${gaps.length - 12} more` : ''}</div>` : '',
+    count: `${shown.length.toLocaleString()} record${shown.length === 1 ? '' : 's'}${shown.length < all.length ? ` of ${all.length.toLocaleString()}` : ''}`,
+    thead: reportHeadHtml({}),
+    rows,
+    more: shown.length > page.length ? `<div class="row" style="margin-top:8px">
+      <button class="sm" id="repMore">Show ${Math.min(REPORT_PAGE, shown.length - page.length)} more</button>
+      <span class="hint" style="margin:0">${page.length.toLocaleString()} of ${shown.length.toLocaleString()} shown</span></div>` : '',
+  };
+}
+
+/** The filter panel, with `values` in its boxes. */
+function reportFiltersHtml(all, values) {
+  return REPORT_FILTERS.map(([k, label, kind]) => {
+    const v = values[k] ?? '';
+    const list = REPORT_LISTS.includes(k) ? ` list="repList_${k}"` : '';
+    if (kind === 'menu') {
+      // A short list (Activity, Author): every value in the data, in a menu.
+      const options = reportMenu(all, k);
+      return `<select class="sch-in rep-f" data-filter="${k}" aria-label="${label}"><option value="">${label}</option>
+        ${options.map((o) => `<option ${v === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+    }
+    if (kind.startsWith('select:')) {
+      return `<select class="sch-in rep-f" data-filter="${k}" aria-label="${label}"><option value="">${label}</option>
+        ${kind.slice(7).split(',').map((o) => `<option ${v === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+    }
+    if (kind === 'date') {
+      return `<input class="sch-in rep-f" data-filter="${k}" aria-label="${label}" placeholder="${label} (dd/mm/yyyy)"
+        value="${esc(v ? SCHEDULE.toIndian(v) : '')}">`;
+    }
+    return `<input class="sch-in rep-f" data-filter="${k}" aria-label="${label}" placeholder="${label}" value="${esc(v)}"${list}>`;
+  }).join('');
+}
+
+/** A menu's values, worked out once per set of records. */
+const reportMenus = new WeakMap();
+function reportMenu(all, k) {
+  if (!reportMenus.has(all)) reportMenus.set(all, {});
+  const menus = reportMenus.get(all);
+  if (!menus[k]) menus[k] = pickValues(all.map((rec) => rec[k]), k === 'activity' ? SCHEDULE_VOCAB.activities : []);
+  return menus[k];
+}
+
+/** The column headers, with `values` in their filter boxes. */
+function reportHeadHtml(values) {
+  return `<tr>${resizableTh('id', 'Raw Video Id', 'fz rz1')}${resizableTh('folder', 'Folder', 'fz rz2')}
+          ${REPORT_COLUMNS.map(([k, h]) => resizableTh(k, h)).join('')}</tr>
+        <tr class="rep-colf"><th class="fz rz1"><input class="sch-in" data-col="id" aria-label="Filter Raw Video Id" value="${esc(values.id || '')}"></th>
+          <th class="fz rz2"><input class="sch-in" data-col="folder" aria-label="Filter Folder" value="${esc(values.folder || '')}"></th>
+          ${REPORT_COLUMNS.map(([k, h]) => `<th class="c-${k}"><input class="sch-in" data-col="${k}" aria-label="Filter ${h}" value="${esc(values[k] || '')}"></th>`).join('')}</tr>`;
+}
+
+function renderReportPage(regions = reportRegions()) {
+  const r = reportState();
   return `<div class="card">
       <div class="row" style="align-items:center;flex-wrap:wrap">
-        <div style="flex:1 1 320px;min-width:0"><h3 style="margin:0">Raw Video Data Report</h3>
-          <div class="hint" style="margin:4px 0 0">Existing data: ${source} · Event schedules: <b>${scheduled}</b> sessions</div></div>
-        <button class="sm" id="repFile">${typeof syncAccount === 'function' && syncAccount() ? 'Import file to team…' : r.existing ? 'Change file…' : 'Choose existing data…'}</button>
-        ${r.file && !(typeof syncAccount === 'function' && syncAccount()) ? '<button class="sm ghost" id="repReload" title="Read the file again">Refresh</button>' : ''}
-        <button class="sm" id="repExport" ${shown.length ? '' : 'disabled'}
-          title="Save the entries these filters leave as an .xlsx. It can be chosen again later as the existing data.">Export ${shown.length.toLocaleString()} entries…</button>
-        ${r.exported ? '<button class="sm ghost" id="repExported">Show exported file</button>' : ''}
+        <div class="region" data-region="title">${regions.title}</div>
+        <div class="region" data-region="export">${regions.export}</div>
+        <div class="region" data-region="tail">${regions.tail}</div>
       </div>
-      ${r.error ? `<div class="note err" style="margin-top:10px">${esc(r.error)}</div>` : ''}
-      <div class="rep-filters">${REPORT_FILTERS.map(filterField).join('')}</div>
+      <div data-region="error">${regions.error}</div>
+      <div class="rep-filters" data-region="filters">${reportFiltersHtml(reportRecords().all, r.filters)}</div>
     </div>
-    ${gaps.length ? `<div class="rep-gaps"><b>${gaps.length} gap${gaps.length === 1 ? '' : 's'} in the numbering:</b>
-      ${gaps.slice(0, 12).map((g) => esc(g.text)).join(' · ')}${gaps.length > 12 ? ` · and ${gaps.length - 12} more` : ''}</div>` : ''}
-    <div class="rep-count">${shown.length.toLocaleString()} record${shown.length === 1 ? '' : 's'}${shown.length < all.length
-      ? ` of ${all.length.toLocaleString()}` : ''}</div>
+    <div data-region="gaps">${regions.gaps}</div>
+    <div class="rep-count" data-region="count" role="status">${regions.count}</div>
     <div class="sch-scroll rep-scroll"><table class="sch-table rep-table">
-      <thead>
-        <tr>${resizableTh('id', 'Raw Video Id', 'fz rz1')}${resizableTh('folder', 'Folder', 'fz rz2')}
-          ${REPORT_COLUMNS.map(([k, h]) => resizableTh(k, h)).join('')}</tr>
-        <tr class="rep-colf"><th class="fz rz1"><input class="sch-in" data-col="id" value="${esc(r.columns.id || '')}"></th>
-          <th class="fz rz2"><input class="sch-in" data-col="folder" value="${esc(r.columns.folder || '')}"></th>
-          ${REPORT_COLUMNS.map(([k]) => `<th class="c-${k}"><input class="sch-in" data-col="${k}" value="${esc(r.columns[k] || '')}"></th>`).join('')}</tr>
-      </thead>
-      <tbody>${body || `<tr><td colspan="${width}" class="hint" style="padding:14px">Nothing matches these filters.</td></tr>`}</tbody>
+      <thead data-region="thead">${reportHeadHtml(r.columns)}</thead>
+      <tbody data-region="rows">${regions.rows.join('')}</tbody>
     </table></div>
-    ${shown.length > page.length ? `<div class="row" style="margin-top:8px">
-      <button class="sm" id="repMore">Show ${Math.min(REPORT_PAGE, shown.length - page.length)} more</button>
-      <span class="hint" style="margin:0">${page.length.toLocaleString()} of ${shown.length.toLocaleString()} shown</span></div>` : ''}`;
+    <div data-region="more">${regions.more}</div>`;
+}
+
+/** Draw the page, touching only what these records and filters change. */
+function reportPaint() {
+  const regions = reportRegions();
+  PAINT.paint($('content'), reportState(), regions, {
+    full: () => renderReportPage(regions), wire: wireReportPage,
+    rewire: (fresh) => fresh.forEach(wireReportButtons),
+    structural: ['title', 'tail', 'error', 'filters', 'thead'],
+  });
 }
 
 // Filters that offer the values in the data to pick from.
@@ -242,12 +288,20 @@ const REPORT_LISTS = ['activity', 'country', 'state', 'city', 'place', 'events',
 
 /** The filters' pick-lists: every value in the report (and the city list). */
 function reportDatalists(all) {
+  if (reportDatalists.from === all) return;
+  reportDatalists.from = all;
   const values = (k) => all.map((rec) => rec[k]);
   const cities = scheduleCities();
   const extra = { city: cities.map((c) => c.city), state: cities.map((c) => c.state),
     country: cities.map((c) => c.country), activity: SCHEDULE_VOCAB.activities,
     events: SCHEDULE_VOCAB.events, languages: SCHEDULE_VOCAB.languages };
   for (const k of REPORT_LISTS) setDatalist(`repList_${k}`, pickValues(values(k), extra[k]));
+}
+
+/** The two buttons a filter change redraws. */
+function wireReportButtons(root) {
+  root.querySelector('#repExport')?.addEventListener('click', reportExport);
+  root.querySelector('#repMore')?.addEventListener('click', () => { reportState().limit += REPORT_PAGE; render(); });
 }
 
 let reportFilterTimer = null;
@@ -257,9 +311,8 @@ function wireReportPage() {
   wireColumnResize(document.querySelector('.rep-table'), 'report');
   $('repFile')?.addEventListener('click', reportChooseFile);
   $('repReload')?.addEventListener('click', () => reportLoad(r.file));
-  $('repExport')?.addEventListener('click', reportExport);
+  wireReportButtons($('content'));
   $('repExported')?.addEventListener('click', () => window.api.reveal(r.exported));
-  $('repMore')?.addEventListener('click', () => { r.limit += REPORT_PAGE; render(); });
   // Every filter applies by itself: menus and picked values at once, typing
   // after a short pause. A date counts only once it is a whole dd/mm/yyyy (or
   // emptied), so a half-typed date never empties the list.

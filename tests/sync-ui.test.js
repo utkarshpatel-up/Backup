@@ -210,3 +210,74 @@ test('a backup start that fails puts the row back as it was, for the team too', 
   f.calls.length = 0; await f.run('syncUnprepare()');
   assert.equal(f.calls.length, 0, 'nothing to undo for a Clips-only start');
 });
+
+test('an unchanged view still advances the base revision but leaves the screen alone', async () => {
+  const f = fixture(); let renders = 0; f.c.render = () => { renders++; };
+  const data = { schedules: { items: [{ id: crypto.randomUUID(), sessions: [] }], openId: null }, team: {}, cities: null, report: [{ id: 'A' }] };
+  f.api.sync.view = async () => ({ signedIn: true, rev: f.run('syncUI.rev') + 1, data: JSON.parse(JSON.stringify(data)) });
+  await f.run('syncRefresh()');
+  const shown = f.state.schedules, report = f.state.report;
+  report.filters.city = 'Pune'; renders = 0;
+  await f.run('syncRefresh()');
+  assert.equal(f.run('syncUI.rev'), 12, 'a clean view always moves the base');
+  assert.equal(f.state.schedules, shown); assert.equal(f.state.report, report); assert.equal(renders, 0);
+  // New data replaces the screen, keeping the operator's filters.
+  data.report.push({ id: 'B' }); await f.run('syncRefresh()');
+  assert.notEqual(f.state.schedules, shown); assert.equal(f.state.report.existing.length, 2); assert.equal(f.state.report.filters.city, 'Pune'); assert.equal(renders, 1);
+  // Clearing forgets the comparison: the same data must load again for the next account.
+  f.run('syncClear()'); await f.run('syncRefresh()');
+  assert.equal(f.state.report.existing.length, 2);
+});
+test('a dirty edit still blocks an unchanged view from moving the base', async () => {
+  const f = fixture(); f.run('syncUI.dirty = true'); const rev = f.run('syncUI.rev');
+  await f.run('syncRefresh()'); assert.equal(f.run('syncUI.rev'), rev);
+});
+test('snapshots keep the report list by reference and still copy schedules', () => {
+  const f = fixture(); f.state.report = { existing: [{ id: 'A' }] };
+  f.state.schedules.items = [{ id: crypto.randomUUID(), sessions: [{ key: 1, title: 'x' }] }];
+  const snap = f.run('syncSnapshot()');
+  assert.equal(snap.report, f.state.report.existing);
+  assert.notEqual(snap.schedules.items[0], f.state.schedules.items[0]);
+});
+test('report records are memoized but follow in-place schedule edits', () => {
+  const f = fixture(); f.state.schedules.items = [{ id: crypto.randomUUID(), starts: { formal: 10 }, sessions: [{ key: 1, include: true, date: '2026-01-02', type: 'Formal', format: 'HD', author: 'DD', flags: {} }] }];
+  const a = f.run('reportRecords()');
+  assert.equal(f.run('reportRecords()'), a, 'same inputs: same result');
+  f.state.schedules.items[0].sessions[0].date = '2026-03-04';
+  const b = f.run('reportRecords()');
+  assert.notEqual(b, a); assert.equal(b.all[0].date, '2026-03-04');
+  f.state.schedules.items[0].busy = 'reading';
+  assert.equal(f.run('reportRecords()').scheduled, 0, 'a schedule being read drops out');
+  f.state.schedules.items[0].busy = null; f.state.report.existing = [{ id: 'X', folder: 1, date: '2020-01-01' }];
+  assert.equal(f.run('reportRecords()').all.length, 2, 'a new existing list counts');
+});
+test('the account page holds forms apart from busy state and typed values', () => {
+  const f = fixture(); f.run("syncUI.status = {mode:'account',signedIn:false,phase:'signed_out'}");
+  const idle = f.run('syncRegions().auth');
+  f.run('state.busy = {}; syncUI.changing = true');
+  assert.equal(f.run('syncRegions().auth'), idle, 'a backup starting must not redraw the form');
+  assert.equal(idle.includes('disabled'), false);
+  assert.match(idle, /<label for="syncEmail">/); assert.match(idle, /<label for="syncPassword">/);
+  assert.match(idle, /type="submit"/);
+});
+test('the account page offers only the forms that can work', () => {
+  const f = fixture();
+  f.run("syncUI.status = {mode:'account',signedIn:true,locked:true,phase:'revoked'}");
+  assert.equal(f.run('syncAuthForm(syncUI.status)'), '', 'a locked account cannot sign in without signing out');
+  f.run("syncUI.status = {mode:'account',signedIn:true,locked:false,phase:'expired'}");
+  assert.match(f.run('syncAuthForm(syncUI.status)'), /Sign in again/);
+  f.run("syncUI.status = {mode:'account',signedIn:true,locked:false,phase:'online'}");
+  assert.equal(f.run('syncAuthForm(syncUI.status)'), '');
+});
+test('form checks match what the engine accepts', () => {
+  const f = fixture(); f.c.v = {};
+  const check = (mode, values) => { f.c.v = values; return f.run(`syncCheckForm(${JSON.stringify(mode)}, v)`); };
+  assert.equal(check('signin', { name: '', email: 'a@b', password: 'x' }), null);
+  assert.deepEqual(Object.keys(check('signin', { name: '', email: 'nope', password: '' })), ['syncEmail', 'syncPassword']);
+  assert.deepEqual(Object.keys(check('signup', { name: ' ', email: 'a@b', password: '1234567' })), ['syncName', 'syncPassword']);
+  assert.equal(check('signup', { name: 'A', email: ' a@b ', password: '12345678' }), null);
+});
+test('account errors never echo an unknown error as written', () => {
+  const html = fixture(); html.run("syncUI.status = {mode:'account',signedIn:false,error:'<b>raw server text</b>'}");
+  assert.equal(html.run('renderSyncPage()').includes('raw server text'), false);
+});

@@ -115,6 +115,8 @@ contextBridge.exposeInMainWorld('api', {
     onStatus: (fn) => subscribe('update:status', fn),
   },
 
+  dns: { setCloudflare: () => ipcRenderer.invoke('dns:setCloudflare') },
+
   // A dropped File no longer carries .path (Electron 32+); ask for it here.
   pathForFile: (file) => webUtils.getPathForFile(file),
 

@@ -267,6 +267,7 @@ const listOf = (t) => String(t || '').split(',').map((x) => x.trim()).filter(Boo
 // before the focus reaches the next cell, and redrawing then would drop the
 // focus (and the page's scroll) back at the top.
 let scheduleRenderTimer = null;
+const scheduleForced = new Set();   // rows to redraw even if their HTML is the same: a typed value normalised back to what it was
 let scheduleChipFocus = null;   // the row and field whose add box takes the focus after a render
 function scheduleRerender() {
   clearTimeout(scheduleRenderTimer);
@@ -286,6 +287,7 @@ function scheduleSet(key, field, value) {
   if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) return;
   const row = scheduleFind(key);
   if (!row) return;
+  scheduleForced.add(row.key);
   if (field === 'include') row.include = !!value;
   else if (field === 'events' || field === 'languages') row[field] = listOf(value);
   else if (field === 'folder' || field === 'session') {
@@ -987,7 +989,7 @@ function wireColumnResize(table, scope) {
   });
 }
 
-function scheduleTableHtml(problems) {
+function scheduleTableParts(problems) {
   const s = state.schedule;
   const cities = scheduleCities();
   const nums = SCHEDULE.assignNumbers(s.sessions, s.starts);
@@ -1028,7 +1030,7 @@ function scheduleTableHtml(problems) {
   };
   const activities = pickValues(SCHEDULE_VOCAB.activities);
   const authors = pickValues(['DD', 'DJM', 'NM'], knownValues('author'));
-  const body = s.sessions.map((row) => {
+  const rows = s.sessions.map((row) => {
     const n = nums.get(row.key) || {};
     const plan = plans.get(row.key);
     const id = row.include ? SCHEDULE.masterId(row, n.folder, n.session) : '—';
@@ -1081,14 +1083,12 @@ function scheduleTableHtml(problems) {
         placeholder: String(SCHEDULE.camsFor(row, s.defaults)),
         title: 'Camera folders the backup creates (more can be added on the Cameras page)' })}
     </tr>`;
-  }).join('');
+  });
   const ticked = s.sessions.filter((x) => x.include).length;
-  return `<div class="sch-scroll"><table class="sch-table">
-    <thead><tr><th class="fz fz1"><input type="checkbox" id="schTickAll" ${ticked && ticked === s.sessions.length ? 'checked' : ''}
+  return { rows, thead: `<tr><th class="fz fz1"><input type="checkbox" id="schTickAll" ${ticked && ticked === s.sessions.length ? 'checked' : ''}
       ${ticked && ticked < s.sessions.length ? 'data-some="1"' : ''} title="Tick all / untick all"></th>
       <th class="fz fz2"></th>${resizableTh('id', 'Raw Video Id', 'fz fz3')}${resizableTh('folder', 'Folder', 'fz fz4')}
-      ${SCHEDULE_HEAD.map(([k, h]) => resizableTh(k, h)).join('')}</tr></thead>
-    <tbody>${body}</tbody></table></div>`;
+      ${SCHEDULE_HEAD.map(([k, h]) => resizableTh(k, h)).join('')}</tr>` };
 }
 
 function scheduleSourceHtml() {
@@ -1130,28 +1130,10 @@ function schedulePastHtml() {
   </div>`;
 }
 
-function renderSchedulePage() {
+/** The open schedule as paint regions; null when there is nothing to paint in parts. */
+function scheduleRegions() {
   const s = state.schedule;
-  if (!s) {
-    return `<div class="card" id="scheduleDrop">
-      <h3>Start from the event schedule</h3>
-      <p class="hint">Read the event's schedule — a WhatsApp poster, a photo, a PDF, or a Word, Excel or
-        CSV file — into rows laid out like the <b>Raw Satsang Master</b>. Pictures and PDFs are read on this
-        computer (no internet, no AI). Check every row, then press <b>Start backup</b> on a row: it sets up
-        that session's folders, so no structure zip is needed.</p>
-      <div class="row">
-        <button class="sm primary" id="btnSchedule">Choose schedule…</button>
-        <span class="hint" style="margin:0">or drop the schedule file on this card.</span>
-      </div>
-    </div>
-    ${schedulePastHtml()}
-    <div class="note" style="margin-top:12px">No schedule for this backup? Go to <b>Sources</b> and import a
-      structure zip as before.</div>`;
-  }
-  if (s.busy) {
-    return `<div class="card"><div class="empty"><div class="big">🔎</div><div>${esc(s.busy)}</div>
-      <div class="hint">Pictures are read on this computer; the first one takes a few seconds longer.</div></div></div>`;
-  }
+  if (!s || s.busy) return null;
   const problems = scheduleProblems();
   const included = s.sessions.filter((r) => r.include);
   const errors = included.filter((r) => blocksStart(problems.get(r.key)).length).length;
@@ -1162,7 +1144,9 @@ function renderSchedulePage() {
   const done = included.filter((r) => r.backedUp).length;
   const run = state.scheduleRun && state.scheduleRun.scheduleId === s.id && scheduleFind(state.scheduleRun.key);
   const cities = scheduleCities();
-  return `<div class="card">
+  const table = s.sessions.length ? scheduleTableParts(problems) : { rows: [], thead: '' };
+  return {
+    card: `<div class="card">
       <div class="row" style="align-items:flex-start">
         <div style="flex:1;min-width:0"><h3 style="margin:0">Event schedule · ${esc(scheduleRange(s))}</h3>
           <div class="path" style="margin-top:4px">${esc(s.file || '')}</div></div>
@@ -1190,8 +1174,8 @@ function renderSchedulePage() {
         <label class="field"><span>Informal</span>
           <input id="schCamsInformal" class="sch-in w-small" value="${esc(s.defaults.camsInformal ?? 1)}"></label>
       </div>
-    </div>
-    ${s.sessions.length ? `<div class="note ${errors ? 'err' : warned ? 'warn' : 'ok'}" style="margin:12px 0">
+    </div>`,
+    note: s.sessions.length ? `<div class="note ${errors ? 'err' : warned ? 'warn' : 'ok'}" style="margin:12px 0">
       <b>${included.length}</b> session${included.length === 1 ? '' : 's'} ticked${done ? ` · <b>${done}</b> backed up` : ''}${waiting
         ? ` · <b>${waiting}</b> waiting for a backup to fill the duration` : ''}${errors
         ? ` · <b>${errors}</b> with a <b>red</b> required field to fix` : ''}${warned
@@ -1199,16 +1183,112 @@ function renderSchedulePage() {
       ${run && !run.backedUp ? `<br>Backup in progress: <b>${esc(state.scheduleRun.id)}</b>` : ''}
       ${s.scan ? `<br>Durations read from <span class="mono">${esc(s.scan.root)}</span>:
         ${s.scan.filled} filled${s.scan.missing ? `, ${s.scan.missing} not on the drive` : ''}.` : ''}
-      ${s.saved ? `<br>Saved to <span class="mono">${esc(s.saved)}</span>.` : ''}</div>
-    ${scheduleTableHtml(problems)}` : ''}
-    <div class="row" style="margin-top:8px">
+      ${s.saved ? `<br>Saved to <span class="mono">${esc(s.saved)}</span>.` : ''}</div>` : '',
+    thead: table.thead,
+    rows: table.rows,
+    after: `<div class="row" style="margin-top:8px">
       <button class="sm" id="schAddRow" title="A session that was not on the schedule — or use ＋ on a row to add it below that row">＋ Add unplanned session</button>
       ${s.sessions.some((r) => !r.include) ? `<button class="sm ghost" id="schDelUnticked"
         title="Remove every row that is not ticked">✕ Delete unticked rows (${s.sessions.filter((r) => !r.include).length})</button>` : ''}
       ${s.undo ? `<span class="hint" style="margin:0">${esc(s.undo.label)}</span>
         <button class="sm" id="schUndo">Undo</button>` : ''}
     </div>
-    ${scheduleSourceHtml()}`;
+    ${scheduleSourceHtml()}`,
+  };
+}
+
+function renderSchedulePage(regions = scheduleRegions()) {
+  const s = state.schedule;
+  if (!s) {
+    return `<div class="card" id="scheduleDrop">
+      <h3>Start from the event schedule</h3>
+      <p class="hint">Read the event's schedule — a WhatsApp poster, a photo, a PDF, or a Word, Excel or
+        CSV file — into rows laid out like the <b>Raw Satsang Master</b>. Pictures and PDFs are read on this
+        computer (no internet, no AI). Check every row, then press <b>Start backup</b> on a row: it sets up
+        that session's folders, so no structure zip is needed.</p>
+      <div class="row">
+        <button class="sm primary" id="btnSchedule">Choose schedule…</button>
+        <span class="hint" style="margin:0">or drop the schedule file on this card.</span>
+      </div>
+    </div>
+    ${schedulePastHtml()}
+    <div class="note" style="margin-top:12px">No schedule for this backup? Go to <b>Sources</b> and import a
+      structure zip as before.</div>`;
+  }
+  if (s.busy) {
+    return `<div class="card"><div class="empty"><div class="big">🔎</div><div>${esc(s.busy)}</div>
+      <div class="hint">Pictures are read on this computer; the first one takes a few seconds longer.</div></div></div>`;
+  }
+  return `<div data-region="card">${regions.card}</div>
+    <div data-region="note">${regions.note}</div>
+    ${regions.rows.length ? `<div class="sch-scroll"><table class="sch-table">
+      <thead data-region="thead">${regions.thead}</thead>
+      <tbody data-region="rows">${regions.rows.join('')}</tbody></table></div>` : ''}
+    <div data-region="after">${regions.after}</div>`;
+}
+
+let scheduleListsTimer = null;
+/** Draw the page; after an ordinary edit only the rows that came out different are replaced. */
+function schedulePaint() {
+  const host = $('content');
+  const s = state.schedule;
+  // A prepared backup disables every control after drawing: always start from a full draw.
+  const locked = typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing);
+  const regions = locked ? null : scheduleRegions();
+  const forced = regions ? [...scheduleForced].map((key) => s.sessions.findIndex((r) => r.key === key)).filter((i) => i >= 0) : [];
+  scheduleForced.clear();
+  if (!regions) { host.innerHTML = renderSchedulePage(); wireSchedulePage(); return; }
+  PAINT.paint(host, s, regions, {
+    full: () => renderSchedulePage(regions), wire: wireSchedulePage, forced,
+    structural: ['card', 'thead', 'after'],
+    rewire: (fresh) => {
+      fresh.forEach(wireScheduleRows);
+      scheduleApplyChipFocus(host);
+      // The pick-lists may have gained a value; not worth holding up the keystroke for.
+      clearTimeout(scheduleListsTimer);
+      scheduleListsTimer = setTimeout(() => { if (state.view === 'schedule' && state.schedule && !state.schedule.busy) scheduleDatalists(); }, 400);
+    },
+  });
+}
+
+/** The listeners on the grid's rows, for a whole table or one redrawn row. */
+function wireScheduleRows(root) {
+  root.querySelectorAll('[data-k][data-f]').forEach((el) => {
+    el.addEventListener('change', () => scheduleSet(el.dataset.k, el.dataset.f, el.type === 'checkbox' ? el.checked : el.value));
+    openPickerOnClick(el);
+  });
+  root.querySelectorAll('[data-chip-del]').forEach((b) => b.addEventListener('click', () =>
+    scheduleChipRemove(b.dataset.chipDel, b.dataset.chipF, b.dataset.chipI, true)));
+  root.querySelectorAll('[data-chip-add]').forEach((el) => {
+    const key = el.dataset.chipAdd;
+    const field = el.dataset.chipF;
+    const commit = (stay) => { const v = el.value; el.value = ''; if (v.trim()) scheduleChipAdd(key, field, v, stay); };
+    el.addEventListener('focus', () => { if (field === 'events') scheduleEventPick(key); });
+    openPickerOnClick(el);
+    // Picked from the list: added at once, ready for another. Typed: Enter or a comma adds it.
+    el.addEventListener('input', (e) => {
+      if (!e.inputType || e.inputType === 'insertReplacementText' || el.value.endsWith(',')) commit(true);
+    });
+    el.addEventListener('change', () => commit(false));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(true); }
+      else if (e.key === 'Backspace' && !el.value) {
+        const row = scheduleFind(key);
+        if ((row[field] || []).length) scheduleChipRemove(key, field, row[field].length - 1, true);
+      }
+    });
+  });
+  root.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => scheduleAddRow(b.dataset.add)));
+  root.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => scheduleDeleteRows([b.dataset.del])));
+  root.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', () => scheduleStartBackup(b.dataset.start)));
+  root.querySelectorAll('[data-clips]').forEach((b) => b.addEventListener('click', () => scheduleClipsOnly(b.dataset.clips)));
+}
+
+function scheduleApplyChipFocus(host) {
+  if (!scheduleChipFocus) return;
+  const { key, field } = scheduleChipFocus;
+  scheduleChipFocus = null;
+  host.querySelector(`[data-chip-add="${key}"][data-chip-f="${field}"]`)?.focus();
 }
 
 function wireSchedulePage() {
@@ -1261,39 +1341,9 @@ function wireSchedulePage() {
       scheduleRerender();
     });
   }
-  host.querySelectorAll('.sch-table [data-k][data-f]').forEach((el) => {
-    el.addEventListener('change', () => scheduleSet(el.dataset.k, el.dataset.f, el.type === 'checkbox' ? el.checked : el.value));
-    openPickerOnClick(el);
-  });
-  host.querySelectorAll('[data-chip-del]').forEach((b) => b.addEventListener('click', () =>
-    scheduleChipRemove(b.dataset.chipDel, b.dataset.chipF, b.dataset.chipI, true)));
-  host.querySelectorAll('[data-chip-add]').forEach((el) => {
-    const key = el.dataset.chipAdd;
-    const field = el.dataset.chipF;
-    const commit = (stay) => { const v = el.value; el.value = ''; if (v.trim()) scheduleChipAdd(key, field, v, stay); };
-    el.addEventListener('focus', () => { if (field === 'events') scheduleEventPick(key); });
-    openPickerOnClick(el);
-    // Picked from the list: added at once, ready for another. Typed: Enter or a comma adds it.
-    el.addEventListener('input', (e) => {
-      if (!e.inputType || e.inputType === 'insertReplacementText' || el.value.endsWith(',')) commit(true);
-    });
-    el.addEventListener('change', () => commit(false));
-    el.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(true); }
-      else if (e.key === 'Backspace' && !el.value) {
-        const row = scheduleFind(key);
-        if ((row[field] || []).length) scheduleChipRemove(key, field, row[field].length - 1, true);
-      }
-    });
-  });
-  if (scheduleChipFocus) {
-    const { key, field } = scheduleChipFocus;
-    scheduleChipFocus = null;
-    host.querySelector(`[data-chip-add="${key}"][data-chip-f="${field}"]`)?.focus();
-  }
-  host.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => scheduleAddRow(b.dataset.add)));
+  wireScheduleRows(host);
+  scheduleApplyChipFocus(host);
   $('schAddRow')?.addEventListener('click', () => scheduleAddRow(null));
-  host.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => scheduleDeleteRows([b.dataset.del])));
   $('schDelUnticked')?.addEventListener('click', () => scheduleDeleteRows(s.sessions.filter((r) => !r.include).map((r) => r.key)));
   $('schUndo')?.addEventListener('click', scheduleUndoDelete);
   const all = $('schTickAll');
@@ -1303,8 +1353,6 @@ function wireSchedulePage() {
   }
   wireScheduleKeys(host.querySelector('.sch-table'));
   wireColumnResize(host.querySelector('.sch-table'), 'schedule');
-  host.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', () => scheduleStartBackup(b.dataset.start)));
-  host.querySelectorAll('[data-clips]').forEach((b) => b.addEventListener('click', () => scheduleClipsOnly(b.dataset.clips)));
   host.querySelector('details.sch-source')?.addEventListener('toggle', (e) => { s.showSource = e.target.open; });
 }
 

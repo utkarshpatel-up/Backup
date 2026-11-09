@@ -12,6 +12,7 @@ const { createSyncHost } = require('./sync/host');
 const { registerSyncIpc } = require('./sync/ipc');
 const { writeAtomic } = require('./sync/vault');
 const { createUpdater } = require('./updater');
+const { dnsAndRestart } = require('./dns');
 app.setName('AV Backup');
 const primaryInstance = app.requestSingleInstanceLock();
 if (!primaryInstance) app.quit();
@@ -24,6 +25,7 @@ let updater = null;
 let closer = null;
 let quittingApproved = false;
 let quitPending = null;
+let dnsRunning = false;
 const APP_FILE = path.join(__dirname, '..', 'renderer', 'index.html');
 const APP_URL = pathToFileURL(APP_FILE).href;
 const handle = trustedHandle(ipcMain, () => win, APP_URL);
@@ -231,6 +233,24 @@ handle('update:check', () => updater.check());
 handle('update:download', () => updater.download());
 handle('update:restart', () => updater.restart());
 handle('update:openPage', () => updater.openPage());
+
+handle('dns:setCloudflare', async () => {
+  if (dnsRunning) return { ok: false, code: 'busy', error: 'Already changing DNS.' };
+  dnsRunning = true;
+  try {
+    const r = await dnsAndRestart({
+      isBusy: () => !!global.__vingestBusy,
+      closer,
+      confirm: async () => (await dialog.showMessageBox(win, {
+        type: 'question', buttons: ['Set DNS & restart', 'Cancel'], defaultId: 1, cancelId: 1,
+        message: 'Set DNS to Cloudflare (1.1.1.1, 1.0.0.1) and restart AV Backup?',
+        detail: 'Your computer will ask for administrator permission. Only the active Wi-Fi/Ethernet connection changes; the computer does not reboot. Unsaved edits are saved first.',
+      })).response === 0,
+      relaunch: () => { closer.approved = true; quittingApproved = true; global.__vingestBusy = false; app.relaunch(); app.quit(); },
+    });
+    return r;
+  } finally { dnsRunning = false; }
+});
 
 handle('app:setBusy', (_e, busy) => { global.__vingestBusy = !!busy; return true; });
 

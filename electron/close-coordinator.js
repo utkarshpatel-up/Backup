@@ -41,6 +41,17 @@ class CloseCoordinator {
     this.pending = null;
     this.approved = false;
   }
+  /** Save only: true when the editor and local store saved. Never discards, never sets `approved`; failure restores the editor. */
+  flushStrict() {
+    if (this.pending) return Promise.resolve(false);
+    const run = Promise.resolve().then(async () => {
+      if (this.isBusy()) return false;
+      await this.flushRenderer(); await this.flushLocal();
+      return true;
+    }).catch(() => false).then((ok) => { this.pending = null; if (!ok) this.cancelled(); return ok; });
+    this.pending = run;
+    return run;
+  }
   request() {
     if (this.approved) return Promise.resolve(true);
     if (this.pending) return this.pending;

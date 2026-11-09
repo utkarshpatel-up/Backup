@@ -88,6 +88,17 @@ async function run() {
   assert.equal(await w.webContents.executeJavaScript('typeof window.api.pathForFile'), 'function');
   console.log(`PASS Electron ${process.versions.electron}: isolated local-mode startup and sandboxed preload`);
 
+  // The Account page on the real preload: drawn once, then left alone by a redraw, without touching the local profile.
+  const account = await w.webContents.executeJavaScript(`showSync().then(() => {
+    const page = document.querySelector('.sync-page'), advanced = document.getElementById('syncAdvanced');
+    const url = document.getElementById('syncAuthUrl'); url.value = 'typing';
+    render();
+    return { samePage: page === document.querySelector('.sync-page'), kept: document.getElementById('syncAuthUrl').value, closed: !advanced.open, on: document.getElementById('syncEnabled').checked };
+  })`);
+  assert.deepEqual(account, { samePage: true, kept: 'typing', closed: true, on: false });
+  await w.webContents.executeJavaScript('showSchedule()');
+  console.log('PASS Account page renders and keeps typed fields on the real preload');
+
   const pdfPath = path.join(dir, 'smoke.pdf');
   fs.writeFileSync(pdfPath, pdfFixture());
   const pages = await w.webContents.executeJavaScript(`schedulePdfPages(${JSON.stringify(pdfPath)}).then(pages => ({ count: pages.length, png: pages[0].startsWith('data:image/png') }))`);

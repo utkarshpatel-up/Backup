@@ -76,6 +76,7 @@ const STEPS = [
 /* ---------------------------------------------------------------- helpers */
 
 const $ = (id) => document.getElementById(id);
+const PAINT = window.VIngestPaint;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const selectionRules = window.VIngestSelection;
@@ -3844,7 +3845,7 @@ function render() {
   const onReport = state.view === 'report';
   $('backupMode').textContent = isInformal() ? 'Informal backup' : 'Formal backup';
   const run = state.scheduleRun;
-  $('steps').innerHTML = `
+  const steps = `
     <li class="${onSchedule ? 'active' : ''} ${state.busy ? 'disabled' : ''}" data-view="schedule">
       <span class="num">≡</span><span>Event schedule</span></li>
     ${run ? `<li class="step-note mono" title="This backup was started from the event schedule">${esc(typeof syncAccount === 'function' && syncAccount() && !syncAvailable() ? 'Backup in progress' : run.id)}</li>` : ''}`
@@ -3854,23 +3855,31 @@ function render() {
       <span class="num">${i + 1}</span><span>${s.label}</span></li>`).join('')
     + `<li class="${onReport ? 'active' : ''} ${state.busy ? 'disabled' : ''}" data-view="report">
       <span class="num">▤</span><span>Report</span></li>`;
-  document.querySelectorAll('[data-step]').forEach((li) =>
-    li.addEventListener('click', () => goStep(Number(li.dataset.step))));
-  document.querySelector('[data-view="schedule"]')?.addEventListener('click', showSchedule);
-  document.querySelector('[data-view="report"]')?.addEventListener('click', showReport);
+  // The nav and top buttons are rewritten only when they change: a background redraw
+  // must not knock the keyboard focus off them.
+  if (PAINT.setHtml($('steps'), steps)) {
+    document.querySelectorAll('[data-step]').forEach((li) =>
+      li.addEventListener('click', () => goStep(Number(li.dataset.step))));
+    document.querySelector('[data-view="schedule"]')?.addEventListener('click', showSchedule);
+    document.querySelector('[data-view="report"]')?.addEventListener('click', showReport);
+  }
 
-  $('topActions').innerHTML = `
+  const topActions = `
     ${state.engine.info && !state.engine.info.ffprobe
       ? '<button class="sm" id="btnFindFfprobe">Locate ffprobe</button>' : ''}
     <button class="sm ghost" id="btnRestart">Restart engine</button>
+    ${['win32', 'darwin'].includes(window.api.platform) ? `<button class="sm ghost" id="btnDns" title="Sets DNS to 1.1.1.1 and 1.0.0.1 on the active Wi-Fi/Ethernet connection (asks for administrator permission), then restarts AV Backup.">Set Cloudflare DNS &amp; restart (${window.api.platform === 'win32' ? 'Windows' : 'Mac'})</button>` : ''}
     ${typeof showSync === 'function' ? '<button class="sm" id="btnAccount">Account</button>' : ''}`;
-  $('btnAccount')?.addEventListener('click', () => showSync().catch(() => toast('Save failed; account view could not open.', 'err')));
-  $('btnRestart').addEventListener('click', restartEngine);
-  $('btnFindFfprobe')?.addEventListener('click', locateFfprobe);
+  if (PAINT.setHtml($('topActions'), topActions)) {
+    $('btnAccount')?.addEventListener('click', () => showSync().catch(() => toast('Save failed; account view could not open.', 'err')));
+    $('btnRestart').addEventListener('click', restartEngine);
+    $('btnDns')?.addEventListener('click', setCloudflareDns);
+    $('btnFindFfprobe')?.addEventListener('click', locateFfprobe);
+  }
 
   if (state.view === 'account') {
     $('stepTitle').textContent = 'Account'; $('stepHint').textContent = 'Team sync settings and review';
-    $('content').innerHTML = renderSyncPage(); wireSyncPage(); $('footer').innerHTML = ''; return;
+    syncPaint(); $('footer').innerHTML = ''; return;
   }
   if (typeof syncAccount === 'function' && syncAccount() && !syncAvailable() && (onSchedule || onReport)) {
     $('content').innerHTML = '<div class="card">Team data is unavailable. Open Account to sign in or check access.</div>';
@@ -3881,8 +3890,7 @@ function render() {
     $('stepHint').textContent = 'Read the schedule, check every row, then start each session\'s backup from its row.';
     // Keep the table's scroll and the row the keyboard is on (Space re-renders).
     const snap = scheduleSnapshot();
-    $('content').innerHTML = renderSchedulePage();
-    wireSchedulePage();
+    schedulePaint();
     scheduleRestore(snap);
     renderFooter();
     renderModals();
@@ -3892,8 +3900,7 @@ function render() {
     $('stepTitle').textContent = 'Report';
     $('stepHint').textContent = 'Every session on record, plus the rows of the event schedules. Gaps in the numbering show in yellow.';
     const snap = scheduleSnapshot();
-    $('content').innerHTML = renderReportPage();
-    wireReportPage();
+    reportPaint();
     scheduleRestore(snap);
     renderFooter();
     renderModals();
@@ -4433,6 +4440,18 @@ window.api.onStatus((msg) => {
     render();
   }
 });
+
+async function setCloudflareDns() {
+  // Main re-checks its own busy flag; this also covers an unsaved prepared plan or schedule run.
+  if (state.busy || state.scheduleRun || (state.plan && !state.runResult)) {
+    toast('Finish or cancel the current backup before changing DNS and restarting.', 'warn');
+    return;
+  }
+  try {
+    const r = await window.api.dns.setCloudflare();
+    if (!r.ok && r.code !== 'cancelled') toast(r.error, r.code === 'busy' ? 'warn' : 'err');
+  } catch (e) { toast(e.message, 'err'); }
+}
 
 async function restartEngine() {
   const r = await window.api.restart();

@@ -7,6 +7,8 @@
     "start": "electron .",
     "test:renderer": "node --test tests/*.test.js",
     "test:electron": "node scripts/test-electron.js",
+    "test:account-ui": "node scripts/renderer-harness.js account",
+    "perf:renderer": "node scripts/renderer-harness.js perf",
     "bundle:python": "node scripts/build-python.js",
     "dist": "npm run bundle:python && electron-builder",
     "dist:mac": "bash scripts/macos.sh build",

@@ -80,6 +80,7 @@
     "@tesseract.js-data/guj": "1.0.0",
     "electron-updater": "^6.8.11",
     "pdfjs-dist": "3.11.174",
-    "tesseract.js": "7.0.0"
+    "tesseract.js": "7.0.0",
+    "undici": "^6.29.1"
   }
 }

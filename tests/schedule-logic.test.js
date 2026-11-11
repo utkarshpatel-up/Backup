@@ -444,3 +444,12 @@ test('report filters work like Frappe\'s: text anywhere, exact menus, folder and
   assert.deepEqual(ids({ dateFrom: '2026-10-18', dateTo: '2026-10-18' }), ['C']);
   assert.deepEqual(ids({ year: '2026', city: 'adal' }), ['A', 'B']);
 });
+
+test('sortByRaw orders by folder number, numberless rows last and stable', () => {
+  const rows = [{ k: 'a', folder: '3060' }, { k: 'b' }, { k: 'c', folder: '3057' }, { k: 'd', folder: null },
+    { k: 'e', folder: '3060' }];
+  const keys = (d) => S.sortByRaw(rows, d).map((r) => r.k).join('');
+  assert.equal(keys('asc'), 'caebd');
+  assert.equal(keys('desc'), 'aecbd');
+  assert.equal(rows[0].k, 'a');
+});

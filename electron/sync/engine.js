@@ -227,7 +227,9 @@ class SyncEngine extends EventEmitter {
     }
     this.gen += 1;   // anything still in flight from before this sign-in is stale now
     this.session = session;
-    writeAtomic(this.fs, this.cfgFile, JSON.stringify({ enabled: c.enabled, serverUrl: c.serverUrl, email: email.trim() }, null, 2));
+    try {
+      writeAtomic(this.fs, this.cfgFile, JSON.stringify({ enabled: c.enabled, serverUrl: c.serverUrl, email: email.trim() }, null, 2));
+    } catch (_) { /* remembering the e-mail is a convenience; the sign-in already succeeded */ }
     const d = this.acct.data;
     d.identity = { role: me.role, display_name: me.display_name, verifiedAt: new Date(this.now()).toISOString() };
     d.locked = false;   // the server just accepted this person again: held work may go

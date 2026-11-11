@@ -2681,3 +2681,12 @@ def test_a_cam_folder_in_use_is_not_split_by_a_new_name(tmp_path):
     cams = session / "Clips for Insert"
     assert sorted(p.name for p in cams.iterdir()) == ["Cam-07"]
     assert any("already holds" in w for w in plan["targets"][0]["warnings"])
+
+
+def test_space_check_block_warn_ok():
+    G = ingest._SIZE_BASE ** 3
+    kind, msg = ingest.space_check(412 * G, 380 * G, "/Volumes/PRORES-1")
+    assert kind == "block" and "PRORES-1" in msg and "32.0 GB short" in msg
+    assert ingest.space_check(100 * G, 103 * G, "/V/A")[0] == "warn"     # 3 GB left
+    assert ingest.space_check(100 * G, 1000 * G, "/V/A")[0] == "ok"
+    assert ingest.space_check(5 * G, 0, "/V/A")[0] == "ok"               # unknown free

@@ -3074,6 +3074,7 @@ function renderCopy() {
         </div>`
         : t.in_place ? `<div class="note ok">The folder name is already complete —
             only the clips need filing.</div>` : ''}
+      ${t.space_error ? `<div class="note err">${esc(t.space_error)}</div>` : ''}
       ${t.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
       <div class="tree">
         ${t.job_folder ? `<div class="dir">📁 ${esc(t.job_folder)}</div>` : ''}
@@ -3509,6 +3510,12 @@ async function reconcileRunState(plan, result) {
 
 async function doRun() {
   const p = state.plan;
+  const full = p.targets.map((t) => t.space_error).filter(Boolean);
+  if (full.length) {
+    await window.api.confirm({ message: 'Not enough space to copy', detail: full.join('\n'),
+      confirmLabel: 'OK', danger: true });
+    return;
+  }
   const renames = (p.renames || []).map((r) => `\n  ${r.from}\n    ↳ ${r.to}`).join('');
   const ok = await window.api.confirm({
     message: p.item_count

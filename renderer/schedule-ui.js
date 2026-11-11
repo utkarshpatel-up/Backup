@@ -70,6 +70,7 @@ async function restoreSchedules(settings) {
   store.items.forEach((item) => { scheduleHydrate(item, settings); scheduleHoldNumbers(item); });
   state.schedules = store;
   state.schedule = store.items.find((x) => x.id === store.openId) || null;
+  if (settings && settings.scheduleSort) state.scheduleSort = settings.scheduleSort;
   if (settings && settings.colWidths) state.colWidths = { schedule: {}, report: {}, ...settings.colWidths };
   const cities = await window.api.getStore('cities').catch(() => null);
   if (cities && Array.isArray(cities.rows)) {
@@ -283,6 +284,12 @@ function scheduleDatePart(row, part, value) {
   return `${parts.y}-${parts.m}-${parts.d}`;
 }
 
+/** Put the rows in Raw number order; the saved order follows the array order. */
+function scheduleSortRows() {
+  const s = state.schedule;
+  if (s && s.sessions) s.sessions = SCHEDULE.sortByRaw(s.sessions, state.scheduleSort);
+}
+
 function scheduleSet(key, field, value) {
   if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) return;
   const row = scheduleFind(key);
@@ -309,6 +316,7 @@ function scheduleSet(key, field, value) {
   const flagged = ['y', 'm', 'd'].includes(field) ? 'date' : field;
   if (flagged === 'session' || flagged === 'date') delete row.flags.session;
   delete row.flags[flagged];
+  if (field === 'folder') scheduleSortRows();
   state.schedule.saved = null;
   scheduleRemember();
   scheduleRerender();
@@ -1168,6 +1176,9 @@ function scheduleRegions() {
         <label class="field"><span>Format</span>
           <select id="schFormat" class="sch-in w-fmt">${['HD', '4K', 'DV'].map((t) =>
             `<option ${s.defaults.format === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+        <label class="field"><span>Sort by Raw number</span>
+          <select id="schSort" class="sch-in">${[['asc', 'Ascending'], ['desc', 'Descending']].map(([v, l]) =>
+            `<option value="${v}" ${(state.scheduleSort || 'asc') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <button class="sm" id="schApply" title="Set this author and format on every row">Apply to all rows</button>
         <label class="field"><span>Cam folders · Formal</span>
           <input id="schCamsFormal" class="sch-in w-small" value="${esc(s.defaults.camsFormal ?? 3)}"></label>
@@ -1323,6 +1334,14 @@ function wireSchedulePage() {
   $('schCities')?.addEventListener('click', scheduleImportCities);
   $('schReveal')?.addEventListener('click', () => window.api.reveal(s.saved));
   $('schApply')?.addEventListener('click', scheduleApplyDefaults);
+  $('schSort')?.addEventListener('change', (e) => {
+    state.scheduleSort = e.target.value;
+    window.api.setSettings({ scheduleSort: state.scheduleSort }).catch(() => {});
+    scheduleSortRows();
+    s.saved = null;
+    scheduleRemember();
+    scheduleRerender();
+  });
   for (const [id, key] of [['schFormal', 'formal'], ['schInformal', 'informal']]) {
     $(id)?.addEventListener('change', (e) => {
       const v = e.target.value.trim();

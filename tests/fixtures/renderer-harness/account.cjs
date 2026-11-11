@@ -49,6 +49,17 @@ module.exports = async ({ open, until, out }) => {
   assert.deepEqual(v, { form: true, labelled: true, url: false, adv: false });
   pass('signed-out page: one labelled sign-in form; server config tucked under Advanced');
 
+  await js(w, `window.__mock.status = { ...window.__mock.status, config: { ...window.__mock.status.config, email: 'me@example.test' } }; window.__fireStatus(structuredClone(window.__mock.status)); showSync();`);
+  await until(w, `document.getElementById('syncEmail')?.value === 'me@example.test'`);
+  v = await js(w, `({ focus: document.activeElement === document.getElementById('syncPassword'), forget: !!document.getElementById('syncForgetEmail') })`);
+  assert.deepEqual(v, { focus: true, forget: true });
+  await js(w, `document.getElementById('syncForgetEmail').click()`);
+  await until(w, `!document.getElementById('syncForgetEmail')`);
+  v = await js(w, `({ email: document.getElementById('syncEmail').value, calls: window.__mock.calls.map(c => c[0]).filter(c => c === 'forgetEmail') })`);
+  assert.deepEqual(v, { email: '', calls: ['forgetEmail'] });
+  await js(w, `window.__mock.calls.length = 0`);
+  pass('remembered e-mail is pre-filled with focus on the password, and Forget e-mail clears it');
+
   v = await js(w, `(async () => {
     const e = document.getElementById('syncEmail'), p = document.getElementById('syncPassword');
     e.value = 'typed@example.test'; p.value = 'hunter2hunter2'; p.focus(); p.setSelectionRange(3, 3);
@@ -197,6 +208,21 @@ module.exports = async ({ open, until, out }) => {
     w.destroy();
   }
   pass('expired offers sign-in again; locked offers sign-out only');
+
+  // ---------------------------------------------------------------- sidebar team server
+  for (const [flow, want] of [['local', ['Local mode']], ['signedin', ['ZeroTier: Connected', 'PocketBase: Not reachable']]]) {
+    w = await open({ flow });
+    await tick();
+    v = await js(w, `(async () => {
+      const lines = [...document.querySelectorAll('#teamLines .team-line')].map(l => l.textContent);
+      document.getElementById('btnTeamAccount').click();
+      await new Promise(r => setTimeout(r, 60));
+      return { lines, live: document.getElementById('teamLines').getAttribute('aria-live'), title: document.getElementById('stepTitle').textContent };
+    })()`);
+    assert.deepEqual(v, { lines: want, live: 'polite', title: 'Account' });
+    w.destroy();
+  }
+  pass('sidebar team server: text states, and its Account button opens the Account page');
 
   nativeTheme.themeSource = 'dark';
   w = await page('signedout');

@@ -20,7 +20,7 @@ function fixture() {
     } };
   const c = vm.createContext({ window: { api, VIngestSchedule: require('../renderer/schedule-logic') }, state, crypto,
     setTimeout, clearTimeout, console, document: { activeElement: null, addEventListener() {}, querySelectorAll: () => [] },
-    render() {}, toast() {}, esc: (x) => String(x ?? '').replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
+    render() {}, toast() {}, fmtTime: (x) => `at ${x}`, esc: (x) => String(x ?? '').replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
     call: async () => ({ rows: [] }), $: () => null });
   for (const file of ['schedule-ui.js', 'report-ui.js', 'sync-ui.js']) vm.runInContext(fs.readFileSync(`renderer/${file}`, 'utf8'), c);
   const run = (s) => vm.runInContext(s, c);
@@ -112,6 +112,32 @@ test('conflict alternatives are escaped text rather than remote HTML', () => {
   const html = f.run('renderSyncPage()');
   assert.equal(html.includes('<script>bad'), false); assert.equal(html.includes('<img src=x>'), false);
   assert.equal(html.includes('Keep current'), true); assert.equal(html.includes('Accept incoming'), true);
+});
+test('conflict kinds read as plain words and only differing live fields are flagged', () => {
+  const f = fixture();
+  assert.equal(f.run('syncKindLabel("stale_edit")'), 'Edited on another computer at the same time');
+  assert.equal(f.run('syncKindLabel("delete_vs_edit")').startsWith('Deleted on another computer'), true);
+  assert.equal(f.run('syncKindLabel("new_kind")'), 'Changed on two computers');
+  const cols = f.run('syncColumns("session", ["date","start","topic","place","events"], [{date:"2026-10-17",start:"09:00",topic:"A",place:"Hall",events:["x"]}, {date:"2026-10-18",start:"10:00",topic:"A",place:"Hall",events:["x"]}, null])');
+  // Schedule column order; Start is off the grid but differs, so it is added at the end.
+  assert.deepEqual([...cols].map((c) => c.k), ['y', 'm', 'd', 'place', 'events', 'topic', 'start']);
+  const diff = f.run('(c) => [...syncDiffers(c, [{date:"2026-10-17",start:"09:00",topic:"A",place:"Hall",events:["x"]}, {date:"2026-10-18",start:"10:00",topic:"A",place:"Hall",events:["x"]}, null])]')(cols);
+  assert.deepEqual([...diff].sort(), ['d', 'start']);
+  assert.deepEqual([...f.run('syncColumns("city", ["name","city","state"], [{name:"a"}])')].map((c) => c.k), ['name', 'city', 'state']);
+});
+test('conflicts and saved drafts render as tables with a Deleted row and the same buttons', () => {
+  const f = fixture();
+  f.run(`syncUI.conflicts=[{conflictId:"c1",kind:"delete_vs_edit",targetType:"session",fields:["date","start","topic"],schedule:"Camp",
+    current:{payload:{date:"2026-10-17",start:"09:00",topic:"Old"},by:"Asha",at:"T1"},incoming:{payload:null,by:"Ravi",at:"T2"},draft:{value:{date:"2026-10-17",start:"09:00",topic:"New"}}}];
+    syncUI.reviews=[{id:"r1",type:"city",fields:["name","city"],current:{name:"Pune",city:"Pune"},value:{name:"Pune",city:"Poona"},expectedHead:"h",reason:"Refused"}]`);
+  const html = f.run('renderSyncPage()');
+  assert.equal(html.includes('<pre>'), false);
+  assert.match(html, /Conflict: Camp · 17\/10\/2026 · 09:00 · Old/);
+  assert.match(html, /Deleted on another computer/);
+  assert.match(html, /<th scope="row">Incoming<div class="hint">Ravi · at T2<\/div><\/th><td class="sync-deleted" colspan="4">Deleted<\/td>/);
+  assert.match(html, /<td class="sync-changed">New<\/td>/);
+  assert.match(html, /<td class="sync-changed">Poona<\/td>/);
+  for (const b of ['data-conflict="0" data-choice="keep_current"', 'data-choice="accept_incoming"', 'data-choice="mine"', 'data-discard="0"', 'data-retry="0"']) assert.equal(html.includes(b), true, b);
 });
 test('revocation flushes unsaved edits into the locked cache before clearing visible data', async () => {
   const f = fixture(); f.state.schedules.items = [{ id: crypto.randomUUID(), sessions: [{ key: 1, topic: 'unsaved' }] }];

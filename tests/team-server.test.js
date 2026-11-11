@@ -67,7 +67,7 @@ test('wiring: one argument-free IPC call, address read from the saved config, DN
   const read = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
   assert.match(read('electron/preload.js'), /teamServer: \{ status: \(\) => ipcRenderer\.invoke\('teamServer:status'\) \}/);
   const main = read('electron/main.js');
-  assert.match(main, /handle\('teamServer:status', \(_e, \.\.\.args\) => \{\n {2}if \(args\.length\) throw/);
+  assert.match(main, /handle\('teamServer:status', \(_e, \.\.\.args\) => \{\s+if \(args\.length\) throw/);
   assert.match(main, /engine\.publicConfig\(\)/);
   assert.doesNotMatch(main + read('electron/preload.js') + read('renderer/app.js'), /dns:setCloudflare|btnDns/);
 });

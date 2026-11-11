@@ -1,16 +1,15 @@
-# AV Backup team sync: database contract, protocol v1
+# AV Backup team sync: server contract, protocol v1
 
-> **Status: implemented, not yet run on Neon.** The server is a hosted
-> [Neon](https://neon.com) project: its Postgres, its Data API and its Managed Better
-> Auth. The migration
-> [`migrations/20261107000000_av_backup_sync_v1.sql`](migrations/20261107000000_av_backup_sync_v1.sql)
-> and the app's account mode exist and are tested on a disposable local PostgreSQL 16,
-> with a stand-in for Neon's auth functions and a fake auth server. **None of it has run
-> against a real Neon project yet.** Setup steps: [../docs/NEON_SETUP.md](../docs/NEON_SETUP.md).
+> **Status: implemented and checked on PocketBase v0.40.6 (one macOS machine); not yet over ZeroTier or on Windows.** The server is
+> [PocketBase](https://pocketbase.io) on an office computer, reached over ZeroTier. The rules
+> are [`pb_hooks/avb_core.js`](pb_hooks/avb_core.js), served by
+> [`pb_hooks/avb.pb.js`](pb_hooks/avb.pb.js); [`pb_migrations/`](pb_migrations) creates the
+> tables. They are tested in Node on SQLite with a stand-in for PocketBase's auth API. Setup:
+> [../docs/POCKETBASE_SETUP.md](../docs/POCKETBASE_SETUP.md).
 
 ## Who may do what
 
-The database enforces all of this. A hidden button in the app is not enforcement.
+The server enforces all of this. A hidden button in the app is not enforcement.
 
 | | Active operator | Active admin | Inactive, removed or not a member | Anonymous |
 |---|---|---|---|---|
@@ -21,44 +20,37 @@ The database enforces all of this. A hidden button in the app is not enforcement
 | **Delete or restore a whole schedule** (and close a stale deletion attempt) | no | yes | no | no |
 | Grant roles, add or remove members | no | no | no | no |
 
-- **Roles are server data.** They live in `avb_private.members`, and only the database
-  owner can change them. No JWT claim but `sub` is read: not `role`, `email` or any
-  metadata. Every call looks up `auth.user_id()` (the JWT's `sub`, from Neon's
-  `pg_session_jwt`) in the live membership table, so deactivating someone takes effect
-  on their next call, even if their token is still valid. Demotion works the same way.
-- **Sign-up is open, membership is not.** Neon's Managed Better Auth cannot restrict
-  sign-up yet, so anyone who finds the Auth URL can create an account. An account alone
-  reads and writes nothing: every call answers `avb:not_member` until the maintainer
-  adds it. Because an e-mail could be registered by someone else first, the maintainer
-  names a member by user id *and* e-mail.
+- **Roles are server data.** They live in the `avb_members` collection, which only a
+  PocketBase superuser can read or change (all its API rules are empty). The token is used
+  only to know which `users` record is calling; every call then looks that id up in the live
+  membership, so deactivating someone takes effect on their next call, even if their token
+  is still valid. Demotion works the same way.
+- **Sign-up is open, membership is not** (unless the maintainer closes the `users` create
+  rule). An account alone reads and writes nothing: every call answers `avb:not_member`
+  until the maintainer adds it. The maintainer picks the `users` record itself in the
+  dashboard, so a member is never named by e-mail alone.
 - **An app admin is not the server maintainer.** An admin is an app account with one
-  extra right. The maintainer has the Neon Console and the `neondb_owner` role, can do
-  anything, and is the only one who manages members. Never give anyone Neon Auth's own
-  "admin" role: the Data API would then try to run their requests as a database role
-  called `admin` and refuse them. The app spots this at sign-in and says so.
+  extra right. The maintainer is the PocketBase superuser, can do anything, and is the only
+  one who manages members.
 - **No MFA.** Whole-schedule delete and restore need the admin role only, as agreed.
   They are still checked online against the live membership, never a cached role.
 
 ## Shape
 
-- All tables are in schema `avb_private`. The Data API does not expose it, and no API
-  role has privileges on it. RLS is also on with no policies, as a second lock.
-- The app calls six RPCs in `public`. Each is a `SECURITY INVOKER` SQL wrapper around
-  a private `SECURITY DEFINER` function that has `search_path = ''`. Execute is
-  revoked from `PUBLIC` and `anonymous`, and granted only to `authenticated`. A definer
-  function never sits in an exposed schema. The tests check all of it in the catalog.
+- The sync data is in plain SQLite tables (`avb_targets`, `avb_versions`, `avb_conflicts`,
+  `avb_mutations`, `avb_member_audit`), not PocketBase collections, so PocketBase's record
+  API never exposes them. The only way in is the six routes below, which require a valid
+  `users` auth token.
 - **Server-authoritative versions.** Every change to a target writes an immutable
   version with a server-generated `version_id`, actor and time. A target's *head* is
   its current version. A write names the `base_version_id` it was made from. There
   are no vector clocks and no timestamp winners.
-- **One writer at a time.** `avb_sync_apply` takes one transaction-level advisory
-  lock, so commit order equals `change_seq` order. A reader's cursor therefore never
-  skips a change that commits later. The lock waits at most 5 s, then fails with
-  `55P03`, writes nothing, and can be retried with the same `mutation_id`. This suits
-  a small team. Revisit if a batch ever takes seconds.
+- **One writer at a time.** Each call runs in one transaction, and PocketBase serialises
+  write transactions on SQLite, so commit order equals `change_seq` order. A reader's
+  cursor therefore never skips a change that commits later. A busy database answers
+  `55P03`, writes nothing, and can be retried with the same `mutation_id`.
 - **Append-only.** Versions, mutation records and the membership audit refuse
-  `UPDATE`, `DELETE` and `TRUNCATE`, even from the owner. History is never
-  garbage-collected.
+  `UPDATE` and `DELETE` (SQLite triggers). History is never garbage-collected.
 
 ## Target types
 
@@ -96,11 +88,9 @@ parent-deletion protection as session rows:
   and parts that are gone. Each change is based on the version the screen showed, as
   for sessions.
 
-The reference splitter and rebuilder are `packLine` and `unpackLines` in
-`tests/db/roundtrip.js`. They keep each part's JSON under 24,000 bytes, which
-leaves room under the limit after jsonb's spacing. That test round-trips the four
-real OCR fixtures and a 300-cell line holding an Excel-maximum 32,767-character
-Gujarati cell with emoji.
+The splitter and rebuilder are `packLine` and `unpackLines` in
+`electron/sync/source-pack.js`. They keep each part's JSON under 24,000 bytes, which
+leaves room under the limit, which is measured with `", "` and `": "` separators.
 
 `geo` is the city **record** (the `city` target's `name`) that the operator picked
 when several cities share a name. `startedAt` records that a backup from the row
@@ -121,13 +111,12 @@ or restored with the generic operations.
 
 ## Calling
 
-Every call is a POST to `<Data API URL>/rpc/<name>` with body `{ "p_request": … }`
-and `Authorization: Bearer <JWT>`, the user's own 15-minute token from Managed Better
-Auth. The Data API is PostgREST-compatible, so errors are expected as
-`{ code, message, details }` (to confirm on a real project). `message` is a
-stable `avb:<code>`, and `code` is the SQLSTATE: `42501` (HTTP 401/403) for
-identity and permission errors, `P0001` (HTTP 400) for everything else, and `55P03`
-for the lock timeout. **On any error, nothing in the request was applied.**
+Every call is a POST to `<server>/api/avb/rpc/<name>` with body `{ "p_request": … }` and
+`Authorization: <token>`, the user's PocketBase auth token. Errors come back as
+`{ code, message, details }`: `message` is a stable `avb:<code>`, and `code` is `42501`
+(HTTP 403) for identity and permission errors, `P0001` (HTTP 400) for everything else, and
+`55P03` (HTTP 503) when the database is busy. A missing or expired token answers 401.
+**On any error, nothing in the request was applied.**
 
 ### `avb_me()` and `avb_team_members()`
 
@@ -278,72 +267,43 @@ All three read the live membership on every call.
 
 ## Maintainers: bootstrap and members
 
-No key, password or connection string goes in this repo, the app or a script. The full
-steps are in [../docs/NEON_SETUP.md](../docs/NEON_SETUP.md). In short:
+No key or password goes in this repo or the app. The full steps are in
+[../docs/POCKETBASE_SETUP.md](../docs/POCKETBASE_SETUP.md). In short:
 
-1. **Apply the migration once, as `neondb_owner`**, in the Neon SQL Editor or with
-   `psql "<owner connection string>" -v ON_ERROR_STOP=1 -f 20261107000000_av_backup_sync_v1.sql`.
-   It runs in one transaction and changes nothing that already exists.
-2. **Each person gets a Better Auth account** (they sign up in the app's sign-in page
-   flow, or the maintainer creates it in the Console), and tells the maintainer the
-   e-mail they used.
-3. **The maintainer looks up the account and adds it**, in the SQL Editor:
-
-   ```sql
-   select id, email, "createdAt" from neon_auth."user" where email = 'person@example.org';
-   select avb_private.set_member('<that id>', 'person@example.org', 'operator', true, 'Their Name');
-   select avb_private.set_member('<lead id>', 'lead@example.org',   'admin',    true, 'Lead');
-   -- revoke (their next call fails, even with a live token); works after the account is deleted too:
-   select avb_private.set_member('<that id>', 'person@example.org', 'operator', false);
-   ```
-
-   If the e-mail shows an account the person did not create (check `createdAt`), do not
-   add it. Every insert, change or removal is written to `avb_private.member_audit` with
-   the database role that made it.
+1. **Copy `pb_hooks` and `pb_migrations` next to the `pocketbase` program** and start it on
+   the server's ZeroTier IP. The migration runs once and changes nothing that already exists.
+2. **Each person gets an account** (they choose Create account in the app, or the
+   maintainer creates it in the dashboard), and tells the maintainer the e-mail they used.
+3. **The maintainer adds a record to `avb_members`** in the dashboard: that user, a role
+   (`operator` or `admin`), `is_active` ticked, and a display name. Unticking `is_active`
+   revokes access on the next call. Every insert, change or removal is written to
+   `avb_member_audit`.
 
 ## Limits that remain
 
 - **Revocation stops future calls only.** Data already pulled or exported to a
-  device stays there. The app has to keep its cache per account, and when a session
-  is revoked it must lock that cache and set pending uploads aside for review. The
-  server refuses those uploads (`avb:not_member`).
+  device stays there. The app keeps its cache per account, and when a session is revoked
+  it locks that cache and sets pending uploads aside for review. The server refuses those
+  uploads (`avb:not_member`).
 - **Offline edits wait.** They reach the team only on the next upload. Until then, a
   stale device keeps old values, and its edits may arrive later as conflicts.
-- **The lock, batch, request and field limits** above were set for a small team and
-  have not been load-tested on Neon. Neon's Free plan suspends compute after 5 minutes
-  idle, so the first call after a quiet spell is slower; the 5 s lock wait may need
-  raising if that shows up as `55P03`. The Data API's request body limit must allow
-  2 MiB requests (not documented; to check).
-- **Neon Auth JWTs last about 15 minutes.** A removed member's last token can still
-  verify for that long, but every call checks live membership, so it gets nothing.
-- **No member-management RPC exists, on purpose.** Membership changes need the
-  maintainer.
+- **The server must be on.** Sync waits while the office computer is off, asleep or off
+  ZeroTier; the app keeps working from its encrypted cache.
+- **Tokens last 7 days** (PocketBase's default) and are renewed while the app is in use.
+  A token cannot be revoked by signing out; membership is checked on every call instead.
+- **No member-management route exists, on purpose.** Membership changes need the
+  superuser.
 
-## Still to verify on a real Neon project
+## Still to verify on a real PocketBase
 
-The app side (login, offline cache, upload queue, conflict screens, admin delete, the
-one-time import) is built; see [../docs/SYNC_CLIENT_STATUS.md](../docs/SYNC_CLIENT_STATUS.md).
-What only a real project can confirm:
-
-1. The migration applies as `neondb_owner` and `auth.user_id()` works inside the
-   `SECURITY DEFINER` entry points.
-2. Better Auth's REST paths the app uses (`POST sign-in/email`, `GET token`,
-   `POST sign-out`) and the session cookie, which Neon documents only through its SDK.
-3. The Data API's `/rpc/<name>` call shape, error body and HTTP statuses.
-4. Two computers syncing, Windows included.
+Checked on v0.40.6: the migration and hooks load, and the `users` auth paths and error
+bodies match the client. Still open: two computers syncing over ZeroTier, Windows included.
 
 ## Tests
 
 ```bash
-tests/db/run.sh        # PG_BIN=/path/to/postgresql/bin if pg_config isn't on PATH
+node --test tests/sync-server.test.js tests/sync-engine.test.js tests/sync-unit.test.js
 ```
 
-The script starts a throwaway PostgreSQL that listens only on a Unix socket under
-`/private/tmp`, and deletes it on exit. It then:
-
-- loads `tests/db/shim.sql`, a **test-only** stand-in for Neon: `neon_auth."user"`,
-  `pg_session_jwt`'s `auth.user_id()` and `auth.session()`, the `authenticator`,
-  `authenticated` and `anonymous` roles, and the optional public-schema default grants;
-- applies the migration as a non-superuser `neondb_owner`;
-- runs `behavior.sql` as those roles through the public RPCs;
-- runs `concurrency.sh` with two real connections.
+`tests/sync/harness.js` runs the real rules on an in-memory SQLite database (`node:sqlite`)
+behind a stand-in for PocketBase's auth API and routes.

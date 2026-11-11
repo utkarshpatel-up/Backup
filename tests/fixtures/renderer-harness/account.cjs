@@ -45,7 +45,7 @@ module.exports = async ({ open, until, out }) => {
   let w = await page('signedout');
   await layout(w, 'signed-out');
   let v = await js(w, `({ form: !!document.querySelector('form#syncForm[data-form=signin]'), labelled: [...document.querySelectorAll('.sync-page input:not([type=checkbox])')].every(i => document.querySelector('label[for="'+i.id+'"]')),
-    url: document.getElementById('syncAuthUrl').checkVisibility(), adv: document.getElementById('syncAdvanced').open })`);
+    url: document.getElementById('syncServerUrl').checkVisibility(), adv: document.getElementById('syncAdvanced').open })`);
   assert.deepEqual(v, { form: true, labelled: true, url: false, adv: false });
   pass('signed-out page: one labelled sign-in form; server config tucked under Advanced');
 
@@ -117,14 +117,14 @@ module.exports = async ({ open, until, out }) => {
   // ------------------------------------------------------------------ local mode
   w = await page('local');
   await layout(w, 'local');
-  v = await js(w, `(() => { document.getElementById('syncEnabled').click(); return { adv: document.getElementById('syncAdvanced').open, err: document.getElementById('syncAuthUrlErr').textContent, focus: document.activeElement.id, calls: window.__mock.calls.length }; })()`);
+  v = await js(w, `(() => { document.getElementById('syncEnabled').click(); return { adv: document.getElementById('syncAdvanced').open, err: document.getElementById('syncServerUrlErr').textContent, focus: document.activeElement.id, calls: window.__mock.calls.length }; })()`);
   await tick();
-  assert.deepEqual(v, { adv: true, err: 'Enter the Auth URL.', focus: 'syncAuthUrl', calls: 0 });
-  await js(w, `document.getElementById('syncAuthUrl').value = 'https://a.test/auth'; document.getElementById('syncDataUrl').value = 'https://a.test/rest'; document.getElementById('syncConfigForm').requestSubmit();`);
+  assert.deepEqual(v, { adv: true, err: 'Enter the server address.', focus: 'syncServerUrl', calls: 0 });
+  await js(w, `document.getElementById('syncServerUrl').value = 'http://10.147.20.5:8090'; document.getElementById('syncConfigForm').requestSubmit();`);
   await until(w, `document.getElementById('syncForm')`);
   v = await js(w, `({ call: window.__mock.calls.at(-1), adv: document.getElementById('syncAdvanced').open, on: document.getElementById('syncEnabled').checked })`);
-  assert.deepEqual(v, { call: ['setConfig', { enabled: true, authUrl: 'https://a.test/auth', dataUrl: 'https://a.test/rest' }], adv: true, on: true });
-  pass('turning the account on asks for missing addresses in Advanced, then shows sign-in');
+  assert.deepEqual(v, { call: ['setConfig', { enabled: true, serverUrl: 'http://10.147.20.5:8090' }], adv: true, on: true });
+  pass('turning the account on asks for a missing address in Advanced, then shows sign-in');
   w.destroy();
 
   // ------------------------------------------------------ signed-in, data, states

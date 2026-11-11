@@ -1,5 +1,13 @@
 # Desktop sync client: implementation status
 
+> **Moved to PocketBase over ZeroTier (11 Nov 2026).** The server is now PocketBase on an
+> office computer ([server/](../server), [setup](POCKETBASE_SETUP.md)); the app calls it at
+> its ZeroTier IP with one **Server address** setting. The engine, cache, queue and wire
+> protocol are unchanged. Gone: Neon, Better Auth, the Data API, the SQL migration and its
+> PostgreSQL tests, and the DNS-over-HTTPS resolver (`undici`). The Neon-era notes below are
+> kept for history; where they name Neon files, read `client.js` (PocketBase auth) and
+> `server/pb_hooks/avb_core.js` (the rules, tested in `tests/sync-server.test.js`).
+
 > **Status: sync core, secured Electron integration, account screens and renderer
 > schedule/report hooks are implemented, now for Neon** (hosted Postgres, Data API and
 > Managed Better Auth; no MFA, by decision). Local mode remains the default; account mode
@@ -106,7 +114,7 @@ changes were made in this phase.
   processes from sharing the profile.
 
 The user authorized Codex to implement this phase after Claude reached its usage limit;
-this does not change the normal workflow in `AGENTS.md`.
+this does not change the normal workflow in `CLAUDE.md`.
 
 ## Network transport contract
 
@@ -184,7 +192,7 @@ These are the behaviours the tests check.
 
 Claude implemented the initial review corrections; Codex completed the remaining fixes
 and verification with the user's explicit, one-time authorization after Claude reached
-its usage limit. This exception does not change the normal workflow in `AGENTS.md`.
+its usage limit. This exception does not change the normal workflow in `CLAUDE.md`.
 
 - A new encryption key is cached in memory only after its protected key file is saved.
   A failed first save followed by a retry remains readable after restarting.

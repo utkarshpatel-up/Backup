@@ -70,42 +70,34 @@ class SyncEngine extends EventEmitter {
 
   /* ------------------------------------------------------------ config */
 
-  /**
-   * The Neon project's two addresses. `url` is not stored: it names the server for the
-   * account cache and session (both addresses, so changing either is another server).
-   */
+  /** The team server's address (its ZeroTier IP). `url` names the server for the account cache and session. */
   config() {
     let c = {};
     try { c = JSON.parse(this.fs.readFileSync(this.cfgFile, 'utf8')) || {}; } catch (_) { /* not set up */ }
-    const authUrl = typeof c.authUrl === 'string' ? c.authUrl : '';
-    const dataUrl = typeof c.dataUrl === 'string' ? c.dataUrl : '';
-    return { enabled: !!c.enabled && !!authUrl && !!dataUrl, authUrl, dataUrl, url: authUrl && dataUrl ? `${authUrl} ${dataUrl}` : '' };
+    const serverUrl = typeof c.serverUrl === 'string' ? c.serverUrl : '';
+    return { enabled: !!c.enabled && !!serverUrl, serverUrl, url: serverUrl };
   }
 
-  setConfig({ enabled, authUrl, dataUrl }) {
+  setConfig({ enabled, serverUrl }) {
     if (this.acct || this.session) throw new SyncError('config', 'signed_in', 'Sign out before changing the server or turning account mode off.');
     if (this.protected) throw new SyncError('config', 'busy', 'Finish or put aside the backup that is set up first.');
-    const next = { enabled: !!enabled, authUrl: '', dataUrl: '' };
-    if (authUrl || dataUrl || enabled) {
-      next.authUrl = parseBaseUrl(authUrl, 'Auth URL');
-      next.dataUrl = parseBaseUrl(dataUrl, 'Data API URL');
-    }
+    const next = { enabled: !!enabled, serverUrl: (serverUrl || enabled) ? parseBaseUrl(serverUrl) : '' };
     writeAtomic(this.fs, this.cfgFile, JSON.stringify(next, null, 2));
     this.gen += 1;   // an unfinished sign-in belongs to the previous configuration
     this.emit('status');
     return this.publicConfig();
   }
 
-  /** What the renderer may see of the config: both addresses are public. */
+  /** What the renderer may see of the config: the address is not secret. */
   publicConfig() {
     const c = this.config();
-    return { enabled: c.enabled, authUrl: c.authUrl, dataUrl: c.dataUrl };
+    return { enabled: c.enabled, serverUrl: c.serverUrl };
   }
 
   client() {
     const c = this.config();
     if (!c.enabled) throw new SyncError('config', 'not_configured', 'Account mode is not set up.');
-    return new Client({ authUrl: c.authUrl, dataUrl: c.dataUrl, fetch: this.fetchImpl });
+    return new Client({ serverUrl: c.serverUrl, fetch: this.fetchImpl });
   }
 
   /* ------------------------------------------------------------ start, sign in, sign out */
@@ -173,8 +165,8 @@ class SyncEngine extends EventEmitter {
   }
 
   /**
-   * Create a Better Auth account (Neon cannot restrict sign-up, so this grants nothing).
-   * Returns the e-mail to pass to the maintainer, who adds the account by id and e-mail.
+   * Create a server account (this grants nothing). Returns the e-mail to pass to the
+   * maintainer, who adds the account to avb_members in the PocketBase dashboard.
    */
   async signUp(email, password, name) {
     if (typeof email !== 'string' || typeof password !== 'string' || typeof name !== 'string' || !email.includes('@')
@@ -204,14 +196,8 @@ class SyncEngine extends EventEmitter {
     }
     const session = this._sessionFrom(c.url, tok);
     let me;
-    const meCall = () => client.rpc(session.access_token, 'avb_me');
     try {
-      // A fresh token answered not_authenticated: the database is waking from idle (see _authed). Once more.
-      me = await meCall().catch(async (e) => {
-        if (e.code !== 'not_authenticated') throw e;
-        await new Promise((r) => this.setT(r, 1500));
-        return meCall().catch((e2) => { throw e2.code === 'not_authenticated' ? new SyncError('server', 'warming_up', 'The team server is starting up. Try again in a few seconds.') : e2; });
-      });
+      me = await client.rpc(session.access_token, 'avb_me');
       this._live(gen);
     } catch (e) {
       client.signOut(session.refresh_token).catch(() => {});
@@ -317,12 +303,7 @@ class SyncEngine extends EventEmitter {
       this._live(gen);
       if (e.kind !== 'unauthorized' || !this.session) throw e;
       token = live(await this._token(true));
-      try { return live(await fn(client, token)); } catch (e2) {
-        // A fresh token the database still can't read: Neon's first query after its compute
-        // wakes from idle (seen live). Not an expired sign-in: back off and retry.
-        if (e2.code === 'not_authenticated') throw new SyncError('server', 'warming_up', 'The team server is starting up; retrying.');
-        throw e2;
-      }
+      return live(await fn(client, token));
     }
   }
 

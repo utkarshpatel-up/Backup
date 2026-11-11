@@ -342,9 +342,8 @@ function syncTeamHtml(s, enabled) {
       ${s.signedIn ? '<p class="hint sync-tuck">Sign out before changing the server or turning account mode off.</p>' : ''}
       <details id="syncAdvanced" class="sync-advanced"><summary>Advanced settings</summary>
         <form id="syncConfigForm" class="sync-form" novalidate>
-          <p class="hint">Server addresses from the Neon Console. Both are public.</p>
-          ${syncField('syncAuthUrl', 'Neon Auth URL', `type="url" autocomplete="off" placeholder="https://…/neondb/auth" value="${esc(s.config?.authUrl || '')}"`)}
-          ${syncField('syncDataUrl', 'Neon Data API URL', `type="url" autocomplete="off" placeholder="https://…/neondb/rest/v1" value="${esc(s.config?.dataUrl || '')}"`)}
+          <p class="hint">The team server's ZeroTier address. This computer must be joined to the team's ZeroTier network.</p>
+          ${syncField('syncServerUrl', 'Server address', `type="url" autocomplete="off" placeholder="http://10.147.20.5:8090" value="${esc(s.config?.serverUrl || '')}"`)}
           <button type="submit" id="syncConfig" data-lock>Save server settings</button>
         </form>
       </details>
@@ -449,17 +448,17 @@ function syncSubmitAuth(form) {
   }, 'syncPassword');
 }
 function syncSubmitConfig() {
-  const enabled = $('syncEnabled').checked, authUrl = $('syncAuthUrl').value.trim(), dataUrl = $('syncDataUrl').value.trim();
-  const problems = enabled ? { ...(authUrl ? {} : { syncAuthUrl: 'Enter the Auth URL.' }), ...(dataUrl ? {} : { syncDataUrl: 'Enter the Data API URL.' }) } : {};
+  const enabled = $('syncEnabled').checked, serverUrl = $('syncServerUrl').value.trim();
+  const problems = enabled && !serverUrl ? { syncServerUrl: 'Enter the server address.' } : {};
   if (Object.keys(problems).length) {
     syncUI.advancedOpen = true; syncApplyLocks();
-    syncShowErrors(['syncAuthUrl', 'syncDataUrl'], problems);
+    syncShowErrors(['syncServerUrl'], problems);
     return;
   }
-  syncShowErrors(['syncAuthUrl', 'syncDataUrl'], null);
-  // Off keeps the saved addresses (not half-typed ones), so it can be turned back on without retyping them.
+  syncShowErrors(['syncServerUrl'], null);
+  // Off keeps the saved address (not a half-typed one), so it can be turned back on without retyping it.
   const saved = syncUI.status.config || {};
-  return syncAct('syncConfig', () => syncTransition(() => window.api.sync.setConfig({ enabled, authUrl: enabled ? authUrl : saved.authUrl || '', dataUrl: enabled ? dataUrl : saved.dataUrl || '' })), 'syncTitle');
+  return syncAct('syncConfig', () => syncTransition(() => window.api.sync.setConfig({ enabled, serverUrl: enabled ? serverUrl : saved.serverUrl || '' })), 'syncTitle');
 }
 function wireSyncPage() {
   const page = document.querySelector('.sync-page');

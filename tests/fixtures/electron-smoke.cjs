@@ -91,9 +91,9 @@ async function run() {
   // The Account page on the real preload: drawn once, then left alone by a redraw, without touching the local profile.
   const account = await w.webContents.executeJavaScript(`showSync().then(() => {
     const page = document.querySelector('.sync-page'), advanced = document.getElementById('syncAdvanced');
-    const url = document.getElementById('syncAuthUrl'); url.value = 'typing';
+    const url = document.getElementById('syncServerUrl'); url.value = 'typing';
     render();
-    return { samePage: page === document.querySelector('.sync-page'), kept: document.getElementById('syncAuthUrl').value, closed: !advanced.open, on: document.getElementById('syncEnabled').checked };
+    return { samePage: page === document.querySelector('.sync-page'), kept: document.getElementById('syncServerUrl').value, closed: !advanced.open, on: document.getElementById('syncEnabled').checked };
   })`);
   assert.deepEqual(account, { samePage: true, kept: 'typing', closed: true, on: false });
   await w.webContents.executeJavaScript('showSchedule()');
@@ -130,7 +130,7 @@ async function run() {
     else { res.setHeader('Content-Type', 'application/json'); res.end('{"protocol_version":1}'); }
   }));
   const host = createSyncHost({ dir: path.join(dir, 'transport'), safeStorage: electron.safeStorage });
-  const client = new Client({ authUrl: `${source}/neondb/auth`, dataUrl: `${source}/neondb/rest/v1`, fetch: host.engine.fetchImpl });
+  const client = new Client({ serverUrl: source, fetch: host.engine.fetchImpl });
   assert.deepEqual(await client.rpc('smoke-only-token', 'avb_me'), { protocol_version: 1 });
   redirect = true;
   await assert.rejects(client.rpc('smoke-only-token', 'avb_me'));
@@ -142,7 +142,7 @@ async function run() {
   const tls = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (_req, res) => res.end('{}'));
   await listen(tls);
   const tlsBase = `https://127.0.0.1:${tls.address().port}`;
-  const badTls = new Client({ authUrl: `${tlsBase}/neondb/auth`, dataUrl: `${tlsBase}/neondb/rest/v1`, fetch: host.engine.fetchImpl });
+  const badTls = new Client({ serverUrl: tlsBase, fetch: host.engine.fetchImpl });
   await assert.rejects(badTls.rpc('smoke-only-token', 'avb_me'));
   console.log('PASS untrusted TLS certificate is refused, with no certificate bypass');
 

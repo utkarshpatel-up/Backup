@@ -30,8 +30,8 @@ function validate(action, p) {
   if (noArgs.includes(action)) { fields(p, []); return; }
   switch (action) {
     case 'setConfig':
-      fields(p, ['enabled', 'authUrl', 'dataUrl']);
-      if (typeof p.enabled !== 'boolean' || !string(p.authUrl, 2048) || !string(p.dataUrl, 2048)) invalid();
+      fields(p, ['enabled', 'serverUrl']);
+      if (typeof p.enabled !== 'boolean' || !string(p.serverUrl, 2048)) invalid();
       return;
     case 'signIn':
       fields(p, ['email', 'password']);

@@ -1,21 +1,18 @@
 'use strict';
-// The sync engine end to end against the reviewed migration on a throwaway PostgreSQL 16
-// (tests/sync/harness.js). RPC rules are the real database's; Better Auth and the HTTP layer
-// are test stand-ins, so nothing here proves anything about a real Neon project, TLS or
-// Windows. Skipped when PostgreSQL 16 is not installed (set PG_BIN).
+// The sync engine end to end against the server's own rules (server/pb_hooks/avb_core.js) on
+// SQLite (tests/sync/harness.js). PocketBase's auth API and the HTTP layer are test stand-ins,
+// so nothing here proves anything about a real PocketBase install, ZeroTier or Windows.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { SyncEngine } = require('../electron/sync/engine');
-const { Pg, FakeServer, fakeSafeStorage, faultyFs, tmpDir } = require('./sync/harness');
+const { FakeServer, fakeSafeStorage, faultyFs, tmpDir } = require('./sync/harness');
 const S = require('../renderer/schedule-logic');
 const fixtures = require('./fixtures/schedule-ocr.json');
 
-const pg = Pg.available() ? new Pg() : null;
-test.after(() => pg && pg.stop());
-const opts = { skip: pg ? false : 'PostgreSQL 16 not found (set PG_BIN)' };
+const opts = {};
 
 // Everything printed while the engine runs, to prove no token or password is logged.
 const printed = [];
@@ -25,7 +22,7 @@ for (const k of ['log', 'info', 'warn', 'error', 'debug']) {
 }
 
 function world() {
-  const server = new FakeServer(pg, pg.database());
+  const server = new FakeServer();
   server.addUser('op1@t.invalid', 'operator', 'Op One');
   server.addUser('op2@t.invalid', 'operator', 'Op Two');
   server.addUser('admin@t.invalid', 'admin', 'Lead');
@@ -75,7 +72,7 @@ test('sign-in: role from avb_me, tokens only encrypted on disk, nothing secret r
   assert.equal(st.phase, 'online');
   edit(e, (d) => d.schedules.items.push(schedule()));
   await e.syncNow();
-  const secrets = [...server.access.keys(), ...server.refresh.keys(), server.users.get('admin@t.invalid').password];
+  const secrets = [...server.access.keys(), server.users.get('admin@t.invalid').password];
   const shown = JSON.stringify([e.status(), e.view(), e.conflicts(), e.reviews(), e.publicConfig()]);
   const disk = (dir) => fs.readdirSync(dir, { recursive: true }).filter((f) => fs.statSync(path.join(dir, f)).isFile())
     .map((f) => fs.readFileSync(path.join(dir, f)).toString('latin1')).join('\n');
@@ -89,7 +86,7 @@ test('sign-in: role from avb_me, tokens only encrypted on disk, nothing secret r
   await assert.rejects(e.signIn('op1@t.invalid', 'x'), (x) => x.code === 'signed_in');
   const wrong = await device(server, null);
   await assert.rejects(wrong.signIn('op1@t.invalid', 'nope'), (x) => x.code === 'invalid_credentials' && !x.message.includes('nope'));
-  // Sign-up is open on Neon: an account the maintainer never added gets nothing.
+  // Sign-up is open: an account the maintainer never added gets nothing.
   const outsider = server.addUser('nobody@t.invalid', null, '');
   await assert.rejects(wrong.signIn(outsider.email, outsider.password), (x) => x.kind === 'revoked');
   assert.equal(wrong.status().signedIn, false);
@@ -104,7 +101,8 @@ test('a new account (open sign-up) gets nothing until the maintainer adds it by 
   const made = await e.signUp('newcomer@t.invalid', 'long-enough-pw', 'New Comer');
   assert.equal(made.email, 'newcomer@t.invalid');
   assert.equal(e.status().signedIn, false, 'creating an account does not sign in');
-  assert.equal([...server.refresh.values()].filter((x) => x.sub === server.users.get('newcomer@t.invalid').id).length, 0, 'its session was ended');
+  assert.equal([...server.access.values()].filter((x) => x.sub === server.users.get('newcomer@t.invalid').id).length, 0, 'no session was made');
+  await assert.rejects(e.signUp('newcomer@t.invalid', 'long-enough-pw', 'Again'), (x) => x.code === 'email_taken');
   await assert.rejects(e.signIn('newcomer@t.invalid', 'long-enough-pw'), (x) => x.kind === 'revoked');
   assert.equal(e.status().signedIn, false);
   await assert.rejects(e.signUp('x@t.invalid', 'short', 'X'), (x) => x.code === 'bad_login');
@@ -115,13 +113,14 @@ test('a new account (open sign-up) gets nothing until the maintainer adds it by 
   assert.equal(e.status().user.role, 'operator');
 });
 
-test('config refuses plain HTTP to another machine and odd addresses, and cannot change while signed in', opts, async () => {
+test('config refuses plain HTTP to a public or named host and odd addresses, and cannot change while signed in', opts, async () => {
   const server = world();
   const e = await device(server, null);
-  assert.throws(() => e.setConfig({ ...server.config, authUrl: 'http://office-pc/neondb/auth' }), (x) => x.code === 'bad_url');
-  assert.throws(() => e.setConfig({ ...server.config, dataUrl: 'https://user:pw@x.test/neondb/rest/v1' }), (x) => x.code === 'bad_url');
-  assert.throws(() => e.setConfig({ ...server.config, dataUrl: `${server.dataUrl}?schema=avb_private` }), (x) => x.code === 'bad_url');
-  assert.throws(() => e.setConfig({ enabled: true, authUrl: '', dataUrl: server.dataUrl }), (x) => x.code === 'bad_url');
+  assert.throws(() => e.setConfig({ enabled: true, serverUrl: 'http://office-pc:8090' }), (x) => x.code === 'bad_url');
+  assert.throws(() => e.setConfig({ enabled: true, serverUrl: 'http://8.8.8.8:8090' }), (x) => x.code === 'bad_url');
+  assert.throws(() => e.setConfig({ enabled: true, serverUrl: 'https://user:pw@x.test' }), (x) => x.code === 'bad_url');
+  assert.throws(() => e.setConfig({ enabled: true, serverUrl: `${server.serverUrl}?x=1` }), (x) => x.code === 'bad_url');
+  assert.throws(() => e.setConfig({ enabled: true, serverUrl: '' }), (x) => x.code === 'bad_url');
   await e.signIn('op1@t.invalid', server.users.get('op1@t.invalid').password);
   assert.throws(() => e.setConfig({ enabled: false }), (x) => x.code === 'signed_in');
 });
@@ -511,7 +510,7 @@ test('tokens: refresh on 401, expired sign-in keeps the cache, offline keeps wor
   const a = await device(server, 'op1@t.invalid', { dir, ss });
   const s = schedule();
   edit(a, (d) => d.schedules.items.push(s));
-  server.access.clear();                                   // access token no longer valid; refresh token is
+  server.clock.now += (server.ttl - 30) * 1000;            // the token is about to expire: renewed before use
   await a.syncNow();
   assert.equal(a.status().phase, 'online');
   assert.equal(a.status().pending, 0);
@@ -520,7 +519,7 @@ test('tokens: refresh on 401, expired sign-in keeps the cache, offline keeps wor
   await a.syncNow();
   assert.equal(a.status().phase, 'offline');
   server.offline = false;
-  server.access.clear(); server.refresh.clear();           // signed out elsewhere: refresh fails
+  server.access.clear();                                   // the token is no longer accepted: refresh fails
   await a.syncNow();
   assert.equal(a.status().phase, 'expired');
   assert.equal(a.status().pending, 1);
@@ -544,7 +543,7 @@ test('tokens: refresh on 401, expired sign-in keeps the cache, offline keeps wor
   assert.ok(item(b.view(), s.id), 'team data that was uploaded is there');
   await b.signOut();
   // A cache file moved into another account's folder does not open.
-  const folder = (email) => path.join(dir, 'accounts', crypto.createHash('sha256').update(`${server.authUrl} ${server.dataUrl}\n${server.users.get(email).id}`).digest('hex').slice(0, 32));
+  const folder = (email) => path.join(dir, 'accounts', crypto.createHash('sha256').update(`${server.serverUrl}\n${server.users.get(email).id}`).digest('hex').slice(0, 32));
   const fa = folder('op1@t.invalid'), fb = folder('op2@t.invalid');
   const aCache = fs.readFileSync(path.join(fa, 'cache.bin'));
   const bCache = fs.readFileSync(path.join(fb, 'cache.bin'));
@@ -671,14 +670,11 @@ test('one-time import: opt-in, previewed, bounded, replay-safe, originals untouc
   assert.equal(d.status().pending, 0);
 });
 
-test('the client\'s jsonb size estimate matches PostgreSQL\'s for real payloads', opts, () => {
+test('the client measures payload size exactly as the server does', opts, () => {
   const { jsonbBytes } = require('../electron/sync/spec');
-  const db = pg.database();
+  const { spacedBytes } = require('../server/pb_hooks/avb_core');
   const samples = [{ a: 1, b: [1, 2, 'x'], c: { d: 'é😀', e: null } }, row(), { cells: ['a "q" \\', '\n€', ''], line: 0, part: 0, continuesCell: false }];
-  for (const p of samples) {
-    const n = Number(pg.psql(db, `select octet_length($j$${JSON.stringify(p)}$j$::jsonb::text)`).trim());
-    assert.equal(jsonbBytes(p), n, JSON.stringify(p).slice(0, 40));
-  }
+  for (const p of samples) assert.equal(jsonbBytes(p), spacedBytes(p), JSON.stringify(p).slice(0, 40));
 });
 
 test('a locked (revoked) cache shows no review drafts or refused values either', opts, async () => {
@@ -725,15 +721,15 @@ const login = (e, server, email) => e.signIn(email, server.users.get(email).pass
 
 test('an old account\'s refresh failing after sign-out and a new sign-in leaves the new session alone', opts, async () => {
   const server = world();
-  let refreshing = false;   // sign-in fetches its JWT the same way; hold only the later refresh
-  const gate = holdOne(server, (url) => refreshing && new URL(url).pathname.endsWith('/auth/token'));
+  let refreshing = false;   // hold only the later refresh
+  const gate = holdOne(server, (url) => refreshing && new URL(url).pathname.endsWith('/auth-refresh'));
   const e = bareDevice(server, gate.fetch);
   await login(e, server, 'op1@t.invalid');
   refreshing = true;
-  server.access.clear();                                   // op1's next call needs a refresh, which waits
+  server.clock.now += (server.ttl - 30) * 1000;            // op1's next call needs a refresh, which waits
   const old = e.syncNow();
   await gate.arrived;
-  server.refresh.clear();                                  // and will fail when it goes
+  server.access.clear();                                   // and will fail when it goes
   await e.signOut();
   await login(e, server, 'op2@t.invalid');
   const s = schedule();
@@ -759,7 +755,7 @@ test('a not_member answer for the old account arriving after a new sign-in does 
   const server = world();
   const op1 = server.users.get('op1@t.invalid').id;
   let tokenOf1 = null;
-  const gate = holdOne(server, (url, init) => String(url).endsWith('/rpc/avb_me') && tokenOf1 && init.headers.Authorization === `Bearer ${tokenOf1}`);
+  const gate = holdOne(server, (url, init) => String(url).endsWith('/rpc/avb_me') && tokenOf1 && init.headers.Authorization === tokenOf1);
   const e = bareDevice(server, gate.fetch);
   await login(e, server, 'op1@t.invalid');
   tokenOf1 = e.session.access_token;
@@ -782,43 +778,19 @@ test('a not_member answer for the old account arriving after a new sign-in does 
   assert.equal(e.status().phase, 'online');
 });
 
-test('a late sign-out response cannot clear a newer account or its pending draft', opts, async () => {
-  const server = world();
-  const gate = holdOne(server, (url) => new URL(url).pathname.endsWith('/auth/sign-out'));
-  const e = bareDevice(server, gate.fetch);
-  await login(e, server, 'op1@t.invalid');
-  const old = e.signOut();
-  await gate.arrived;
-  await e.signOut();
-  await login(e, server, 'op2@t.invalid');
-  const s = schedule();
-  edit(e, (d) => d.schedules.items.push(s));
-  const pendingBefore = e.status().pending;
-  const draftBefore = structuredClone(e.view().data);
-  gate.release();
-  await old;
-  assert.equal(e.session.userId, server.users.get('op2@t.invalid').id);
-  assert.equal(e.sessions.load().userId, e.session.userId);
-  assert.equal(e.status().phase, 'online');
-  assert.equal(e.status().pending, pendingBefore);
-  assert.deepEqual(e.view().data, draftBefore);
-  await e.syncNow();
-  assert.equal(e.status().pending, 0);
-});
-
 test('changing server configuration invalidates an unfinished sign-in to the previous server', opts, async () => {
   const server = world();
-  const gate = holdOne(server, (url) => new URL(url).pathname.endsWith('/auth/sign-in/email'));
+  const gate = holdOne(server, (url) => new URL(url).pathname.endsWith('/auth-with-password'));
   const e = bareDevice(server, gate.fetch);
   const old = login(e, server, 'op1@t.invalid');
   await gate.arrived;
-  e.setConfig({ enabled: true, authUrl: 'https://ep-other.neonauth.another-team.test/neondb/auth', dataUrl: 'https://ep-other.apirest.another-team.test/neondb/rest/v1' });
+  e.setConfig({ enabled: true, serverUrl: 'http://10.147.20.99:8090' });
   gate.release();
   await assert.rejects(old, (x) => x.code === 'stale');
   assert.equal(e.session, null);
   assert.equal(e.acct, null);
   assert.equal(e.sessions.load(), null);
-  assert.equal(e.publicConfig().authUrl, 'https://ep-other.neonauth.another-team.test/neondb/auth');
+  assert.equal(e.publicConfig().serverUrl, 'http://10.147.20.99:8090');
   assert.equal(server.requests.filter((r) => r.path.endsWith('/rpc/avb_me')).length, 0);
 });
 
@@ -829,10 +801,10 @@ test('a damaged offline cache still requires sign-out before changing the sessio
   const e = restart(server, original);
   assert.equal(e.acct, null);
   assert.ok(e.session, 'the protected session was readable even though the cache was not');
-  assert.throws(() => e.setConfig({ enabled: true, authUrl: 'https://ep-other.neonauth.another-team.test/neondb/auth', dataUrl: 'https://ep-other.apirest.another-team.test/neondb/rest/v1' }), (x) => x.code === 'signed_in');
-  assert.equal(e.publicConfig().authUrl, server.authUrl);
+  assert.throws(() => e.setConfig({ enabled: true, serverUrl: 'http://10.147.20.99:8090' }), (x) => x.code === 'signed_in');
+  assert.equal(e.publicConfig().serverUrl, server.serverUrl);
   await e.signOut();
-  e.setConfig({ enabled: true, authUrl: 'https://ep-other.neonauth.another-team.test/neondb/auth', dataUrl: 'https://ep-other.apirest.another-team.test/neondb/rest/v1' });
+  e.setConfig({ enabled: true, serverUrl: 'http://10.147.20.99:8090' });
   assert.equal(e.session, null);
   assert.equal(e.sessions.load(), null);
 });
@@ -950,27 +922,6 @@ test('a 17,000-record existing-data sheet imports in batches and reaches another
   const got = b.view().data.report;
   assert.equal(got.length, 17000);
   assert.equal(got.find((r) => r.id === report[5].id).topic, 'Corrected');
-});
-
-test('a database waking from idle (not_authenticated with a fresh token) is retried, not treated as an expired sign-in', opts, async () => {
-  const server = world();
-  let hiccups = 0;
-  const fetch = (url, init) => (String(url).includes('/rpc/') && hiccups-- > 0
-    ? Promise.resolve(new Response(JSON.stringify({ code: '42501', message: 'avb:not_authenticated' }), { status: 403, headers: { 'Content-Type': 'application/json' } }))
-    : server.fetch(url, init));
-  const e = new SyncEngine({ dir: tmpDir(), fetch, safeStorage: fakeSafeStorage(), autoSync: false, now: () => server.clock.now });
-  e.setConfig(server.config);
-  await e.signIn('op1@t.invalid', server.users.get('op1@t.invalid').password);
-  await e.syncNow();
-  edit(e, (d) => d.schedules.items.push(schedule()));
-  hiccups = 2;   // the call and its retry with a refreshed token both hit the waking database
-  let s = await e.syncNow();
-  assert.equal(s.phase, 'error');
-  assert.notEqual(s.phase, 'expired');
-  assert.ok(s.pending > 0);
-  s = await e.syncNow();
-  assert.equal(s.phase, 'online');
-  assert.equal(s.pending, 0);
 });
 
 test('completion against the protected base follows our own preparation commit without a spurious conflict', opts, async () => {

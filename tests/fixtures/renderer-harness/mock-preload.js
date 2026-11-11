@@ -35,7 +35,7 @@
   if (OPEN) items.push({ id: uuid(9999), created: '2026-02-01T00:00:00.000Z', file: 'open.xlsx', rows: [], sessions: rows(OPEN, 77), starts: { formal: 6000, informal: 5000 }, defaults: {} });
   const data = { schedules: { openId: OPEN ? uuid(9999) : null, items }, team: {}, cities: null, citySource: null, report, deleted: [] };
 
-  const config = { enabled: flow !== 'local', authUrl: flow === 'local' ? '' : 'https://auth.example.test/neondb/auth', dataUrl: flow === 'local' ? '' : 'https://data.example.test/neondb/rest/v1' };
+  const config = { enabled: flow !== 'local', serverUrl: flow === 'local' ? '' : 'http://10.147.20.5:8090' };
   const status = { mode: flow === 'local' ? 'local' : 'account', configured: flow !== 'local', config, encryption: true,
     signedIn: flow === 'signedin' || flow === 'expired' || flow === 'locked', phase: flow === 'signedin' ? 'online' : flow === 'expired' ? 'expired' : flow === 'locked' ? 'revoked' : 'signed_out',
     user: ['signedin', 'expired', 'locked'].includes(flow) ? { displayName: 'Test Operator', role: 'operator', verifiedAt: '2026-11-01T00:00:00.000Z' } : null,

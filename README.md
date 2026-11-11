@@ -331,10 +331,11 @@ sidebar, with the version's notes from [CHANGELOG.md](CHANGELOG.md). To publish 
 
 ## Team account usage
 
-Open **Account**, enable team mode, enter the team's Neon **Auth URL** and **Data API
-URL** (both public; see [docs/NEON_SETUP.md](docs/NEON_SETUP.md)), save, and sign in. New
-people choose **Create account**; it has no access until the maintainer adds it. Never
-put the database owner's connection string in the app. Local
+Join the team's ZeroTier network, then open **Account**, enable team mode, enter the team
+server's ZeroTier address (for example `http://10.147.20.5:8090`; see
+[docs/POCKETBASE_SETUP.md](docs/POCKETBASE_SETUP.md)), save, and sign in. New people choose
+**Create account**; it has no access until the maintainer adds it. Never put the
+PocketBase superuser password in the app. Local
 schedules are not imported automatically. **Preview local import…** shows the schedules,
 rows, report records and duplicate warnings before confirmation; the original local
 files stay unchanged. A remembered local XLSX report source is parsed as part of this
@@ -359,8 +360,9 @@ locks and unsent drafts are held. Machine paths and preferences stay local.
 ## Known limits
 
 - Team sync is opt-in through **Account**; local files remain the default. It runs on a
-  hosted Neon project: see [setup](docs/NEON_SETUP.md), the [protocol](db/SYNC_CONTRACT.md)
-  and [client status/testing](docs/SYNC_CLIENT_STATUS.md). A real Neon project, Windows
+  PocketBase server on an office computer, reached over ZeroTier: see
+  [setup](docs/POCKETBASE_SETUP.md), the [protocol](server/SYNC_CONTRACT.md) and
+  [client status/testing](docs/SYNC_CLIENT_STATUS.md). A real PocketBase install, Windows
   and a second physical device remain unverified.
   Deleted schedules are listed only on devices that previously saw them; fresh-device
   deleted-history listing is not available.

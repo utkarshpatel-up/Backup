@@ -4,6 +4,19 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 1.8.0
+
+- **The team server is now a PocketBase server on an office computer, reached over ZeroTier.**
+  Account mode no longer uses Neon, so it no longer depends on the network's DNS or on
+  reaching the internet. Each computer joins the team's ZeroTier network, then in
+  **Account → Advanced settings** enters the one **Server address** (for example
+  `http://10.147.20.5:8090`) and signs in. Your schedules and report records are not
+  lost: local files are untouched, and anything unsent stays encrypted on this computer.
+- **After updating, account mode is off until you enter the new server address**, and you
+  sign in again with an account on the new server (the maintainer adds it).
+- A failed connection now names the reason, for example `(EHOSTUNREACH)`, so it is clear
+  whether ZeroTier or the server is the problem.
+
 ## 1.7.4
 
 - **Sign-in and sync work when the network's DNS is down.** If the computer's DNS server

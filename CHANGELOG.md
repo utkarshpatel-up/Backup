@@ -4,6 +4,13 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 1.7.4
+
+- **Sign-in and sync work when the network's DNS is down.** If the computer's DNS server
+  times out, AV Backup now looks the server up through Cloudflare instead, so Account
+  sign-in and sync keep working without changing the computer's DNS settings or breaking
+  names on the local network.
+
 ## 1.7.3
 
 - **Redesigned Account, sign-in and create-account pages.** They now fit narrow and wide

@@ -87,6 +87,7 @@ contextBridge.exposeInMainWorld('api', {
     status: () => accountAction('status'),
     getConfig: () => accountAction('getConfig'),
     setConfig: (config) => accountAction('setConfig', config),
+    forgetEmail: () => accountAction('forgetEmail'),
     signIn: (email, password) => accountAction('signIn', { email, password }),
     signUp: (email, password, name) => accountAction('signUp', { email, password, name }),
     signOut: () => accountAction('signOut'),

@@ -47,6 +47,7 @@
     status: async () => structuredClone(mock.status),
     getConfig: async () => mock.status.config,
     setConfig: async (c) => { calls.push(['setConfig', c]); if (mock.setConfig) return mock.setConfig(c); mock.status = { ...mock.status, mode: c.enabled ? 'account' : 'local', config: c, phase: 'signed_out' }; return c; },
+    forgetEmail: async () => { calls.push(['forgetEmail']); const { email, ...config } = mock.status.config; mock.status = { ...mock.status, config }; return config; },
     signIn: async (...a) => { calls.push(['signIn', a[0]]); return mock.signIn(...a); },
     signUp: async (...a) => { calls.push(['signUp', a[0], a[2]]); return mock.signUp(...a); },
     signOut: async () => { calls.push(['signOut']); mock.status = { ...mock.status, signedIn: false, user: null, phase: 'signed_out' }; },

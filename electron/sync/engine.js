@@ -75,13 +75,16 @@ class SyncEngine extends EventEmitter {
     let c = {};
     try { c = JSON.parse(this.fs.readFileSync(this.cfgFile, 'utf8')) || {}; } catch (_) { /* not set up */ }
     const serverUrl = typeof c.serverUrl === 'string' ? c.serverUrl : '';
-    return { enabled: !!c.enabled && !!serverUrl, serverUrl, url: serverUrl };
+    const email = typeof c.email === 'string' ? c.email : '';   // the last e-mail signed in with on this server; never a password
+    return { enabled: !!c.enabled && !!serverUrl, serverUrl, url: serverUrl, email };
   }
 
   setConfig({ enabled, serverUrl }) {
     if (this.acct || this.session) throw new SyncError('config', 'signed_in', 'Sign out before changing the server or turning account mode off.');
     if (this.protected) throw new SyncError('config', 'busy', 'Finish or put aside the backup that is set up first.');
     const next = { enabled: !!enabled, serverUrl: (serverUrl || enabled) ? parseBaseUrl(serverUrl) : '' };
+    const prev = this.config();
+    if (prev.email && next.serverUrl === prev.serverUrl) next.email = prev.email;   // another server forgets it
     writeAtomic(this.fs, this.cfgFile, JSON.stringify(next, null, 2));
     this.gen += 1;   // an unfinished sign-in belongs to the previous configuration
     this.emit('status');
@@ -91,7 +94,15 @@ class SyncEngine extends EventEmitter {
   /** What the renderer may see of the config: the address is not secret. */
   publicConfig() {
     const c = this.config();
-    return { enabled: c.enabled, serverUrl: c.serverUrl };
+    return { enabled: c.enabled, serverUrl: c.serverUrl, email: c.email };
+  }
+
+  /** Clear the remembered sign-in e-mail. */
+  forgetEmail() {
+    const c = this.config();
+    writeAtomic(this.fs, this.cfgFile, JSON.stringify({ enabled: c.enabled, serverUrl: c.serverUrl }, null, 2));
+    this.emit('status');
+    return this.publicConfig();
   }
 
   client() {
@@ -216,6 +227,7 @@ class SyncEngine extends EventEmitter {
     }
     this.gen += 1;   // anything still in flight from before this sign-in is stale now
     this.session = session;
+    writeAtomic(this.fs, this.cfgFile, JSON.stringify({ enabled: c.enabled, serverUrl: c.serverUrl, email: email.trim() }, null, 2));
     const d = this.acct.data;
     d.identity = { role: me.role, display_name: me.display_name, verifiedAt: new Date(this.now()).toISOString() };
     d.locked = false;   // the server just accepted this person again: held work may go

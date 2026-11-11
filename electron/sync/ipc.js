@@ -26,7 +26,7 @@ function jsonData(v, depth = 0) {
 }
 
 function validate(action, p) {
-  const noArgs = ['status', 'getConfig', 'signOut', 'view', 'syncNow', 'conflicts', 'reviews'];
+  const noArgs = ['status', 'getConfig', 'forgetEmail', 'signOut', 'view', 'syncNow', 'conflicts', 'reviews'];
   if (noArgs.includes(action)) { fields(p, []); return; }
   switch (action) {
     case 'setConfig':
@@ -104,6 +104,7 @@ function registerSyncIpc({ ipcMain, getWindow, appUrl, getHost, isClosing = () =
       let result;
       switch (action) {
         case 'getConfig': result = engine.publicConfig(); break;
+        case 'forgetEmail': result = engine.forgetEmail(); break;
         case 'setConfig': result = engine.setConfig(p); break;
         case 'signIn': result = await engine.signIn(p.email, p.password); break;
         case 'signUp': result = await engine.signUp(p.email, p.password, p.name); break;

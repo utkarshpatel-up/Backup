@@ -242,6 +242,7 @@ async function showSync() {
   syncUI.conflicts = await window.api.sync.conflicts();
   syncUI.reviews = await window.api.sync.reviews();
   render();
+  if ($('syncForgetEmail')) $('syncPassword')?.focus();   // a remembered e-mail is already filled in
 }
 const SYNC_PHASE = {
   online: ['Connected', 'ok'], offline: ['Offline', 'warn'], connecting: ['Connecting', ''], expired: ['Sign-in expired', 'warn'],
@@ -251,7 +252,8 @@ const syncNeedsSignIn = (s) => !s.signedIn || (s.phase === 'expired' && !s.locke
 const syncField = (id, label, attrs, extra = '') => `<div class="sync-field"><label for="${id}">${label}</label>
     <div class="sync-input">${`<input id="${id}" ${attrs} aria-describedby="${id}Err" spellcheck="false" autocapitalize="off" data-lock-input>`}${extra}</div>
     <p class="sync-err" id="${id}Err" hidden></p></div>`;
-const syncEmailField = () => syncField('syncEmail', 'Email', `type="email" autocomplete="username" value="${esc(syncUI.draftEmail || '')}"`);
+const syncEmailField = (remembered = '') => syncField('syncEmail', 'Email', `type="email" autocomplete="username" value="${esc(syncUI.draftEmail || remembered)}"`,
+  remembered ? '<button type="button" id="syncForgetEmail" class="ghost" data-lock>Forget e-mail</button>' : '');
 const syncPasswordField = (hint, autocomplete) => syncField('syncPassword', 'Password', `type="password" autocomplete="${autocomplete}" placeholder="${hint}"`,
   '<button type="button" class="ghost sync-eye" data-toggle-password aria-pressed="false" aria-controls="syncPassword">Show</button>');
 
@@ -273,7 +275,7 @@ function syncAuthForm(s) {
   return `<form class="card sync-card sync-form" id="syncForm" data-form="signin" novalidate aria-labelledby="syncFormTitle">
       <h3 id="syncFormTitle">${expired ? 'Sign in again' : 'Sign in'}</h3>
       ${expired ? '<p class="hint">Your sign-in has expired. Edits made here are kept and sync after you sign in.</p>' : ''}
-      ${syncEmailField()}
+      ${syncEmailField(syncUI.status.config?.email || '')}
       ${syncPasswordField('', 'current-password')}
       <button type="submit" id="syncSignIn" class="primary sync-submit" data-lock>Sign in</button>
       ${expired ? '' : '<button type="button" id="syncToCreate" class="ghost sync-switch" data-lock>New here? Create an account</button>'}
@@ -537,6 +539,7 @@ function wireSyncPage() {
       if (state.busy) return;
       await scheduleFlush(); state.scheduleRun = null; await syncRelease();
     }, 'syncTitle'),
+    syncForgetEmail: () => syncAct('syncForgetEmail', async () => { await window.api.sync.forgetEmail(); syncUI.draftEmail = ''; syncUI.status = await window.api.sync.status(); }, 'syncEmail'),
     syncToCreate: () => syncSwitchForm('create'), syncToSignIn: () => syncSwitchForm('signin'),
   };
   page.addEventListener('submit', (e) => {
@@ -564,7 +567,7 @@ function wireSyncPage() {
 function syncSwitchForm(mode) {
   syncUI.draftEmail = $('syncEmail')?.value || ''; syncUI.authMode = mode; syncUI.error = ''; syncUI.notice = '';
   syncPaint();
-  $(mode === 'create' ? 'syncName' : 'syncEmail')?.focus();
+  $(mode === 'create' ? 'syncName' : $('syncEmail').value ? 'syncPassword' : 'syncEmail')?.focus();
 }
 async function syncResolveConflict(b) {
   const c = syncUI.conflicts[+b.dataset.conflict];

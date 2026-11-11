@@ -3912,12 +3912,10 @@ function render() {
     ${state.engine.info && !state.engine.info.ffprobe
       ? '<button class="sm" id="btnFindFfprobe">Locate ffprobe</button>' : ''}
     <button class="sm ghost" id="btnRestart">Restart engine</button>
-    ${['win32', 'darwin'].includes(window.api.platform) ? `<button class="sm ghost" id="btnDns" title="Sets DNS to 1.1.1.1 and 1.0.0.1 on the active Wi-Fi/Ethernet connection (asks for administrator permission), then restarts AV Backup.">Set Cloudflare DNS &amp; restart (${window.api.platform === 'win32' ? 'Windows' : 'Mac'})</button>` : ''}
     ${typeof showSync === 'function' ? '<button class="sm" id="btnAccount">Account</button>' : ''}`;
   if (PAINT.setHtml($('topActions'), topActions)) {
     $('btnAccount')?.addEventListener('click', () => showSync().catch(() => toast('Save failed; account view could not open.', 'err')));
     $('btnRestart').addEventListener('click', restartEngine);
-    $('btnDns')?.addEventListener('click', setCloudflareDns);
     $('btnFindFfprobe')?.addEventListener('click', locateFfprobe);
   }
 
@@ -4484,18 +4482,6 @@ window.api.onStatus((msg) => {
     render();
   }
 });
-
-async function setCloudflareDns() {
-  // Main re-checks its own busy flag; this also covers an unsaved prepared plan or schedule run.
-  if (state.busy || state.scheduleRun || (state.plan && !state.runResult)) {
-    toast('Finish or cancel the current backup before changing DNS and restarting.', 'warn');
-    return;
-  }
-  try {
-    const r = await window.api.dns.setCloudflare();
-    if (!r.ok && r.code !== 'cancelled') toast(r.error, r.code === 'busy' ? 'warn' : 'err');
-  } catch (e) { toast(e.message, 'err'); }
-}
 
 async function restartEngine() {
   const r = await window.api.restart();

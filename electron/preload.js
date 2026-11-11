@@ -116,7 +116,8 @@ contextBridge.exposeInMainWorld('api', {
     onStatus: (fn) => subscribe('update:status', fn),
   },
 
-  dns: { setCloudflare: () => ipcRenderer.invoke('dns:setCloudflare') },
+  // Sidebar team-server indicators: fixed probe, the main process picks the address.
+  teamServer: { status: () => ipcRenderer.invoke('teamServer:status') },
 
   // A dropped File no longer carries .path (Electron 32+); ask for it here.
   pathForFile: (file) => webUtils.getPathForFile(file),

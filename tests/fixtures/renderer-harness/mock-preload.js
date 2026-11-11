@@ -62,7 +62,7 @@
   const mock = window.__mock = { status, calls, views: 0, commits: 0, conflicts: [], lastCommit: null,
     signIn: async () => { mock.status = { ...mock.status, signedIn: true, phase: 'online', user: { displayName: 'Test Operator', role: 'operator' } }; return { ok: true }; },
     signUp: async (email) => ({ ok: true, email }) };
-  const base = { platform: 'darwin', sync, update: { status: async () => ({}), onStatus: () => () => {} }, dns: { setCloudflare: async () => ({}) },
+  const base = { platform: 'darwin', sync, update: { status: async () => ({}), onStatus: () => () => {} }, teamServer: { status: async () => (flow === 'local' ? { mode: 'local' } : { mode: 'account', zerotier: 'connected', pocketbase: 'down' }) },
     call: async (m) => ({ ok: true, result: m === 'ping' ? { python: 'mock', ffprobe: 'mock' } : { volumes: [], rows: [] } }),
     reserveId: async () => 1, getSettings: async () => ({}), getStore: async () => null,
     onProgress: () => {}, onStatus: () => {}, onBeforeClose: () => () => {}, confirm: async () => false };

@@ -209,6 +209,21 @@ module.exports = async ({ open, until, out }) => {
   }
   pass('expired offers sign-in again; locked offers sign-out only');
 
+  // ---------------------------------------------------------------- sidebar team server
+  for (const [flow, want] of [['local', ['Local mode']], ['signedin', ['ZeroTier: Connected', 'PocketBase: Not reachable']]]) {
+    w = await open({ flow });
+    await tick();
+    v = await js(w, `(async () => {
+      const lines = [...document.querySelectorAll('#teamLines .team-line')].map(l => l.textContent);
+      document.getElementById('btnTeamAccount').click();
+      await new Promise(r => setTimeout(r, 60));
+      return { lines, live: document.getElementById('teamLines').getAttribute('aria-live'), title: document.getElementById('stepTitle').textContent };
+    })()`);
+    assert.deepEqual(v, { lines: want, live: 'polite', title: 'Account' });
+    w.destroy();
+  }
+  pass('sidebar team server: text states, and its Account button opens the Account page');
+
   nativeTheme.themeSource = 'dark';
   w = await page('signedout');
   await shot(w, 'dark-signed-out', 1280);

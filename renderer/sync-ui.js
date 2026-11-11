@@ -123,6 +123,7 @@ async function syncInit() {
   try { syncUI.status = await window.api.sync.status(); }
   catch (_) { syncUI.error = 'Account status is unavailable. Restart the app to try again.'; }
   window.api.sync.onStatus((s) => {
+    if (typeof window.teamServerConfigChanged === 'function') window.teamServerConfigChanged(s && s.config);
     syncStatus(s).catch(() => { syncUI.error = 'Could not refresh account data.'; })
       .finally(() => { if (state.view === 'account') syncPaint(); });
   });

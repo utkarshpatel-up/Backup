@@ -464,6 +464,11 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 
 /* Account values and conflict alternatives remain readable without stretching the grid. */
 .sync-panel input { max-width: 100%; margin: 4px 6px 4px 0; }
+.sync-diff { min-height: 0; max-height: 320px; margin: 8px 0 10px; }
+.sync-diff tbody th { position: sticky; left: 0; top: auto; z-index: 1; background: var(--panel); }
+.sync-diff td { white-space: nowrap; padding: 5px 8px; }
+.sch-table td.sync-changed { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+.sch-table td.sync-deleted { color: var(--err); background: var(--err-soft); font-style: italic; }
 .region { display: contents; }
 
 /* Account page. */

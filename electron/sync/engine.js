@@ -25,7 +25,7 @@ const path = require('node:path');
 const { Client, SyncError, parseBaseUrl, jwtClaims } = require('./client');
 const { SealedFile, SessionStore, writeAtomic, osProtectionAvailable } = require('./vault');
 const { fromSnapshot, inScope, toView, canon, tid } = require('./model');
-const { MAX_OPS, jsonbBytes, CHILD_TYPES } = require('./spec');
+const { MAX_OPS, jsonbBytes, CHILD_TYPES, SPEC } = require('./spec');
 
 const PROTOCOL = 1;
 const REQUEST_BUDGET = 1900000;          // under the 2 MiB request limit, measured as jsonb text
@@ -836,7 +836,7 @@ class SyncEngine extends EventEmitter {
       const l = d.local[id];
       const a = c.assignment_key && (current[tid('assignment', c.assignment_key)] || d.server[tid('assignment', c.assignment_key)]);
       return {
-        conflictId: c.conflict_id, kind: c.kind, targetType: c.target_type, targetKey: c.target_key,
+        conflictId: c.conflict_id, kind: c.kind, targetType: c.target_type, targetKey: c.target_key, fields: Object.keys(SPEC[c.target_type] || {}),
         schedule: a && (a.payload || a.lastPayload) ? (a.payload || a.lastPayload).label : '',
         base: ver(c.base), detected: ver(c.detected_head), incoming: ver(c.incoming), current: ver(c.current_head),
         targetDeleted: !!c.target_deleted, assignmentRev: c.assignment_rev,
@@ -850,8 +850,11 @@ class SyncEngine extends EventEmitter {
   /** Local edits a person must look at: refused by the server, or a conflict someone else closed. */
   reviews() {
     if (!this.acct || this.acct.data.locked) return [];
-    return Object.entries(this.acct.data.local).filter(([, l]) => l.error || (l.held && l.held.review))
-      .map(([id, l]) => ({ id, type: l.type, key: l.key, value: l.value, current: this.acct.data.server[id]?.payload ?? null, expectedHead: this.acct.data.server[id]?.head ?? null, reason: l.error ? l.error.message : 'Your change was not used when the conflict was closed.' }));
+    const d = this.acct.data, current = this._current();
+    const label = (a) => { const x = a && (current[tid('assignment', a)] || d.server[tid('assignment', a)]); const p = x && (x.payload || x.lastPayload); return p ? p.label : ''; };
+    return Object.entries(d.local).filter(([, l]) => l.error || (l.held && l.held.review))
+      .map(([id, l]) => ({ id, type: l.type, key: l.key, fields: Object.keys(SPEC[l.type] || {}), schedule: label(l.type === 'assignment' ? l.key : l.a || d.server[id]?.a),
+        value: l.value, current: d.server[id]?.payload ?? null, expectedHead: d.server[id]?.head ?? null, reason: l.error ? l.error.message : 'Your change was not used when the conflict was closed.' }));
   }
 
   /** Decide a conflict: keep_current, accept_incoming, or mine (this device's latest draft, as a merged value). */

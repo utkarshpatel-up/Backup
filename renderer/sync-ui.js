@@ -350,13 +350,80 @@ function syncTeamHtml(s, enabled) {
       <p class="hint sync-tuck">Offline access uses an encrypted cache. Membership revocation cannot be discovered until the server is reached.</p>
     </section>`;
 }
+/* ---------------------------------------------------- conflict tables */
+
+const SYNC_KINDS = {
+  stale_edit: 'Edited on another computer at the same time',
+  delete_vs_edit: 'Deleted on another computer while it was being edited; it was not deleted',
+  edit_vs_delete: 'Edited after it was deleted on another computer; it stays deleted',
+  create_collision: 'Added on two computers at the same time',
+  parent_deleted: 'Changed after its schedule was deleted',
+  assignment_delete_stale: 'Schedule deleted on another computer while it was being changed; it was not deleted',
+};
+const syncKindLabel = (kind) => SYNC_KINDS[kind] || 'Changed on two computers';
+const SYNC_TYPES = { session: 'Schedule row', assignment: 'Schedule', source_line: 'Schedule file line', source_skip: 'Schedule break',
+  city: 'City', report_record: 'Report entry', team_defaults: 'Team defaults', team_starts: 'Team starting numbers',
+  learned_title: 'Remembered title', learned_place: 'Remembered place' };
+function syncFmt(v) {
+  if (v == null) return '';
+  if (Array.isArray(v)) return v.map(syncFmt).join(', ');
+  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+  if (typeof v === 'object') return Object.entries(v).map(([k, x]) => `${k}: ${syncFmt(x)}`).join(', ');
+  return String(v);
+}
+/** The columns whose shown value is not the same in every alternative that still exists. */
+function syncDiffers(cols, payloads) {
+  const live = payloads.filter((p) => p != null);
+  return new Set(cols.filter((c) => new Set(live.map(c.get)).size > 1).map((c) => c.k));
+}
+/** A session uses the schedule grid's columns; other types their spec order. Fields off the grid show only when they differ. */
+function syncColumns(type, fields, payloads) {
+  if (!fields.length) fields = [...new Set(payloads.filter((p) => p != null).flatMap(Object.keys))];
+  const human = (k) => k.replace(/([A-Z])/g, ' $1').replace(/^./, (x) => x.toUpperCase());
+  const col = (k, h = human(k)) => ({ k, h, get: (p) => syncFmt(p[k]) });
+  if (type !== 'session') return fields.map((k) => col(k));
+  const ymd = ['y', 'm', 'd'];
+  const part = (i) => (p) => (/^\d{4}-\d{2}-\d{2}$/.test(p.date || '') ? p.date.split('-')[i] : '');
+  const grid = SCHEDULE_HEAD.filter(([k]) => ymd.includes(k) || fields.includes(k))
+    .map(([k, h]) => (ymd.includes(k) ? { k, h, get: part(ymd.indexOf(k)) } : col(k, h)));
+  const extra = fields.filter((k) => k !== 'date' && !grid.some((c) => c.k === k)).map((k) => col(k));
+  const differs = syncDiffers(extra, payloads);
+  return [...grid, ...extra.filter((c) => differs.has(c.k))];
+}
+/** Which row this is, in words a person recognises. */
+function syncTargetName(type, schedule, payloads) {
+  const p = payloads.find((x) => x != null) || {};
+  if (type === 'session') return [schedule || 'Schedule', SCHEDULE.toIndian(p.date), p.start, p.topic || p.title].filter(Boolean).join(' · ');
+  const name = p.label || p.id || p.name || p.key || '';
+  return `${SYNC_TYPES[type] || 'Item'}${schedule && type !== 'assignment' ? ` in ${schedule}` : ''}${name ? `: ${name}` : ''}`;
+}
+/** alts: [{label, who, payload, missing}]; a null payload is one Deleted (or never-there) cell. */
+function syncAltTable(id, type, fields, alts) {
+  const payloads = alts.map((a) => a.payload);
+  const cols = syncColumns(type, fields || [], payloads), differs = syncDiffers(cols, payloads);
+  const rows = alts.map((a) => `<tr><th scope="row">${esc(a.label)}${a.who ? `<div class="hint">${esc(a.who)}</div>` : ''}</th>${a.payload == null
+    ? `<td class="sync-deleted" colspan="${Math.max(cols.length, 1)}">${a.missing ? 'Not on the team server' : 'Deleted'}</td>`
+    : cols.map((c) => `<td class="${differs.has(c.k) ? 'sync-changed' : ''}">${esc(c.get(a.payload))}</td>`).join('')}</tr>`).join('');
+  return `<div class="sch-scroll sync-diff"><table class="sch-table" aria-labelledby="${id}">
+    <thead><tr><th scope="col">Version</th>${cols.map((c) => `<th scope="col">${esc(c.h)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+const syncWho = (v) => v && [v.mine ? 'you' : v.by, v.at && fmtTime(v.at)].filter(Boolean).join(' · ');
 function syncReviewHtml() {
   const disabled = syncBusy() || syncUI.changing ? 'disabled' : '';
-  return `${(syncAvailable() ? syncUI.conflicts : []).map((c, i) => `<div class="card sync-panel"><h3>Conflict: ${esc(c.schedule || c.targetType)}</h3>
-      <p>Choose an alternative, then return to the schedule to edit it.</p>
-      <pre>${esc(JSON.stringify({ current: c.current, incoming: c.incoming, draft: c.draft }, null, 2))}</pre>
-      ${['keep_current', 'accept_incoming', ...(c.draft ? ['mine'] : [])].map((choice) => `<button data-conflict="${i}" data-choice="${choice}" ${disabled || (c.kind === 'assignment_delete_stale' && !syncCanDelete() ? 'disabled' : '')}>${choice === 'keep_current' ? 'Keep current' : choice === 'accept_incoming' ? 'Accept incoming' : 'Keep my draft'}</button>`).join('')}</div>`).join('')}
-    ${(syncAvailable() ? syncUI.reviews : []).map((r, i) => `<div class="card sync-panel"><h3>Review saved draft</h3><pre>${esc(JSON.stringify({ current: r.current, draft: r.value }, null, 2))}</pre><button data-discard="${i}" ${disabled}>Discard draft</button><button data-retry="${i}" ${disabled}>Use this draft against the shown current value</button><p>After choosing, return to the schedule to edit.</p></div>`).join('')}
+  return `${(syncAvailable() ? syncUI.conflicts : []).map((c, i) => {
+    const alts = [{ label: 'Current', who: syncWho(c.current), payload: c.current?.payload ?? null, missing: !c.current },
+      { label: 'Incoming', who: syncWho(c.incoming), payload: c.incoming?.payload ?? null, missing: !c.incoming },
+      ...(c.draft ? [{ label: 'My draft', who: 'on this computer', payload: c.draft.value ?? null }] : [])];
+    return `<div class="card sync-panel"><h3 id="syncConflict${i}">Conflict: ${esc(syncTargetName(c.targetType, c.schedule, alts.map((a) => a.payload)))}</h3>
+      <p><b>${esc(syncKindLabel(c.kind))}.</b> Highlighted cells differ. Choose an alternative, then return to the schedule to edit it.</p>
+      ${syncAltTable(`syncConflict${i}`, c.targetType, c.fields, alts)}
+      ${['keep_current', 'accept_incoming', ...(c.draft ? ['mine'] : [])].map((choice) => `<button data-conflict="${i}" data-choice="${choice}" ${disabled || (c.kind === 'assignment_delete_stale' && !syncCanDelete() ? 'disabled' : '')}>${choice === 'keep_current' ? 'Keep current' : choice === 'accept_incoming' ? 'Accept incoming' : 'Keep my draft'}</button>`).join('')}</div>`;
+  }).join('')}
+    ${(syncAvailable() ? syncUI.reviews : []).map((r, i) => {
+    const alts = [{ label: 'Current', payload: r.current ?? null, missing: r.expectedHead == null }, { label: 'My draft', who: 'on this computer', payload: r.value ?? null }];
+    return `<div class="card sync-panel"><h3 id="syncReview${i}">Review saved draft: ${esc(syncTargetName(r.type, r.schedule, alts.map((a) => a.payload)))}</h3>
+      ${r.reason ? `<p>${esc(r.reason)}</p>` : ''}${syncAltTable(`syncReview${i}`, r.type, r.fields, alts)}<button data-discard="${i}" ${disabled}>Discard draft</button><button data-retry="${i}" ${disabled}>Use this draft against the shown current value</button><p>After choosing, return to the schedule to edit.</p></div>`;
+  }).join('')}
     ${(syncAvailable() ? syncUI.deleted : []).map((s, i) => `<div class="card sync-panel">${esc(s.label)} <button data-restore="${i}" ${syncCanDelete() ? '' : 'disabled'}>Restore schedule</button></div>`).join('')}
     ${syncAvailable() ? '<p class="hint">Deleted schedules are listed only if this device previously saw them. Fresh-device history is unavailable.</p>' : ''}`;
 }

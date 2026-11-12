@@ -318,6 +318,23 @@ test('a team-mode report edit goes into the committed team report, with its oran
   assert.equal(JSON.stringify(rec.edited), '{"remarks":""}');
   assert.equal(f.run('reportRecords().all[0].edited.has("remarks")'), true, 'shown orange');
 });
+test('history lines name each change and survive deletes, creates and missing names', () => {
+  const f = fixture();
+  f.c.h = { actor_name: 'Nita', target_type: 'session', action: 'update', payload: { date: '2026-11-08', topic: 'New', events: ['A', 'B'] }, previous: { date: '2026-11-08', topic: 'Old', events: ['A'] } };
+  assert.deepEqual([...f.run('historyLines(h)')], ['Nita changed value of Topic/Description from "Old" to "New" on session 2026-11-08 New',
+    'Nita changed value of Event Type from "A" to "A, B" on session 2026-11-08 New']);
+  f.c.h = { target_type: 'report_record', action: 'delete', payload: null, previous: { id: 'X-1' } };
+  assert.deepEqual([...f.run('historyLines(h)')], ['A team member deleted report entry X-1']);
+  f.c.h = { actor_name: 'Nita', target_type: 'report_record', action: 'create', payload: { id: 'X-2' }, previous: null };
+  assert.deepEqual([...f.run('historyLines(h)')], ['Nita imported report entry X-2']);
+});
+test('local-mode report corrections on this computer do not overlay the team report', () => {
+  const f = fixture();
+  f.c.localStorage = { getItem: () => JSON.stringify({ 'X-1': { topic: 'Local fix' } }), setItem() {} };
+  f.state.report = { existing: [{ id: 'X-1', topic: 'Team', events: [], languages: [], source: 'existing' }] };
+  assert.equal(f.run('reportRecords().all[0].topic'), 'Team');
+  assert.equal(f.run('reportRecords().all[0].edited'), undefined);
+});
 test('editing a team report cell back to its original text takes the orange off, even for a list cell', async () => {
   const f = fixture();
   f.state.report = { existing: [{ id: 'X-1', topic: 'Old', events: ['Bhakti'], languages: [], source: 'existing' }], edits: {} };

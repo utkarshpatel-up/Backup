@@ -35,7 +35,8 @@ const REPORT_COLUMNS = [
 
 function reportState() {
   if (!state.report) state.report = { file: null, existing: null, loading: false, error: null, filters: {}, columns: {}, limit: REPORT_PAGE };
-  if (!state.report.edits) state.report.edits = reportLoadEdits();
+  // This computer's local-mode corrections never overlay the team's report (team edits live in the record).
+  if (!state.report.edits) state.report.edits = typeof syncAccount === 'function' && syncAccount() ? {} : reportLoadEdits();
   return state.report;
 }
 

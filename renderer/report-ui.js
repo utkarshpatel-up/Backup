@@ -35,11 +35,13 @@ const REPORT_COLUMNS = [
 
 function reportState() {
   if (!state.report) state.report = { file: null, existing: null, loading: false, error: null, filters: {}, columns: {}, limit: REPORT_PAGE };
-  if (!state.report.edits) state.report.edits = reportLoadEdits();
+  // This computer's local-mode corrections never overlay the team's report (team edits live in the record).
+  if (!state.report.edits) state.report.edits = typeof syncAccount === 'function' && syncAccount() ? {} : reportLoadEdits();
   return state.report;
 }
 
-// Cells of existing data the operator corrected, as {ID: {field: text}}. Kept on this computer only.
+// Cells of existing data the operator corrected. Local mode: {ID: {field: text}}, kept on this computer.
+// Team mode: the team's record is changed itself and lists its corrected cells in `edited`, so it syncs.
 const REPORT_EDITS_KEY = 'avb.reportEdits';
 const REPORT_EDITABLE = new Set(['activity', 'author', 'format', 'type', 'city', 'state', 'country', 'place', 'session',
   'events', 'topic', 'languages', 'duration', 'clips', 'cameras', 'remarks']);
@@ -53,6 +55,25 @@ function reportEdit(id, key, text) {
   const rec = (r.existing || []).find((x) => x.id === id);
   if (!rec || !REPORT_EDITABLE.has(key)) return;
   const value = REPORT_LIST_FIELDS.has(key) ? text.split(/[,;]/).map((v) => v.trim()).filter(Boolean) : text.trim();
+  if (typeof syncAccount === 'function' && syncAccount()) {
+    // Team mode: the change goes into the team's copy and uploads like any other edit.
+    if (!syncAvailable()) { toast('Sign in under Account to edit the team report.', 'warn'); return; }
+    const shown = String(Array.isArray(value) ? value.join(', ') : value);
+    if (String(reportValue(rec, key)) === shown) return;
+    // `edited` maps each corrected cell to the text it had before, so editing it back can un-mark it.
+    const was = { ...(rec.edited && !Array.isArray(rec.edited) ? rec.edited : {}) };
+    // Clipped to the server's 2000-char limit (a long list cell could exceed it and stall syncing).
+    if (!(key in was)) was[key] = String(reportValue(rec, key)).slice(0, 2000);
+    const back = was[key] === shown;
+    if (back) delete was[key];
+    const next = { ...rec, [key]: value };
+    if (Object.keys(was).length) next.edited = was; else delete next.edited;
+    r.existing = r.existing.map((x) => (x === rec ? next : x));
+    reportEditRev++;
+    scheduleRemember();
+    render();
+    return;
+  }
   const same = String(reportValue(rec, key)) === String(Array.isArray(value) ? value.join(', ') : value);
   const mine = r.edits[id] || (r.edits[id] = {});
   if (same) delete mine[key]; else mine[key] = value;
@@ -64,7 +85,7 @@ function reportEdit(id, key, text) {
 
 /** Orange (edited), purple and blue (schedule) rows as an .xlsx ready to upload to Frappe. */
 function reportExportFrappe() {
-  const rows = reportRecords().all.filter((rec) => rec.source === 'schedule' || rec.edited);
+  const rows = reportRecords().all.filter((rec) => rec.source === 'schedule' || rec.edited?.size);
   return reportExport(rows, 'Frappe_Upload');
 }
 
@@ -155,7 +176,8 @@ function reportRecords() {
   if (reportMemo && reportMemo.existing === r.existing && reportMemo.cities === cities && reportMemo.key === key) return reportMemo.value;
   const scheduled = [];
   for (const item of items) scheduled.push(...SCHEDULE.scheduleRecords(item.sessions, item.starts, cities, scheduleRange(item)));
-  const existing = (r.existing || []).map((rec) => (r.edits[rec.id] ? { ...rec, ...r.edits[rec.id], edited: new Set(Object.keys(r.edits[rec.id])) } : rec));
+  const existing = (r.existing || []).map((rec) => (r.edits[rec.id] ? { ...rec, ...r.edits[rec.id], edited: new Set(Object.keys(r.edits[rec.id])) }
+    : rec.edited ? { ...rec, edited: new Set(Array.isArray(rec.edited) ? rec.edited : Object.keys(rec.edited)) } : rec));
   const all = SCHEDULE.mergeReport(existing, scheduled);
   reportMemo = { existing: r.existing, cities, key, value: { all, scheduled: scheduled.length, gaps: SCHEDULE.findGaps(all) } };
   return reportMemo.value;

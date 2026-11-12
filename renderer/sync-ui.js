@@ -570,7 +570,7 @@ function syncSubmitAuth(form) {
   const mode = form.dataset.form;
   const values = { name: $('syncName')?.value || '', email: $('syncEmail').value, password: $('syncPassword').value };
   if (!syncShowErrors(['syncName', 'syncEmail', 'syncPassword'], syncCheckForm(mode, values))) return;
-  if (mode === 'signin') return syncAct('syncSignIn', async () => { await syncTransition(() => window.api.sync.signIn(values.email, values.password)); syncRememberEmail(values.email); syncUI.draftEmail = ''; }, 'syncUser');
+  if (mode === 'signin') return syncAct('syncSignIn', async () => { await syncTransition(() => window.api.sync.signIn(values.email, values.password)); syncRememberEmail(values.email); syncUI.draftEmail = ''; if (syncAvailable()) syncLoadHistory(false); }, 'syncUser');
   return syncAct('syncSignUp', async () => {
     const r = await window.api.sync.signUp(values.email, values.password, values.name);
     syncUI.notice = `Account created for ${r.email}. Ask the maintainer to add you to the team, then sign in.`;

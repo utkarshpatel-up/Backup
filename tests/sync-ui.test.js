@@ -307,3 +307,46 @@ test('account errors never echo an unknown error as written', () => {
   const html = fixture(); html.run("syncUI.status = {mode:'account',signedIn:false,error:'<b>raw server text</b>'}");
   assert.equal(html.run('renderSyncPage()').includes('raw server text'), false);
 });
+test('a team-mode report edit goes into the committed team report, with its orange cell listed', async () => {
+  const f = fixture();
+  f.state.report = { existing: [{ id: 'DD-F-4K-3049-E', topic: 'Old', remarks: '', events: [], languages: [], source: 'existing' }], edits: {} };
+  f.run("reportEdit('DD-F-4K-3049-E', 'remarks', ' with Sevarthi ')");
+  await f.run('scheduleFlush()');
+  const commit = f.calls.find((c) => c[0] === 'commit')[1];
+  const rec = commit.snapshot.report.find((r) => r.id === 'DD-F-4K-3049-E');
+  assert.equal(rec.remarks, 'with Sevarthi');
+  assert.equal(JSON.stringify(rec.edited), '{"remarks":""}');
+  assert.equal(f.run('reportRecords().all[0].edited.has("remarks")'), true, 'shown orange');
+});
+test('history lines name each change and survive deletes, creates and missing names', () => {
+  const f = fixture();
+  f.c.h = { actor_name: 'Nita', target_type: 'session', action: 'update', payload: { date: '2026-11-08', topic: 'New', events: ['A', 'B'] }, previous: { date: '2026-11-08', topic: 'Old', events: ['A'] } };
+  assert.deepEqual([...f.run('historyLines(h)')], ['Nita changed value of Topic/Description from "Old" to "New" on session 2026-11-08 New',
+    'Nita changed value of Event Type from "A" to "A, B" on session 2026-11-08 New']);
+  f.c.h = { target_type: 'report_record', action: 'delete', payload: null, previous: { id: 'X-1' } };
+  assert.deepEqual([...f.run('historyLines(h)')], ['A team member deleted report entry X-1']);
+  f.c.h = { actor_name: 'Nita', target_type: 'report_record', action: 'create', payload: { id: 'X-2' }, previous: null };
+  assert.deepEqual([...f.run('historyLines(h)')], ['Nita imported report entry X-2']);
+});
+test('local-mode report corrections on this computer do not overlay the team report', () => {
+  const f = fixture();
+  f.c.localStorage = { getItem: () => JSON.stringify({ 'X-1': { topic: 'Local fix' } }), setItem() {} };
+  f.state.report = { existing: [{ id: 'X-1', topic: 'Team', events: [], languages: [], source: 'existing' }] };
+  assert.equal(f.run('reportRecords().all[0].topic'), 'Team');
+  assert.equal(f.run('reportRecords().all[0].edited'), undefined);
+});
+test('editing a team report cell back to its original text takes the orange off, even for a list cell', async () => {
+  const f = fixture();
+  f.state.report = { existing: [{ id: 'X-1', topic: 'Old', events: ['Bhakti'], languages: [], source: 'existing' }], edits: {} };
+  const rec = () => f.state.report.existing[0];
+  f.run("reportEdit('X-1', 'topic', 'New')"); f.run("reportEdit('X-1', 'events', 'Bhakti, Darshan')");
+  assert.equal(JSON.stringify(rec().edited), '{"topic":"Old","events":"Bhakti"}');
+  assert.equal(f.run("reportRecords().all[0].edited.has('topic')"), true);
+  f.run("reportEdit('X-1', 'topic', 'Old')");   // back to the original
+  assert.equal(rec().topic, 'Old');
+  assert.equal(JSON.stringify(rec().edited), '{"events":"Bhakti"}');
+  f.run("reportEdit('X-1', 'events', 'Bhakti')");
+  assert.equal(JSON.stringify(rec().events), '["Bhakti"]');
+  assert.equal('edited' in rec(), false, 'nothing left edited');
+  assert.equal(f.run('reportRecords().all[0].edited'), undefined, 'plain again');
+});

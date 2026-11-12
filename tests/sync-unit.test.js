@@ -303,3 +303,15 @@ test('an empty Remarks is left out of the payload, so a server without the field
   assert.equal('remarks' in model.sessionPayload({ include: true, date: '2026-11-08', remarks: '' }, 'a0'), false);
   assert.equal(model.sessionPayload({ include: true, date: '2026-11-08', remarks: 'note' }, 'a0').remarks, 'note');
 });
+
+test('a report record keeps its {field: original} edit marks through sync; an empty or list form is left out', () => {
+  const b = model.fromSnapshot({ report: [
+    { id: 'X-1', topic: 'New', clips: 3, events: ['A'], edited: { topic: 'Old' }, source: 'existing' },
+    { id: 'X-2', topic: 'T', edited: {} }, { id: 'X-3', topic: 'T', edited: ['topic'] }] });
+  assert.deepEqual(b.problems, []);
+  assert.deepEqual(b.targets['report_record/X-1'].payload.edited, { topic: 'Old' });
+  assert.ok(!('edited' in b.targets['report_record/X-2'].payload));
+  assert.ok(!('edited' in b.targets['report_record/X-3'].payload));
+  assert.deepEqual(model.toView(b.targets, {}).report.find((r) => r.id === 'X-1').edited, { topic: 'Old' });
+  assert.equal(spec.payloadProblems('report_record', { id: 'X', edited: { topic: 'x'.repeat(2001) } })[0].code, 'invalid_field');
+});

@@ -4,6 +4,16 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 1.10.0
+
+- **Update the team server first.** Copy the new `server/pb_hooks` files to the PocketBase server and restart it (see docs/POCKETBASE_SETUP.md) before anyone uses this version. Until then, saving a Remarks note or a corrected report cell is refused by the old server.
+- **Signed-in name in the top bar.** After you sign in, the Account button shows your name. Open it for Dashboard or Log Out. If the maintainer did not set a display name for you, the name you gave when creating the account is used.
+- **Frappe Report button** on the Report page opens the Frappe site.
+- **Recent e-mails when signing in.** The e-mail box offers the last 10 e-mails used on this computer. Passwords are never saved.
+- **Remarks column.** The event schedule and the report now have a Remarks column. It is read from imported Excel files, saved to the team, and included when you export the report.
+- **History.** The Account page lists what each team member changed: who changed which value from what to what, and which entries were imported.
+- **Correct imported report entries.** Double-click a cell of the existing data to change it. Corrected cells turn orange and sync to every computer; type the original text back to remove the orange. "Save as Excel" on the Report page saves every orange (corrected), purple (replaces an existing entry) and blue (from a schedule) row, ready to upload to Frappe.
+
 ## 1.9.1
 
 - **Team server status in the sidebar.** A new box above the engine status shows whether this computer is on the team's ZeroTier network and whether the PocketBase server is running, with a button to the Account page. The "Set Cloudflare DNS & restart" button is gone; it is no longer needed.

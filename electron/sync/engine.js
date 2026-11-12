@@ -588,6 +588,9 @@ class SyncEngine extends EventEmitter {
     acct.data.identity = { role: me.role, display_name: me.display_name, verifiedAt: new Date(this.now()).toISOString() };
     if (acct.data.locked) { acct.data.locked = false; }
     this._save();
+    // This app checks every field before queuing it, so a field the server does not know means the
+    // server is older than the app. Those changes are sent again each sync until the server is updated.
+    for (const l of Object.values(acct.data.local)) if (l.error && l.error.code === 'unknown_field' && !l.inflight && !l.held) l.error = null;
     this._setPhase('online');
     try { const members = await this._call('avb_team_members'); if (Array.isArray(members)) acct.data.members = members.map((m) => ({ user_id: m.user_id, display_name: m.display_name })); } catch (_) { /* names only */ }
     await this._pull(acct);

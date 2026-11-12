@@ -307,3 +307,14 @@ test('account errors never echo an unknown error as written', () => {
   const html = fixture(); html.run("syncUI.status = {mode:'account',signedIn:false,error:'<b>raw server text</b>'}");
   assert.equal(html.run('renderSyncPage()').includes('raw server text'), false);
 });
+test('a team-mode report edit goes into the committed team report, with its orange cell listed', async () => {
+  const f = fixture();
+  f.state.report = { existing: [{ id: 'DD-F-4K-3049-E', topic: 'Old', remarks: '', events: [], languages: [], source: 'existing' }], edits: {} };
+  f.run("reportEdit('DD-F-4K-3049-E', 'remarks', ' with Sevarthi ')");
+  await f.run('scheduleFlush()');
+  const commit = f.calls.find((c) => c[0] === 'commit')[1];
+  const rec = commit.snapshot.report.find((r) => r.id === 'DD-F-4K-3049-E');
+  assert.equal(rec.remarks, 'with Sevarthi');
+  assert.equal(JSON.stringify(rec.edited), '["remarks"]');
+  assert.equal(f.run('reportRecords().all[0].edited.has("remarks")'), true, 'shown orange');
+});

@@ -205,6 +205,8 @@ function fromSnapshot(snap, busy = []) {
       const p = {};
       for (const [k, v] of Object.entries(r || {})) {
         if (REPORT_LOCAL.has(k) || v === undefined || (k === 'remarks' && !v)) continue;
+        // `edited` is a {field: original} map; an empty one, or the short-lived list form, is left out rather than refused.
+        if (k === 'edited' && (!v || typeof v !== 'object' || Array.isArray(v) || !Object.keys(v).length)) continue;
         p[k] = typeof v === 'number' && !Number.isFinite(v) ? null : v;
       }
       const k = naturalKey('report_record', p);

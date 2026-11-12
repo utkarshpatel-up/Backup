@@ -195,3 +195,14 @@ test('a member with no display_name is named by the name given at sign-up', () =
   assert.equal(s.rpc('nn', 'avb_team_members').find((m) => m.user_id === 'nn').display_name, 'Nita N');
   assert.equal(s.rpc('op1', 'avb_me').display_name, 'op1', 'a set display_name still wins');
 });
+
+test('a report record with edit marks is taken, and two PCs editing it make a stale_edit', () => {
+  const s = server();
+  const rec = (extra) => ({ id: 'X-1', topic: 'New', clips: 3, edited: { topic: 'Old' }, ...extra });
+  const v1 = s.apply('op1', [{ op: 'create', type: 'report_record', key: 'X-1', payload: rec() }]).results[0];
+  assert.equal(v1.status, 'applied');
+  s.apply('op1', [{ op: 'update', type: 'report_record', key: 'X-1', base_version_id: v1.version_id, payload: rec({ remarks: 'a' }) }]);
+  const r = s.apply('op2', [{ op: 'update', type: 'report_record', key: 'X-1', base_version_id: v1.version_id, payload: rec({ remarks: 'b' }) }]);
+  assert.equal(r.results[0].conflict_kind, 'stale_edit');
+  assert.equal(s.apply('op1', [{ op: 'create', type: 'report_record', key: 'X-2', payload: { id: 'X-2', edited: ['topic'] } }]).error, 'invalid_field');
+});

@@ -315,6 +315,21 @@ test('a team-mode report edit goes into the committed team report, with its oran
   const commit = f.calls.find((c) => c[0] === 'commit')[1];
   const rec = commit.snapshot.report.find((r) => r.id === 'DD-F-4K-3049-E');
   assert.equal(rec.remarks, 'with Sevarthi');
-  assert.equal(JSON.stringify(rec.edited), '["remarks"]');
+  assert.equal(JSON.stringify(rec.edited), '{"remarks":""}');
   assert.equal(f.run('reportRecords().all[0].edited.has("remarks")'), true, 'shown orange');
+});
+test('editing a team report cell back to its original text takes the orange off, even for a list cell', async () => {
+  const f = fixture();
+  f.state.report = { existing: [{ id: 'X-1', topic: 'Old', events: ['Bhakti'], languages: [], source: 'existing' }], edits: {} };
+  const rec = () => f.state.report.existing[0];
+  f.run("reportEdit('X-1', 'topic', 'New')"); f.run("reportEdit('X-1', 'events', 'Bhakti, Darshan')");
+  assert.equal(JSON.stringify(rec().edited), '{"topic":"Old","events":"Bhakti"}');
+  assert.equal(f.run("reportRecords().all[0].edited.has('topic')"), true);
+  f.run("reportEdit('X-1', 'topic', 'Old')");   // back to the original
+  assert.equal(rec().topic, 'Old');
+  assert.equal(JSON.stringify(rec().edited), '{"events":"Bhakti"}');
+  f.run("reportEdit('X-1', 'events', 'Bhakti')");
+  assert.equal(JSON.stringify(rec().events), '["Bhakti"]');
+  assert.equal('edited' in rec(), false, 'nothing left edited');
+  assert.equal(f.run('reportRecords().all[0].edited'), undefined, 'plain again');
 });

@@ -57,8 +57,17 @@ function reportEdit(id, key, text) {
   if (typeof syncAccount === 'function' && syncAccount()) {
     // Team mode: the change goes into the team's copy and uploads like any other edit.
     if (!syncAvailable()) { toast('Sign in under Account to edit the team report.', 'warn'); return; }
-    if (String(reportValue(rec, key)) === String(Array.isArray(value) ? value.join(', ') : value)) return;
-    r.existing = r.existing.map((x) => (x === rec ? { ...x, [key]: value, edited: [...new Set([...(x.edited || []), key])] } : x));
+    const shown = String(Array.isArray(value) ? value.join(', ') : value);
+    if (String(reportValue(rec, key)) === shown) return;
+    // `edited` maps each corrected cell to the text it had before, so editing it back can un-mark it.
+    const was = { ...(rec.edited && !Array.isArray(rec.edited) ? rec.edited : {}) };
+    // Clipped to the server's 2000-char limit (a long list cell could exceed it and stall syncing).
+    if (!(key in was)) was[key] = String(reportValue(rec, key)).slice(0, 2000);
+    const back = was[key] === shown;
+    if (back) delete was[key];
+    const next = { ...rec, [key]: value };
+    if (Object.keys(was).length) next.edited = was; else delete next.edited;
+    r.existing = r.existing.map((x) => (x === rec ? next : x));
     reportEditRev++;
     scheduleRemember();
     render();
@@ -167,7 +176,7 @@ function reportRecords() {
   const scheduled = [];
   for (const item of items) scheduled.push(...SCHEDULE.scheduleRecords(item.sessions, item.starts, cities, scheduleRange(item)));
   const existing = (r.existing || []).map((rec) => (r.edits[rec.id] ? { ...rec, ...r.edits[rec.id], edited: new Set(Object.keys(r.edits[rec.id])) }
-    : Array.isArray(rec.edited) ? { ...rec, edited: new Set(rec.edited) } : rec));
+    : rec.edited ? { ...rec, edited: new Set(Array.isArray(rec.edited) ? rec.edited : Object.keys(rec.edited)) } : rec));
   const all = SCHEDULE.mergeReport(existing, scheduled);
   reportMemo = { existing: r.existing, cities, key, value: { all, scheduled: scheduled.length, gaps: SCHEDULE.findGaps(all) } };
   return reportMemo.value;

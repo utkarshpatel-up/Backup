@@ -4,6 +4,15 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 1.10.1
+
+- **Update the team server first.** Copy the new `server/pb_hooks` files to the PocketBase server and restart it before anyone uses this version. With the old server files, corrected (orange) report cells stay on the computer that made them and never reach the others.
+- **History for each entry.** On the Report page, click the Raw Video ID of a blue (event schedule), purple or orange (corrected) row to see every change made to that entry, who made it, and when. The History card on the Account page is gone.
+- **Corrected rows stand out.** A row with corrected cells now shows its Raw Video ID in orange too.
+- **Mark as uploaded.** After you upload the orange rows to Frappe, press Mark as uploaded on the Report page. The orange is removed on every computer and the corrected values stay; Save as Excel no longer includes those rows.
+- **Failed uploads are shown.** The Report page now says when changes could not be uploaded, so other computers do not have them.
+- **Refused changes are sent again by themselves.** A change the old server refused is sent again on each sync until the updated server accepts it. You no longer need to retry it on the Account page.
+
 ## 1.10.0
 
 - **Update the team server first.** Copy the new `server/pb_hooks` files to the PocketBase server and restart it (see docs/POCKETBASE_SETUP.md) before anyone uses this version. Until then, saving a Remarks note or a corrected report cell is refused by the old server.

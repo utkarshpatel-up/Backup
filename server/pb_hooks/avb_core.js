@@ -499,24 +499,6 @@ function createCore({ db, uuid, now, sha256 }) {
       next_before: more ? page[page.length - 1].version_seq : null, has_more: more };
   }
 
-  /** Every accepted change by anyone, newest first, each with the value it replaced. */
-  function recentHistory(m, req) {
-    checkKeys(req, ['protocol_version', 'before', 'limit'], 'request');
-    checkProtocol(req);
-    const limit = intField(req, 'limit', 1, 100, 50);
-    const before = intField(req, 'before', 1, MAX_SAFE, MAX_SAFE);
-    const rows = db.all(`SELECT json_object('version_seq', v.version_seq, 'target_type', t.target_type, 'target_key', t.target_key,
-        'assignment_key', t.assignment_key, 'action', v.action, 'created_at', v.created_at, 'actor_id', v.actor_id,
-        'actor_name', COALESCE(NULLIF(mem.display_name, ''), NULLIF(u.name, ''), ''), 'payload', json(v.payload), 'previous', json(p.payload)) AS j
-      FROM avb_versions v JOIN avb_targets t ON t.target_id = v.target_id
-        LEFT JOIN avb_versions p ON p.version_id = v.parent_version_id
-        LEFT JOIN avb_members mem ON mem.user = v.actor_id LEFT JOIN users u ON u.id = v.actor_id
-      WHERE v.accepted = 1 AND t.target_type IN ('assignment', 'session', 'report_record') AND v.version_seq < {:before} ORDER BY v.version_seq DESC LIMIT {:n}`, { before, n: limit + 1 });
-    const page = rows.slice(0, limit);
-    const more = rows.length > limit;
-    return { protocol_version: 1, items: page, next_before: more ? page[page.length - 1].version_seq : null, has_more: more };
-  }
-
   function conflictsList(m, req) {
     checkKeys(req, ['protocol_version', 'status', 'assignment_key', 'after', 'limit'], 'request');
     checkProtocol(req);
@@ -551,7 +533,7 @@ function createCore({ db, uuid, now, sha256 }) {
     FROM avb_members mem LEFT JOIN users u ON u.id = mem.user ORDER BY COALESCE(NULLIF(mem.display_name, ''), NULLIF(u.name, ''), ''), mem.user`).map((x) => Object.assign(x, { display_name: x.display_name || '', is_active: !!x.is_active }));
 
   const CALLS = { avb_me: me, avb_team_members: teamMembers, avb_sync_apply: syncApply, avb_sync_pull: syncPull,
-    avb_conflicts: conflictsList, avb_target_history: targetHistory, avb_recent_history: recentHistory };
+    avb_conflicts: conflictsList, avb_target_history: targetHistory };
 
   /** One RPC for `userId` (the verified token's record id). `body` is the parsed request body: { p_request }. */
   function call(name, userId, body) {

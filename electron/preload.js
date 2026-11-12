@@ -96,7 +96,7 @@ contextBridge.exposeInMainWorld('api', {
     commit: (change) => accountAction('commit', change),
     syncNow: () => accountAction('syncNow'),
     conflicts: () => accountAction('conflicts'),
-    history: (before) => accountAction('history', before ? { before } : {}),
+    recordHistory: (type, key) => accountAction('recordHistory', { type, key }),
     reviews: () => accountAction('reviews'),
     resolve: (choice) => accountAction('resolve', choice),
     review: (choice) => accountAction('review', choice),

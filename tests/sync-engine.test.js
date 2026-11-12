@@ -960,3 +960,26 @@ test('completion against the protected base follows our own preparation commit w
   assert.equal(a.conflicts().length,0);
   assert.equal(rowOf(a.view(),s.id,uid).duration,'42m');
 });
+
+test('a corrected report cell (with its orange mark) reaches another device; an old server refuses it visibly', opts, async () => {
+  const server = world();
+  const a = await device(server, 'op1@t.invalid');
+  const b = await device(server, 'op2@t.invalid');
+  const rec = { id: 'DD-F-HD-3061-E', folder: 3061, session: 'E', type: 'Formal', author: 'DD', format: 'HD', topic: 'Bhakti', events: ['Diwali'], languages: ['Gujarati'], source: 'existing' };
+  edit(a, (d) => { d.report = [rec]; });
+  await a.syncNow(); await b.syncNow();
+  assert.equal(b.view().data.report[0].topic, 'Bhakti');
+  edit(a, (d) => { Object.assign(d.report[0], { topic: 'General', edited: { topic: 'Bhakti' } }); });
+  await a.syncNow();
+  assert.equal(a.status().failed.length, 0, 'the server accepted the edit');
+  await b.syncNow();
+  const got = b.view().data.report[0];
+  assert.equal(got.topic, 'General');
+  assert.deepEqual(got.edited, { topic: 'Bhakti' });  const hist = await b.recordHistory({ type: 'report_record', key: 'DD-F-HD-3061-E' });
+  assert.equal(hist.length, 2, 'the import and the correction');
+  assert.equal(hist[0].previous.topic, 'Bhakti');
+  assert.equal(hist[0].payload.topic, 'General');
+  assert.equal(hist[1].action, 'create');
+  assert.equal(hist[0].mine, false);
+  assert.deepEqual(await b.recordHistory({ type: 'session', key: crypto.randomUUID() }), [], 'nothing uploaded yet: an empty history');
+});

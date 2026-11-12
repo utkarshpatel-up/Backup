@@ -584,3 +584,9 @@ button[aria-busy="true"]::after {
 
 .sync-history { margin: 8px 0; padding-left: 18px; font-size: 13px; }
 .sync-history li { margin: 3px 0; }
+
+/* Report: a corrected row's Raw Video ID is orange; blue/purple/orange IDs open the entry's history */
+.rep-table td.rep-edit-id, .rep-table td.rep-edit-id .rep-hist { color: #ea580c; font-weight: 600; }
+.rep-hist { all: unset; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+.rep-hist:hover { text-decoration-style: solid; }
+.rep-hist:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }

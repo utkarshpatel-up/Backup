@@ -445,6 +445,13 @@ test('report filters work like Frappe\'s: text anywhere, exact menus, folder and
   assert.deepEqual(ids({ year: '2026', city: 'adal' }), ['A', 'B']);
 });
 
+test('Remarks is read from an imported report and written back out', () => {
+  const recs = S.parseReport([['Raw Video Id', 'Remarks'], ['DD-F-4K-3049-E', 'with Event Sevarthi MHTs']], []);
+  assert.equal(recs[0].remarks, 'with Event Sevarthi MHTs');
+  const sheet = S.reportSheet(recs);
+  assert.equal(sheet.rows[0][sheet.columns.indexOf('Remarks')], 'with Event Sevarthi MHTs');
+});
+
 test('sortByRaw orders by folder number, numberless rows last and stable', () => {
   const rows = [{ k: 'a', folder: '3060' }, { k: 'b' }, { k: 'c', folder: '3057' }, { k: 'd', folder: null },
     { k: 'e', folder: '3060' }];

@@ -106,6 +106,8 @@ function sessionPayload(row, orderKey) {
     if (typeof v === 'number' && !Number.isFinite(v)) v = null;
     if (k === 'include') v = !!v;
     if (k === 'flags' && isObj(v) && !Object.keys(v).length) continue;
+    // Payloads replace whole, so leaving an empty Remarks out clears it, and a server without the field still accepts the row.
+    if (k === 'remarks' && !v) continue;
     p[k] = v;
   }
   if (!('date' in p)) p.date = '';
@@ -202,7 +204,7 @@ function fromSnapshot(snap, busy = []) {
     for (const r of snap.report) {
       const p = {};
       for (const [k, v] of Object.entries(r || {})) {
-        if (REPORT_LOCAL.has(k) || v === undefined) continue;
+        if (REPORT_LOCAL.has(k) || v === undefined || (k === 'remarks' && !v)) continue;
         p[k] = typeof v === 'number' && !Number.isFinite(v) ? null : v;
       }
       const k = naturalKey('report_record', p);

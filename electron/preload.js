@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld('api', {
 
   reveal: (p) => ipcRenderer.invoke('shell:reveal', p),
   open: (p) => ipcRenderer.invoke('shell:open', p),
+  openFrappe: () => ipcRenderer.invoke('shell:openFrappe'),
   openFolders: (paths) => ipcRenderer.invoke('shell:openFolders', paths),
   openFolderGroups: (groups) => ipcRenderer.invoke('shell:openFolderGroups', groups),
 
@@ -95,6 +96,7 @@ contextBridge.exposeInMainWorld('api', {
     commit: (change) => accountAction('commit', change),
     syncNow: () => accountAction('syncNow'),
     conflicts: () => accountAction('conflicts'),
+    history: (before) => accountAction('history', before ? { before } : {}),
     reviews: () => accountAction('reviews'),
     resolve: (choice) => accountAction('resolve', choice),
     review: (choice) => accountAction('review', choice),

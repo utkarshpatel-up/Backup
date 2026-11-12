@@ -18,6 +18,7 @@ function database() {
   const db = new DatabaseSync(':memory:');
   db.exec(`CREATE TABLE avb_members (id TEXT PRIMARY KEY, user TEXT NOT NULL UNIQUE, role TEXT NOT NULL DEFAULT '',
     is_active BOOLEAN NOT NULL DEFAULT FALSE, display_name TEXT NOT NULL DEFAULT '')`);
+  db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '')`);
   for (const sql of SCHEMA) db.exec(sql);
   return db;
 }
@@ -58,6 +59,7 @@ class FakeServer {
   addUser(email, role, name, password = 'pw-' + crypto.randomBytes(4).toString('hex')) {
     const id = pbId();
     this.users.set(email, { id, password });
+    this.db.prepare('INSERT INTO users (id, email, name) VALUES (?, ?, ?)').run(id, email, name || '');
     if (role) this.db.prepare('INSERT INTO avb_members (id, user, role, is_active, display_name) VALUES (?, ?, ?, 1, ?)').run(pbId(), id, role, name);
     return { id, email, password };
   }
@@ -87,7 +89,7 @@ class FakeServer {
     const unauthorized = () => this._json(401, { status: 401, message: 'The request requires valid record authorization token.', data: {} });
     if (init.method === 'POST' && p === '/api/collections/users/records') {
       if (this.users.has(body.email)) return this._json(400, { status: 400, message: 'Failed to create record.', data: { email: { code: 'validation_not_unique', message: 'Value must be unique.' } } });
-      const u = this.addUser(body.email, null, '', body.password);
+      const u = this.addUser(body.email, null, body.name || '', body.password);
       return this._json(200, { id: u.id, email: body.email, name: body.name, collectionName: 'users' });
     }
     if (init.method === 'POST' && p === '/api/collections/users/auth-with-password') {

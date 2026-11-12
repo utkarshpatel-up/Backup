@@ -134,7 +134,7 @@ class Client {
   // -------------------------------------------------- RPC
   /** `raw` is the exact JSON body, so a retried mutation is byte-for-byte the same request. */
   async rpc(token, name, request, raw) {
-    if (!/^avb_(me|team_members|sync_pull|sync_apply|conflicts|target_history)$/.test(name)) throw new SyncError('config', 'bad_rpc', 'Unknown call.');
+    if (!/^avb_(me|team_members|sync_pull|sync_apply|conflicts|target_history|recent_history)$/.test(name)) throw new SyncError('config', 'bad_rpc', 'Unknown call.');
     return this.request(`api/avb/rpc/${name}`,
       { token, raw: raw !== undefined ? raw : JSON.stringify(request === undefined ? {} : { p_request: request }) });
   }

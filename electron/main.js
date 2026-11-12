@@ -335,6 +335,8 @@ handle('shell:reveal', (_e, p) => {
   return true;
 });
 handle('shell:open', (_e, p) => shell.openPath(p));
+// A fixed address, never one the renderer supplies.
+handle('shell:openFrappe', () => shell.openExternal('http://av.dbf.ooo'));
 
 // Open each existing folder as its own window (Finder on macOS, Explorer on Win).
 handle('shell:openFolders', async (_e, paths) => {

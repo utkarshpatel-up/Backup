@@ -83,14 +83,6 @@ test('the merge table: applied, noop, stale_edit, delete_vs_edit, edit_vs_delete
   assert.equal(hist.has_more, true);
   const rest = s.rpc('op1', 'avb_target_history', { protocol_version: 1, type: 'session', key: k, before: hist.next_before, limit: 100 });
   assert.ok(rest.items.some((v) => v.accepted === false), 'stored incoming values are in the history');
-  const recent = s.rpc('op1', 'avb_recent_history', { protocol_version: 1, limit: 100 });
-  assert.ok(recent.items.length > 0 && recent.items.every((v) => v.target_type && v.created_at), 'the team feed lists accepted changes');
-  assert.ok(recent.items.some((v) => v.previous && v.payload && v.previous.topic !== v.payload.topic), 'an edit carries the value it replaced');
-  assert.ok(recent.items.every((v) => v.actor_name === v.actor_id), 'each change is named by its member');
-  const first = s.rpc('op1', 'avb_recent_history', { protocol_version: 1, limit: 2 });
-  const next = s.rpc('op1', 'avb_recent_history', { protocol_version: 1, limit: 100, before: first.next_before });
-  assert.deepEqual([...first.items, ...next.items].map((v) => v.version_seq), recent.items.map((v) => v.version_seq), 'pages join without gaps or repeats');
-  assert.equal(s.rpc('gone', 'avb_recent_history', { protocol_version: 1 }).error, 'not_member');
 });
 
 test('whole-schedule delete is admin-only, rev-checked, keeps children, and blocks edits inside it', () => {

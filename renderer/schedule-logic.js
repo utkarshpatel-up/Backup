@@ -1271,7 +1271,7 @@
         duration: s.duration || '', activity: s.activity, place: s.place, topic: s.topic,
         clips: s.clips ?? '', cameras: s.cameras ?? '', remarks: s.remarks || '', events: (s.events || []).slice(),
         languages: (s.languages || []).slice(), city: c ? c.city : s.city || '',
-        state: c ? c.state : '', country: c ? c.country : '', source: 'schedule', schedule: label,
+        state: c ? c.state : '', country: c ? c.country : '', source: 'schedule', schedule: label, uid: s.uid,
         backedUp: !!s.backedUp,
       });
     }

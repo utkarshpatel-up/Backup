@@ -233,7 +233,7 @@ revision the admin reviewed:
 An operator can still delete every row. That leaves an empty assignment, which is
 allowed under the agreed policy.
 
-### Reading: `avb_sync_pull`, `avb_conflicts`, `avb_target_history`, `avb_recent_history`
+### Reading: `avb_sync_pull`, `avb_conflicts`, `avb_target_history`
 
 ```json
 // request
@@ -262,11 +262,7 @@ allowed under the agreed policy.
 - **`avb_target_history`** takes `{protocol_version, type, key, before?, limit ≤100}`.
   It lists versions newest first, including stored incoming values
   (`accepted: false`). Pass `next_before` back as `before` for the next page.
-- **`avb_recent_history`** takes `{protocol_version, before?, limit ≤100}`. It lists accepted
-  assignment, session and report_record versions across the team, newest first, each with
-  `actor_name`, `payload` and the `previous` (parent) payload. Paged like `avb_target_history`.
-
-All four read the live membership on every call.
+All three read the live membership on every call.
 
 ## Maintainers: bootstrap and members
 

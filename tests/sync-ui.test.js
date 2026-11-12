@@ -318,15 +318,37 @@ test('a team-mode report edit goes into the committed team report, with its oran
   assert.equal(JSON.stringify(rec.edited), '{"remarks":""}');
   assert.equal(f.run('reportRecords().all[0].edited.has("remarks")'), true, 'shown orange');
 });
-test('history lines name each change and survive deletes, creates and missing names', () => {
+test('history lines name each change and survive deletes, creates, missing names and Mark as uploaded', () => {
   const f = fixture();
-  f.c.h = { actor_name: 'Nita', target_type: 'session', action: 'update', payload: { date: '2026-11-08', topic: 'New', events: ['A', 'B'] }, previous: { date: '2026-11-08', topic: 'Old', events: ['A'] } };
-  assert.deepEqual([...f.run('historyLines(h)')], ['Nita changed value of Topic/Description from "Old" to "New" on session 2026-11-08 New',
-    'Nita changed value of Event Type from "A" to "A, B" on session 2026-11-08 New']);
-  f.c.h = { target_type: 'report_record', action: 'delete', payload: null, previous: { id: 'X-1' } };
-  assert.deepEqual([...f.run('historyLines(h)')], ['A team member deleted report entry X-1']);
-  f.c.h = { actor_name: 'Nita', target_type: 'report_record', action: 'create', payload: { id: 'X-2' }, previous: null };
-  assert.deepEqual([...f.run('historyLines(h)')], ['Nita imported report entry X-2']);
+  f.c.h = { by: 'Nita', action: 'update', payload: { topic: 'New', events: ['A', 'B'], edited: { topic: 'Old' } }, previous: { topic: 'Old', events: ['A'] } };
+  assert.deepEqual([...f.run("historyLines(h, 'report_record')")], ['Nita changed value of Topic/Description from "Old" to "New"',
+    'Nita changed value of Event Type from "A" to "A, B"']);
+  f.c.h = { action: 'delete', payload: null, previous: { id: 'X-1' } };
+  assert.deepEqual([...f.run("historyLines(h, 'session')")], ['A team member deleted it']);
+  f.c.h = { by: 'Nita', mine: true, action: 'create', payload: { id: 'X-2' }, previous: null };
+  assert.deepEqual([...f.run("historyLines(h, 'report_record')")], ['You imported it from Excel']);
+  f.c.h = { by: 'Nita', action: 'update', payload: { topic: 'New' }, previous: { topic: 'New', edited: { topic: 'Old' } } };
+  assert.deepEqual([...f.run("historyLines(h, 'report_record')")], ['Nita marked it as uploaded to Frappe']);
+});
+test('Mark as uploaded takes every orange mark off the team report and keeps the corrected values', async () => {
+  const f = fixture();
+  f.api.confirm = async () => true;
+  f.state.report = { existing: [{ id: 'X-1', topic: 'New', edited: { topic: 'Old' }, events: [], languages: [], source: 'existing' },
+    { id: 'X-2', topic: 'Same', events: [], languages: [], source: 'existing' }], edits: {} };
+  await f.run('reportMarkUploaded()');
+  await f.run('scheduleFlush()');
+  const sent = f.calls.find((c) => c[0] === 'commit')[1].snapshot.report;
+  assert.equal(sent[0].topic, 'New');
+  assert.equal('edited' in sent[0], false);
+  assert.equal(f.run('reportRecords().all.some((r) => r.edited)'), false);
+});
+test('a corrected row shows an orange Raw Video ID that opens its history; plain existing rows do not', () => {
+  const f = fixture();
+  f.state.report = { existing: [{ id: 'X-1', topic: 'New', edited: { topic: 'Old' }, events: [], languages: [], source: 'existing' },
+    { id: 'X-2', topic: 'Same', events: [], languages: [], source: 'existing' }], edits: {}, filters: {}, columns: {}, limit: 300 };
+  const rows = f.run('reportRegions().rows').join('');
+  assert.match(rows, /rep-edit-id[^>]*>.*data-hist-type="report_record" data-hist-key="X-1"/s);
+  assert.equal((rows.match(/rep-hist/g) || []).length, 1, 'only the corrected row links to a history');
 });
 test('local-mode report corrections on this computer do not overlay the team report', () => {
   const f = fixture();

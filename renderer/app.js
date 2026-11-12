@@ -3936,9 +3936,17 @@ function render() {
     $('stepTitle').textContent = 'Account'; $('stepHint').textContent = 'Team sync settings and review';
     syncPaint(); $('footer').innerHTML = ''; return;
   }
-  if (typeof syncAccount === 'function' && syncAccount() && !syncAvailable() && (onSchedule || onReport)) {
+  if (typeof syncAccount === 'function' && syncAccount() && !syncAvailable() && (onSchedule || onReport || state.view === 'history')) {
     $('content').innerHTML = '<div class="card">Team data is unavailable. Open Account to sign in or check access.</div>';
     $('footer').innerHTML = ''; return;
+  }
+  if (state.view === 'history') {
+    $('stepTitle').textContent = 'History';
+    $('stepHint').textContent = 'Every change the team made to this entry, newest first.';
+    $('content').innerHTML = recordHistoryHtml();
+    $('footer').innerHTML = '<button id="histBack">← Report</button>';
+    $('histBack').addEventListener('click', showReport);
+    return;
   }
   if (onSchedule) {
     $('stepTitle').textContent = 'Event schedule';

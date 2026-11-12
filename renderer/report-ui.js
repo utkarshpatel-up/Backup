@@ -83,10 +83,67 @@ function reportEdit(id, key, text) {
   render();
 }
 
+/* ------------------------------------------------- one record's history */
+
+// "NAME changed value of FIELD from A to B", one line per field a version changed.
+const HISTORY_FIELDS = { date: 'Date', type: 'Satsang Type', activity: 'Activity', place: 'Place Detail', city: 'City', topic: 'Topic/Description',
+  events: 'Event Type', languages: 'Language', author: 'Author', format: 'Format', duration: 'Duration', clips: 'No of clips',
+  cameras: 'No of cameras', folder: 'Folder', session: 'Session', remarks: 'Remarks', state: 'State', country: 'Country', include: 'Included' };
+const historyText = (v) => (Array.isArray(v) ? v.join(', ') : v == null ? '' : String(v));
+/** One version {by, mine, action, payload, previous} of a report_record or session -> lines. */
+function historyLines(h, type) {
+  const who = h.mine ? 'You' : h.by || 'A team member';
+  const p = h.payload || {}, prev = h.previous || {};
+  if (h.action === 'delete') return [`${who} deleted it`];
+  if (h.action === 'restore') return [`${who} restored it`];
+  if (h.action === 'create' || !h.previous) return [`${who} ${type === 'report_record' ? 'imported it from Excel' : 'added it in the event schedule'}`];
+  const out = [];
+  for (const [k, label] of Object.entries(HISTORY_FIELDS)) {
+    const a = historyText(prev[k]), b = historyText(p[k]);
+    if (a !== b) out.push(`${who} changed value of ${label} from "${a}" to "${b}"`);
+  }
+  if (!out.length && prev.edited && !p.edited) out.push(`${who} marked it as uploaded to Frappe`);
+  return out;
+}
+async function showRecordHistory(type, key, id) {
+  const h = { type, key, id, items: null, error: '' };
+  state.recordHistory = h;
+  state.view = 'history';
+  render();
+  try { h.items = await window.api.sync.recordHistory(type, key); }
+  catch (e) { h.error = e && e.message ? e.message : 'The history could not be loaded.'; }
+  if (state.recordHistory === h && state.view === 'history') render();
+}
+function recordHistoryHtml() {
+  const h = state.recordHistory;
+  const lines = (h.items || []).flatMap((it) => historyLines(it, h.type).map((t) => `<li>${esc(t)} <span class="hint">— ${esc(fmtTime(it.at))}</span></li>`));
+  const body = h.error ? `<div class="note err">${esc(h.error)}</div>`
+    : h.items == null ? '<p class="hint">Loading…</p>'
+      : lines.length ? `<ul class="sync-history">${lines.join('')}</ul>` : '<p class="hint">No changes on the team server yet.</p>';
+  return `<div class="card"><h3 class="mono" style="margin:0 0 4px">${esc(h.id)}</h3>
+    <p class="hint" style="margin:0 0 8px">${h.type === 'session' ? 'Added from an event schedule' : 'Report entry'} · every change by the team, newest first</p>${body}</div>`;
+}
+
 /** Orange (edited), purple and blue (schedule) rows as an .xlsx ready to upload to Frappe. */
 function reportExportFrappe() {
   const rows = reportRecords().all.filter((rec) => rec.source === 'schedule' || rec.edited?.size);
   return reportExport(rows, 'Frappe_Upload');
+}
+
+/** After the rows are in Frappe: take the orange off every corrected entry, for the whole team. */
+async function reportMarkUploaded() {
+  const r = reportState();
+  const marked = (r.existing || []).filter((x) => x.edited && Object.keys(x.edited).length).length;
+  if (!marked) return;
+  if (!syncAvailable()) { toast('Sign in under Account first.', 'warn'); return; }
+  const ok = await window.api.confirm({ message: `Mark ${marked} corrected entr${marked === 1 ? 'y' : 'ies'} as uploaded to Frappe?`,
+    detail: 'The orange is removed on every computer, and Save as Excel no longer includes them. The corrected values stay.', confirmLabel: 'Mark as uploaded' });
+  if (!ok) return;
+  r.existing = r.existing.map((x) => { if (!x.edited) return x; const { edited, ...rest } = x; void edited; return rest; });
+  reportEditRev++;
+  scheduleRemember();
+  toast(`${marked} entr${marked === 1 ? 'y' : 'ies'} marked as uploaded.`, 'ok');
+  render();
 }
 
 /** Save the entries the filters leave as an .xlsx, which can be chosen again later as the existing data. */
@@ -221,6 +278,7 @@ function reportRegions() {
     gapAt.get(i).push(g.text);
   }
   const width = REPORT_COLUMNS.length + 2;
+  const team = typeof syncAccount === 'function' && syncAccount();
   const rows = page.flatMap((rec, i) => {
     // Schedule rows are blue; one that replaces an entry already in the existing
     // data (same ID) is purple and labelled, so it can't be taken for a new one.
@@ -228,10 +286,14 @@ function reportRegions() {
     const tag = rec.source !== 'schedule' ? ''
       : both ? '<span class="rep-tag both">Schedule · replaces existing</span>'
         : '<span class="rep-tag sch">Schedule</span>';
+    const edited = rec.source !== 'schedule' && rec.edited?.size;
+    const hist = team && (rec.source === 'schedule' ? rec.uid && ['session', rec.uid] : edited && ['report_record', rec.id.trim().toUpperCase()]);
+    const idText = hist ? `<button type="button" class="rep-hist" data-hist-type="${hist[0]}" data-hist-key="${esc(hist[1])}" data-hist-id="${esc(rec.id)}"
+        title="Show every change to this entry">${esc(rec.id)}</button>` : esc(rec.id);
     const row = `<tr data-id="${esc(rec.id)}" class="${both ? 'rep-both' : rec.source === 'schedule' ? 'rep-sch' : ''}">
-      <td class="fz rz1 mono" title="${esc(rec.source === 'schedule'
+      <td class="fz rz1 mono${edited ? ' rep-edit-id' : ''}" title="${esc(rec.source === 'schedule'
         ? `From the event schedule ${rec.schedule}${both ? '. The existing data has an entry with this ID too; this row shows the version from the schedule.' : ''}${rec.backedUp ? ' · backed up' : ''}`
-        : 'Existing data')}"><div class="rep-id">${esc(rec.id)}${tag}</div></td>
+        : edited ? 'Existing data, corrected (orange cells)' : 'Existing data')}"><div class="rep-id">${idText}${tag}</div></td>
       <td class="fz rz2">${esc(rec.folder ?? '')}</td>
       ${REPORT_COLUMNS.map(([k]) => {
         const v = reportValue(rec, k);
@@ -254,9 +316,12 @@ function reportRegions() {
         ${r.file && !account ? '<button class="sm ghost" id="repReload" title="Read the file again">Refresh</button>' : ''}`,
     export: `<button class="sm" id="repExport" ${shown.length ? '' : 'disabled'}
           title="Save the entries these filters leave as an .xlsx. It can be chosen again later as the existing data.">Export ${shown.length.toLocaleString()} entries…</button>`,
-    tail: `<button class="sm" id="repFrappeXlsx" title="Save every orange (edited), purple and blue (schedule) row as an .xlsx to upload to Frappe">Save as Excel</button>
+    tail: `${account && all.some((x) => x.edited?.size) ? '<button class="sm" id="repUploaded" title="After uploading to Frappe: remove the orange on every computer">Mark as uploaded</button>' : ''}
+      <button class="sm" id="repFrappeXlsx" title="Save every orange (edited), purple and blue (schedule) row as an .xlsx to upload to Frappe">Save as Excel</button>
       ${r.exported ? '<button class="sm ghost" id="repExported">Show exported file</button>' : ''}`,
-    error: r.error ? `<div class="note err" style="margin-top:10px">${esc(r.error)}</div>` : '',
+    error: (r.error ? `<div class="note err" style="margin-top:10px">${esc(r.error)}</div>` : '')
+      + (account && syncUI.status.failed?.length ? `<div class="note err" style="margin-top:10px">${syncUI.status.failed.length} change${syncUI.status.failed.length === 1 ? '' : 's'}
+        could not be uploaded, so other computers do not have ${syncUI.status.failed.length === 1 ? 'it' : 'them'}. The team server may need updating; see Account.</div>` : ''),
     filters: reportFiltersHtml(all, {}),
     gaps: gaps.length ? `<div class="rep-gaps"><b>${gaps.length} gap${gaps.length === 1 ? '' : 's'} in the numbering:</b>
       ${gaps.slice(0, 12).map((g) => esc(g.text)).join(' · ')}${gaps.length > 12 ? ` · and ${gaps.length - 12} more` : ''}</div>` : '',
@@ -359,6 +424,7 @@ function reportDatalists(all) {
 function wireReportButtons(root) {
   root.querySelector('#repExport')?.addEventListener('click', () => reportExport());
   root.querySelector('#repFrappeXlsx')?.addEventListener('click', reportExportFrappe);
+  root.querySelector('#repUploaded')?.addEventListener('click', () => reportMarkUploaded().catch((e) => toast(e?.message || 'Could not mark as uploaded.', 'err')));
   root.querySelector('#repMore')?.addEventListener('click', () => { reportState().limit += REPORT_PAGE; render(); });
 }
 
@@ -371,6 +437,11 @@ function wireReportPage() {
   $('repFrappe')?.addEventListener('click', () => window.api.openFrappe());
   $('repReload')?.addEventListener('click', () => reportLoad(r.file));
   wireReportButtons($('content'));
+  // A blue, purple or orange row's Raw Video ID opens that entry's history.
+  document.querySelector('.rep-table tbody')?.addEventListener('click', (e) => {
+    const b = e.target.closest('button.rep-hist');
+    if (b) showRecordHistory(b.dataset.histType, b.dataset.histKey, b.dataset.histId);
+  });
   // Double-click a cell of the existing data to correct it; Enter or leaving the box saves, Esc cancels.
   document.querySelector('.rep-table tbody')?.addEventListener('dblclick', (e) => {
     const td = e.target.closest('td.rep-ed');

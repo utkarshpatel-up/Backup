@@ -302,11 +302,26 @@ class SyncEngine extends EventEmitter {
     return p;
   }
 
-  /** The team's recent changes, newest first (one page; pass `before` from the last page for the next). */
-  async history(before) {
-    const req = { protocol_version: PROTOCOL, limit: 50 };
-    if (before) req.before = before;
-    return this._call('avb_recent_history', req);
+  /** One report entry's or schedule row's accepted changes, newest first, each with the value it replaced. */
+  async recordHistory({ type, key }) {
+    if (!this.acct) throw new SyncError('config', 'signed_out', 'Not signed in.');
+    const names = new Map((this.acct.data.members || []).map((m) => [m.user_id, m.display_name]));
+    const versions = [];
+    let before;
+    try {
+      for (let page = 0; page < 10; page++) {   // at most 1000 versions
+        const r = await this._call('avb_target_history', { protocol_version: PROTOCOL, type, key, limit: 100, ...(before ? { before } : {}) });
+        versions.push(...r.items);
+        if (!r.has_more) break;
+        before = r.next_before;
+      }
+    } catch (e) {
+      if (e && e.code === 'target_not_found') return [];   // not uploaded yet
+      throw e;
+    }
+    const accepted = versions.filter((v) => v.accepted);
+    return accepted.map((v, i) => ({ action: v.action, at: v.created_at, by: names.get(v.actor_id) || '',
+      mine: v.actor_id === this.acct.userId, payload: v.payload, previous: accepted[i + 1] ? accepted[i + 1].payload : null }));
   }
 
   /** One authenticated call; an expired token is refreshed once and the same request sent again. */
@@ -573,6 +588,9 @@ class SyncEngine extends EventEmitter {
     acct.data.identity = { role: me.role, display_name: me.display_name, verifiedAt: new Date(this.now()).toISOString() };
     if (acct.data.locked) { acct.data.locked = false; }
     this._save();
+    // This app checks every field before queuing it, so a field the server does not know means the
+    // server is older than the app. Those changes are sent again each sync until the server is updated.
+    for (const l of Object.values(acct.data.local)) if (l.error && l.error.code === 'unknown_field' && !l.inflight && !l.held) l.error = null;
     this._setPhase('online');
     try { const members = await this._call('avb_team_members'); if (Array.isArray(members)) acct.data.members = members.map((m) => ({ user_id: m.user_id, display_name: m.display_name })); } catch (_) { /* names only */ }
     await this._pull(acct);

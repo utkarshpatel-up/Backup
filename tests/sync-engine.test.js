@@ -113,6 +113,30 @@ test('a new account (open sign-up) gets nothing until the maintainer adds it by 
   assert.equal(e.status().user.role, 'operator');
 });
 
+test('the sign-in e-mail is remembered, replaced by another user, and forgotten on request or a server change', opts, async () => {
+  const server = world();
+  server.addUser('admin@t.invalid', 'admin', 'Lead');
+  server.addUser('op1@t.invalid', 'operator', 'One');
+  const e = await device(server, null);
+  assert.equal(e.publicConfig().email, '');
+  await e.signIn('op1@t.invalid', server.users.get('op1@t.invalid').password);
+  assert.equal(e.status().config.email, 'op1@t.invalid');
+  assert.ok(!JSON.stringify(e.status()).includes(server.users.get('op1@t.invalid').password));
+  await e.signOut();
+  assert.equal(e.publicConfig().email, 'op1@t.invalid');
+  e.setConfig({ enabled: true, serverUrl: server.serverUrl });   // same server keeps it
+  assert.equal(e.publicConfig().email, 'op1@t.invalid');
+  await e.signIn('admin@t.invalid', server.users.get('admin@t.invalid').password);
+  assert.equal(e.publicConfig().email, 'admin@t.invalid');
+  await e.signOut();
+  assert.equal(e.forgetEmail().email, '');
+  assert.equal(e.config().enabled, true);
+  await e.signIn('op1@t.invalid', server.users.get('op1@t.invalid').password);
+  await e.signOut();
+  e.setConfig({ enabled: true, serverUrl: 'http://10.147.20.99:8090' });
+  assert.equal(e.publicConfig().email, '');
+});
+
 test('config refuses plain HTTP to a public or named host and odd addresses, and cannot change while signed in', opts, async () => {
   const server = world();
   const e = await device(server, null);

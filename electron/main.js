@@ -2,6 +2,7 @@
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage, safeStorage, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { pathToFileURL } = require('url');
 const { PythonBridge } = require('./python-bridge');
 const { openFolderGroups } = require('./open-folders');
@@ -12,7 +13,7 @@ const { createSyncHost } = require('./sync/host');
 const { registerSyncIpc } = require('./sync/ipc');
 const { writeAtomic } = require('./sync/vault');
 const { createUpdater } = require('./updater');
-const { dnsAndRestart } = require('./dns');
+const { teamServerStatus } = require('./team-server');
 app.setName('AV Backup');
 const primaryInstance = app.requestSingleInstanceLock();
 if (!primaryInstance) app.quit();
@@ -25,7 +26,7 @@ let updater = null;
 let closer = null;
 let quittingApproved = false;
 let quitPending = null;
-let dnsRunning = false;
+let teamProbe = null;   // one probe at a time; overlapping callers share it
 const APP_FILE = path.join(__dirname, '..', 'renderer', 'index.html');
 const APP_URL = pathToFileURL(APP_FILE).href;
 const handle = trustedHandle(ipcMain, () => win, APP_URL);
@@ -234,22 +235,15 @@ handle('update:download', () => updater.download());
 handle('update:restart', () => updater.restart());
 handle('update:openPage', () => updater.openPage());
 
-handle('dns:setCloudflare', async () => {
-  if (dnsRunning) return { ok: false, code: 'busy', error: 'Already changing DNS.' };
-  dnsRunning = true;
-  try {
-    const r = await dnsAndRestart({
-      isBusy: () => !!global.__vingestBusy,
-      closer,
-      confirm: async () => (await dialog.showMessageBox(win, {
-        type: 'question', buttons: ['Set DNS & restart', 'Cancel'], defaultId: 1, cancelId: 1,
-        message: 'Set DNS to Cloudflare (1.1.1.1, 1.0.0.1) and restart AV Backup?',
-        detail: 'Your computer will ask for administrator permission. Only the active Wi-Fi/Ethernet connection changes; the computer does not reboot. Unsaved edits are saved first.',
-      })).response === 0,
-      relaunch: () => { closer.approved = true; quittingApproved = true; global.__vingestBusy = false; app.relaunch(); app.quit(); },
-    });
-    return r;
-  } finally { dnsRunning = false; }
+// No arguments: the address comes from the saved sync config, never from the page.
+handle('teamServer:status', (_e, ...args) => {
+  if (args.length) throw new Error('Invalid arguments.');
+  if (!teamProbe) {
+    const engine = syncHost && syncHost.engine;
+    teamProbe = teamServerStatus({ config: engine ? engine.publicConfig() : null, interfaces: os.networkInterfaces() })
+      .finally(() => { teamProbe = null; });
+  }
+  return teamProbe;
 });
 
 handle('app:setBusy', (_e, busy) => { global.__vingestBusy = !!busy; return true; });

@@ -2555,6 +2555,33 @@ async function detectStructure(src, force = false, overrideRoot = null) {
 
 /* ------------------------------------------------------------ step: cameras */
 
+/** Expected vs received cameras for this session (#23); null without a structure. */
+function sessionCheck() {
+  const src = primarySource();
+  if (!state.template || !src) return null;
+  return selectionRules.sessionCompleteness(state.template, selected(src), state.assign,
+    sessionDate(), state.existingCamCounts);
+}
+
+function sessionCheckHtml(c) {
+  if (!c) return '';
+  const n = c.missing.length;
+  const tag = (cam, cls, text) => `<span class="badge ${cls}">${esc(camLabel(cam))}: ${text}${
+    c.otherDay[cam] ? ` · ${c.otherDay[cam]} on another day` : ''}</span>`;
+  const clipText = (cam) => (c.clips[cam] ? `${c.clips[cam]} clip(s)` : 'on disk');
+  return `<div class="note ${n ? 'warn' : 'ok'}" role="status">
+    <b>${n ? `${n} of ${c.expected.length} expected camera(s) missing`
+      : `All ${c.expected.length} expected camera(s) received`}</b>
+    <div class="row" style="margin-top:6px;gap:6px">
+      ${c.expected.map((cam) => (cam in c.clips
+        ? tag(cam, 'ok', `✓ received, ${clipText(cam)}`)
+        : tag(cam, 'err', '✗ missing'))).join('')}
+      ${c.extra.map((cam) => tag(cam, 'warn', `+ not in structure, ${clipText(cam)}`)).join('')}
+    </div>
+    ${n ? '<div class="hint" style="margin:6px 0 0">Import the missing card, or carry on: Start copy asks you to confirm the partial session.</div>' : ''}
+  </div>`;
+}
+
 function masterInfo() {
   return chosenMaster();
 }
@@ -2660,6 +2687,7 @@ function renderCameras() {
   return `
   <div class="card">
     <h3>Assign clips to cameras</h3>
+    ${sessionCheckHtml(sessionCheck())}
     <p class="hint">With nothing checked, every clip that has a camera (not Skip) is copied.
       Check clips to limit the backup to just those; Skipped clips are never copied.
       Existing cam folders are counted for the next suggestion, but their
@@ -3074,6 +3102,7 @@ function renderCopy() {
         </div>`
         : t.in_place ? `<div class="note ok">The folder name is already complete —
             only the clips need filing.</div>` : ''}
+      ${t.space_error ? `<div class="note err">${esc(t.space_error)}</div>` : ''}
       ${t.warnings.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
       <div class="tree">
         ${t.job_folder ? `<div class="dir">📁 ${esc(t.job_folder)}</div>` : ''}
@@ -3509,7 +3538,16 @@ async function reconcileRunState(plan, result) {
 
 async function doRun() {
   const p = state.plan;
+  const full = p.targets.map((t) => t.space_error).filter(Boolean);
+  if (full.length) {
+    await window.api.confirm({ message: 'Not enough space to copy', detail: full.join('\n'),
+      confirmLabel: 'OK', danger: true });
+    return;
+  }
   const renames = (p.renames || []).map((r) => `\n  ${r.from}\n    ↳ ${r.to}`).join('');
+  // A partial session may proceed, but only through an explicit confirm.
+  const check = sessionCheck();
+  const missing = check ? check.missing : [];
   const ok = await window.api.confirm({
     message: p.item_count
       ? (isInformal()
@@ -3523,9 +3561,15 @@ async function doRun() {
         + `${footageSources().length > 1 ? 'every selected drive' : 'the drive'}. `
         + 'Nothing is deleted — clear the cards yourself afterwards.\n') +
       (renames ? `\nFolder rename:${renames}\n` : '') +
-      '\nThe folder is renamed only after every file lands successfully.',
+      '\nThe folder is renamed only after every file lands successfully.'
+      + (missing.length ? `\n\nThe structure expects ${missing.map(camLabel).join(', ')}, `
+        + 'but no clips were assigned to them.' : ''),
     confirmLabel: 'Go ahead',
     danger: false,
+    ...(missing.length ? {
+      message: `Proceed with ${missing.length} camera(s) missing?`,
+      confirmLabel: `Proceed with ${missing.length} camera${missing.length === 1 ? '' : 's'} missing`,
+    } : {}),
   });
   if (!ok) return;
   try {
@@ -3868,7 +3912,6 @@ function render() {
     ${state.engine.info && !state.engine.info.ffprobe
       ? '<button class="sm" id="btnFindFfprobe">Locate ffprobe</button>' : ''}
     <button class="sm ghost" id="btnRestart">Restart engine</button>
-    ${['win32', 'darwin'].includes(window.api.platform) ? `<button class="sm ghost" id="btnDns" title="Sets DNS to 1.1.1.1 and 1.0.0.1 on the active Wi-Fi/Ethernet connection (asks for administrator permission), then restarts AV Backup.">Set Cloudflare DNS &amp; restart (${window.api.platform === 'win32' ? 'Windows' : 'Mac'})</button>` : ''}
     ${typeof showSync !== 'function' ? '' : (typeof syncAccount === 'function' && syncAccount() && syncUI.status.signedIn)
       ? `<details class="acct-menu" id="acctMenu"><summary class="sm" title="Account">${esc(syncUI.status.user?.displayName || 'Account')} ▾</summary>
           <div class="acct-pop"><button class="sm ghost" id="btnAccount">Dashboard</button><button class="sm ghost" id="btnLogOut">Log Out</button></div></details>`
@@ -3886,7 +3929,6 @@ function render() {
       render();
     });
     $('btnRestart').addEventListener('click', restartEngine);
-    $('btnDns')?.addEventListener('click', setCloudflareDns);
     $('btnFindFfprobe')?.addEventListener('click', locateFfprobe);
   }
 
@@ -4453,18 +4495,6 @@ window.api.onStatus((msg) => {
     render();
   }
 });
-
-async function setCloudflareDns() {
-  // Main re-checks its own busy flag; this also covers an unsaved prepared plan or schedule run.
-  if (state.busy || state.scheduleRun || (state.plan && !state.runResult)) {
-    toast('Finish or cancel the current backup before changing DNS and restarting.', 'warn');
-    return;
-  }
-  try {
-    const r = await window.api.dns.setCloudflare();
-    if (!r.ok && r.code !== 'cancelled') toast(r.error, r.code === 'busy' ? 'warn' : 'err');
-  } catch (e) { toast(e.message, 'err'); }
-}
 
 async function restartEngine() {
   const r = await window.api.restart();

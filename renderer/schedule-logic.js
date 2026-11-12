@@ -1412,7 +1412,15 @@
       rows: (records || []).map((r) => REPORT_SHEET.map(([, k]) => value(r, k))) };
   }
 
-  return { COLUMNS, findDates, findTime, cleanTitle, similarity, readRows, classify,
+  /** Rows ordered by Raw (folder) number; rows without a number keep their order at the end. */
+  function sortByRaw(rows, dir = 'asc') {
+    const num = (r) => { const m = /\d+/.exec(r.folder == null ? '' : String(r.folder)); return m ? Number(m[0]) : null; };
+    const sign = dir === 'desc' ? -1 : 1;
+    return rows.map((r, i) => ({ r, i, n: num(r) })).sort((a, b) =>
+      (a.n === null) - (b.n === null) || (a.n === null ? 0 : sign * (a.n - b.n)) || a.i - b.i).map((x) => x.r);
+  }
+
+  return { sortByRaw, COLUMNS, findDates, findTime, cleanTitle, similarity, readRows, classify,
            draftSessions, assignNumbers, masterId, sheetRows, fmtDuration, applyScan,
            learn, toIndian, fromIndian, sessionDay, half, camsFor, jobFolderName,
            sessionFolderName, folderPlan, check, parseCities, findCity, cityOf, geolocation,

@@ -47,6 +47,7 @@
     status: async () => structuredClone(mock.status),
     getConfig: async () => mock.status.config,
     setConfig: async (c) => { calls.push(['setConfig', c]); if (mock.setConfig) return mock.setConfig(c); mock.status = { ...mock.status, mode: c.enabled ? 'account' : 'local', config: c, phase: 'signed_out' }; return c; },
+    forgetEmail: async () => { calls.push(['forgetEmail']); const { email, ...config } = mock.status.config; mock.status = { ...mock.status, config }; return config; },
     signIn: async (...a) => { calls.push(['signIn', a[0]]); return mock.signIn(...a); },
     signUp: async (...a) => { calls.push(['signUp', a[0], a[2]]); return mock.signUp(...a); },
     signOut: async () => { calls.push(['signOut']); mock.status = { ...mock.status, signedIn: false, user: null, phase: 'signed_out' }; },
@@ -61,7 +62,7 @@
   const mock = window.__mock = { status, calls, views: 0, commits: 0, conflicts: [], lastCommit: null,
     signIn: async () => { mock.status = { ...mock.status, signedIn: true, phase: 'online', user: { displayName: 'Test Operator', role: 'operator' } }; return { ok: true }; },
     signUp: async (email) => ({ ok: true, email }) };
-  const base = { platform: 'darwin', sync, update: { status: async () => ({}), onStatus: () => () => {} }, dns: { setCloudflare: async () => ({}) },
+  const base = { platform: 'darwin', sync, update: { status: async () => ({}), onStatus: () => () => {} }, teamServer: { status: async () => (flow === 'local' ? { mode: 'local' } : { mode: 'account', zerotier: 'connected', pocketbase: 'down' }) },
     call: async (m) => ({ ok: true, result: m === 'ping' ? { python: 'mock', ffprobe: 'mock' } : { volumes: [], rows: [] } }),
     reserveId: async () => 1, getSettings: async () => ({}), getStore: async () => null,
     onProgress: () => {}, onStatus: () => {}, onBeforeClose: () => () => {}, confirm: async () => false };

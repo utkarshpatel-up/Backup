@@ -309,10 +309,45 @@
     return unexpected;
   }
 
+  // Session completeness (#23). Expected = the Cam-NN folders the structure
+  // defines (a zip's tree, or a schedule row's, which already carries its
+  // camPlan folders); expected day = the session date. Received = cameras with
+  // at least one clip queued to copy, or already filed on disk. Root (0) is not
+  // a camera. No camera folders in the structure -> null (no check).
+  function sessionCompleteness(template, files, assignments, sessionDate = null,
+                               onDisk = {}) {
+    const numbers = new Set(Object.keys((template && template.cams) || {})
+      .map(Number).filter((n) => n > 0));
+    for (const entry of (template && template.tree) || []) {
+      const match = /(?:^|\/)Cam-(\d+)(?:\/|$)/i.exec(String(entry).replace(/\\/g, '/'));
+      if (match && Number(match[1]) > 0) numbers.add(Number(match[1]));
+    }
+    if (!numbers.size) return null;
+    const clips = {};
+    const otherDay = {};
+    for (const file of files || []) {
+      const cam = (assignments || {})[file.path];
+      if (typeof cam !== 'number' || cam <= 0) continue;
+      clips[cam] = (clips[cam] || 0) + 1;
+      if (sessionDate && file.shoot_date && file.shoot_date !== sessionDate) {
+        otherDay[cam] = (otherDay[cam] || 0) + 1;
+      }
+    }
+    for (const [cam, count] of Object.entries(onDisk || {})) {
+      if (Number(count) > 0 && !clips[cam]) clips[cam] = 0;
+    }
+    const expected = [...numbers].sort((a, b) => a - b);
+    const received = Object.keys(clips).map(Number).sort((a, b) => a - b);
+    return { expected, received, clips, otherDay,
+             missing: expected.filter((n) => !(n in clips)),
+             extra: received.filter((n) => !numbers.has(n)) };
+  }
+
   return { pathKey, isJunkPath, cameraFiles, cameraFilenamePrefix, cameraGroupKey,
            cameraGroups, filterCameraFiles, camsForAssignments, removeCardImports,
            importedCamCount, informalSetupReady, normalizedTemplateDirs,
            cameraCountAfterDetection, occupiedCamNumbers, existingCamCounts,
            entryExitCeremonyClips, cleanSessionName,
-           lowestAvailableCams, emptyCamNumbers, unexpectedPlanClips };
+           lowestAvailableCams, emptyCamNumbers, unexpectedPlanClips,
+           sessionCompleteness };
 });

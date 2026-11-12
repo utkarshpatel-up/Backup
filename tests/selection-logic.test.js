@@ -336,3 +336,43 @@ test('a zip session with no Clips for Insert and no cameras gets no empty folder
   assert.deepEqual(rules.normalizedTemplateDirs({ tree: ['Clips for Insert'] }, 0),
     ['Clips for Insert']);
 });
+
+test('session completeness: expected cameras from the structure vs clips assigned', () => {
+  const template = { tree: ['Clips for Insert', 'Clips for Insert/Cam-01',
+    'Clips for Insert/Cam-02', 'Clips for Insert/Cam-03'] };
+  const files = [
+    { path: '/a/1.mov', shoot_date: '2026-10-17' },
+    { path: '/b/1.mov', shoot_date: '2026-10-17' },
+    { path: '/c/1.mov', shoot_date: '2026-10-16' },
+    { path: '/d/1.mov', shoot_date: '2026-10-17' },
+  ];
+  const complete = rules.sessionCompleteness(template, files,
+    { '/a/1.mov': 1, '/b/1.mov': 2, '/c/1.mov': 3, '/d/1.mov': 3 }, '2026-10-17');
+  assert.deepEqual(complete.expected, [1, 2, 3]);
+  assert.deepEqual(complete.missing, []);
+  assert.deepEqual(complete.extra, []);
+  assert.deepEqual(complete.clips, { 1: 1, 2: 1, 3: 2 });
+  assert.deepEqual(complete.otherDay, { 3: 1 });
+
+  const cam2Missing = rules.sessionCompleteness(template, files,
+    { '/a/1.mov': 1, '/b/1.mov': 'skip', '/c/1.mov': 3 }, '2026-10-17');
+  assert.deepEqual(cam2Missing.missing, [2]);
+
+  // Cam-02 filed on disk by an earlier run counts as received.
+  assert.deepEqual(rules.sessionCompleteness(template, files,
+    { '/a/1.mov': 1, '/c/1.mov': 3 }, null, { 2: 4 }).missing, []);
+
+  const extra = rules.sessionCompleteness(template, files,
+    { '/a/1.mov': 1, '/b/1.mov': 2, '/c/1.mov': 3, '/d/1.mov': 4 });
+  assert.deepEqual(extra.missing, []);
+  assert.deepEqual(extra.extra, [4]);
+
+  // Root clips (0) are not a camera.
+  assert.deepEqual(rules.sessionCompleteness({ tree: ['Cam-01'] }, files,
+    { '/a/1.mov': 0 }).missing, [1]);
+});
+
+test('session completeness stays out of the way without camera folders', () => {
+  assert.equal(rules.sessionCompleteness(null, [], {}), null);
+  assert.equal(rules.sessionCompleteness({ tree: ['Clips for Insert'] }, [], {}), null);
+});

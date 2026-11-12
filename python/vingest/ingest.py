@@ -144,6 +144,7 @@ class TargetPlan:
     items: list[PlanItem] = field(default_factory=list)
     total_bytes: int = 0
     free_bytes: int = 0
+    space_error: str = ""     # set when the copy cannot fit; blocks the start
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -716,10 +717,11 @@ def build_plan(spec: dict, progress=None) -> dict:
         dest_vol = _nearest_existing(session_path)
         copy_bytes = sum(i.size for i in plan.items
                          if not _same_volume(Path(i.src).parent, dest_vol))
-        if plan.free_bytes and copy_bytes > plan.free_bytes * 0.98:
-            plan.warnings.append(
-                f"Not enough space on {dest_root}: needs "
-                f"{human(copy_bytes)}, has {human(plan.free_bytes)} free.")
+        kind, msg = space_check(copy_bytes, plan.free_bytes, dest_root)
+        if kind == "block":
+            plan.space_error = msg
+        elif kind == "warn":
+            plan.warnings.append(msg)
 
         if in_place and plan.rename_to:
             clash = session_path
@@ -762,6 +764,23 @@ def build_plan(spec: dict, progress=None) -> dict:
                     for t in targets_out if t.rename_to],
         "warnings": [w for t in targets_out for w in t.warnings],
     }
+
+
+def space_check(need: int, free: int, label: str):
+    """('block'|'warn'|'ok', message) for writing `need` bytes onto `free` bytes.
+    Unknown free space (0) is never blocked. Warns when under 2% or 5 GB would remain."""
+    if not free:
+        return "ok", ""
+    name = Path(label).name or str(label)
+    gb = lambda n: f"{n / _SIZE_BASE ** 3:.1f} GB"
+    if need > free:
+        return "block", (f"Not enough space on {name}: needs {gb(need)}, "
+                         f"{gb(free)} free — {gb(need - free)} short")
+    left = free - need
+    if left < max(free * 0.02, 5 * _SIZE_BASE ** 3):
+        return "warn", (f"Low space on {name}: only {gb(left)} will be free after "
+                        f"copying {gb(need)}.")
+    return "ok", ""
 
 
 def _same_volume(a, b) -> bool:

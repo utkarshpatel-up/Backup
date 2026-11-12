@@ -4,6 +4,25 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 1.9.1
+
+- **Team server status in the sidebar.** A new box above the engine status shows whether this computer is on the team's ZeroTier network and whether the PocketBase server is running, with a button to the Account page. The "Set Cloudflare DNS & restart" button is gone; it is no longer needed.
+- **Sort the event schedule by Raw number.** Choose Ascending or Descending; changing a row's Raw (folder) number moves it into place straight away.
+- **Missing cameras are caught before copying.** The Cameras page lists each camera the structure expects as received or missing. If one is missing, Start copy asks you to confirm before going ahead with a partial session.
+- **A copy that will not fit is stopped before it starts.** The Copy step names the drive and how many GB are short. When a drive would be left nearly full, you get a warning.
+- **Conflicts are easier to read.** Each sync conflict is shown as a small table: the current value, the incoming one and your draft, with the differences highlighted.
+- **Sign-in remembers your e-mail.** The password is never saved. Use "Forget e-mail" to clear it.
+- 1.9.0 was not released; this version contains everything listed above.
+
+## 1.9.0
+
+- **Team server status in the sidebar.** A new box above the engine status shows whether this computer is on the team's ZeroTier network and whether the PocketBase server is running, with a button to the Account page. The "Set Cloudflare DNS & restart" button is gone; it is no longer needed.
+- **Sort the event schedule by Raw number.** Choose Ascending or Descending; changing a row's Raw (folder) number moves it into place straight away.
+- **Missing cameras are caught before copying.** The Cameras page lists each camera the structure expects as received or missing. If one is missing, Start copy asks you to confirm before going ahead with a partial session.
+- **A copy that will not fit is stopped before it starts.** The Copy step names the drive and how many GB are short. When a drive would be left nearly full, you get a warning.
+- **Conflicts are easier to read.** Each sync conflict is shown as a small table: the current value, the incoming one and your draft, with the differences highlighted.
+- **Sign-in remembers your e-mail.** The password is never saved. Use "Forget e-mail" to clear it.
+
 ## 1.8.0
 
 - **The team server is now a PocketBase server on an office computer, reached over ZeroTier.**

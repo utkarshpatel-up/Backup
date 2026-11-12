@@ -451,3 +451,12 @@ test('Remarks is read from an imported report and written back out', () => {
   const sheet = S.reportSheet(recs);
   assert.equal(sheet.rows[0][sheet.columns.indexOf('Remarks')], 'with Event Sevarthi MHTs');
 });
+
+test('sortByRaw orders by folder number, numberless rows last and stable', () => {
+  const rows = [{ k: 'a', folder: '3060' }, { k: 'b' }, { k: 'c', folder: '3057' }, { k: 'd', folder: null },
+    { k: 'e', folder: '3060' }];
+  const keys = (d) => S.sortByRaw(rows, d).map((r) => r.k).join('');
+  assert.equal(keys('asc'), 'caebd');
+  assert.equal(keys('desc'), 'aecbd');
+  assert.equal(rows[0].k, 'a');
+});

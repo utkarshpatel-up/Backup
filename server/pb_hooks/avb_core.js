@@ -29,7 +29,7 @@ const SPEC = {
     session: ['scalar', 32, false], camPlan: ['scalar', 32, false], backedUp: ['timestamp_null', 0, false],
     title: ['text', 1000, false], subtitle: ['text', 1000, false], placeText: ['text', 1000, false],
     source: ['text', 4000, false], sharedFolder: ['bool', 0, false], flags: ['text_map', 500, false],
-    geo: ['text_null', 300, false], startedAt: ['timestamp_null', 0, false] },
+    remarks: ['text', 2000, false], geo: ['text_null', 300, false], startedAt: ['timestamp_null', 0, false] },
   source_line: { line: ['int', 99999, true], part: ['int', 9999, true], cells: ['cells', 256, true], continuesCell: ['bool', 0, true] },
   source_skip: { index: ['int', 99999, true], days: ['date_list', 366, true], reason: ['text', 32, true], rowText: ['text', 32768, true] },
   city: { name: ['text', 300, true], city: ['text', 200, true], state: ['text', 200, false], country: ['text', 200, false] },
@@ -38,7 +38,7 @@ const SPEC = {
     author: ['text', 64, false], type: ['text', 32, false], date: ['date_null', 0, false], duration: ['scalar', 32, false],
     activity: ['text', 200, false], place: ['text', 500, false], topic: ['text', 1000, false], clips: ['scalar', 32, false],
     cameras: ['scalar', 32, false], events: ['list', 200, false], languages: ['list', 100, false],
-    city: ['text', 200, false], state: ['text', 200, false], country: ['text', 200, false] },
+    city: ['text', 200, false], state: ['text', 200, false], country: ['text', 200, false], remarks: ['text', 2000, false] },
   team_defaults: { author: ['text', 64, false], format: ['text', 16, false], camsFormal: ['scalar', 32, false], camsInformal: ['scalar', 32, false] },
   team_starts: { formal: ['scalar', 32, false], informal: ['scalar', 32, false] },
   learned_title: { key: ['text', 300, true], topic: ['text', 1000, false], type: ['text', 32, false], activity: ['text', 200, false],
@@ -212,8 +212,9 @@ function createCore({ db, uuid, now, sha256 }) {
   // The live membership check: a still-valid token of a revoked user stops here.
   function member(userId) {
     if (!userId) fail('not_authenticated', null, '42501');
-    const m = one(`SELECT json_object('user_id', user, 'role', role, 'display_name', display_name) AS j
-      FROM avb_members WHERE user = {:u} AND is_active = 1`, { u: userId });
+    // The name: the one the maintainer set, else the one given at sign-up.
+    const m = one(`SELECT json_object('user_id', mem.user, 'role', mem.role, 'display_name', COALESCE(NULLIF(mem.display_name, ''), NULLIF(u.name, ''), '')) AS j
+      FROM avb_members mem LEFT JOIN users u ON u.id = mem.user WHERE mem.user = {:u} AND mem.is_active = 1`, { u: userId });
     if (!m) fail('not_member', null, '42501');
     m.display_name = m.display_name || '';
     return m;
@@ -497,6 +498,24 @@ function createCore({ db, uuid, now, sha256 }) {
       next_before: more ? page[page.length - 1].version_seq : null, has_more: more };
   }
 
+  /** Every accepted change by anyone, newest first, each with the value it replaced. */
+  function recentHistory(m, req) {
+    checkKeys(req, ['protocol_version', 'before', 'limit'], 'request');
+    checkProtocol(req);
+    const limit = intField(req, 'limit', 1, 100, 50);
+    const before = intField(req, 'before', 1, MAX_SAFE, MAX_SAFE);
+    const rows = db.all(`SELECT json_object('version_seq', v.version_seq, 'target_type', t.target_type, 'target_key', t.target_key,
+        'assignment_key', t.assignment_key, 'action', v.action, 'created_at', v.created_at, 'actor_id', v.actor_id,
+        'actor_name', COALESCE(NULLIF(mem.display_name, ''), NULLIF(u.name, ''), ''), 'payload', json(v.payload), 'previous', json(p.payload)) AS j
+      FROM avb_versions v JOIN avb_targets t ON t.target_id = v.target_id
+        LEFT JOIN avb_versions p ON p.version_id = v.parent_version_id
+        LEFT JOIN avb_members mem ON mem.user = v.actor_id LEFT JOIN users u ON u.id = v.actor_id
+      WHERE v.accepted = 1 AND t.target_type IN ('assignment', 'session', 'report_record') AND v.version_seq < {:before} ORDER BY v.version_seq DESC LIMIT {:n}`, { before, n: limit + 1 });
+    const page = rows.slice(0, limit);
+    const more = rows.length > limit;
+    return { protocol_version: 1, items: page, next_before: more ? page[page.length - 1].version_seq : null, has_more: more };
+  }
+
   function conflictsList(m, req) {
     checkKeys(req, ['protocol_version', 'status', 'assignment_key', 'after', 'limit'], 'request');
     checkProtocol(req);
@@ -527,11 +546,11 @@ function createCore({ db, uuid, now, sha256 }) {
   }
 
   const me = (m) => ({ protocol_version: 1, user_id: m.user_id, role: m.role, display_name: m.display_name });
-  const teamMembers = () => db.all(`SELECT json_object('user_id', user, 'display_name', display_name, 'role', role, 'is_active', is_active) AS j
-    FROM avb_members ORDER BY display_name, user`).map((x) => Object.assign(x, { display_name: x.display_name || '', is_active: !!x.is_active }));
+  const teamMembers = () => db.all(`SELECT json_object('user_id', mem.user, 'display_name', COALESCE(NULLIF(mem.display_name, ''), NULLIF(u.name, ''), ''), 'role', mem.role, 'is_active', mem.is_active) AS j
+    FROM avb_members mem LEFT JOIN users u ON u.id = mem.user ORDER BY COALESCE(NULLIF(mem.display_name, ''), NULLIF(u.name, ''), ''), mem.user`).map((x) => Object.assign(x, { display_name: x.display_name || '', is_active: !!x.is_active }));
 
   const CALLS = { avb_me: me, avb_team_members: teamMembers, avb_sync_apply: syncApply, avb_sync_pull: syncPull,
-    avb_conflicts: conflictsList, avb_target_history: targetHistory };
+    avb_conflicts: conflictsList, avb_target_history: targetHistory, avb_recent_history: recentHistory };
 
   /** One RPC for `userId` (the verified token's record id). `body` is the parsed request body: { p_request }. */
   function call(name, userId, body) {

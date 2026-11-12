@@ -298,3 +298,8 @@ test('server error text is never echoed: short secrets and unknown codes become 
   }
   assert.equal(classify(400, { code: 'P0001', message: 'avb:invalid_field', details: 'session.topic hunter2' }).message, 'avb:invalid_field');
 });
+
+test('an empty Remarks is left out of the payload, so a server without the field still accepts the row', () => {
+  assert.equal('remarks' in model.sessionPayload({ include: true, date: '2026-11-08', remarks: '' }, 'a0'), false);
+  assert.equal(model.sessionPayload({ include: true, date: '2026-11-08', remarks: 'note' }, 'a0').remarks, 'note');
+});

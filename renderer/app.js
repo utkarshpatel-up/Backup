@@ -3869,9 +3869,22 @@ function render() {
       ? '<button class="sm" id="btnFindFfprobe">Locate ffprobe</button>' : ''}
     <button class="sm ghost" id="btnRestart">Restart engine</button>
     ${['win32', 'darwin'].includes(window.api.platform) ? `<button class="sm ghost" id="btnDns" title="Sets DNS to 1.1.1.1 and 1.0.0.1 on the active Wi-Fi/Ethernet connection (asks for administrator permission), then restarts AV Backup.">Set Cloudflare DNS &amp; restart (${window.api.platform === 'win32' ? 'Windows' : 'Mac'})</button>` : ''}
-    ${typeof showSync === 'function' ? '<button class="sm" id="btnAccount">Account</button>' : ''}`;
+    ${typeof showSync !== 'function' ? '' : (typeof syncAccount === 'function' && syncAccount() && syncUI.status.signedIn)
+      ? `<details class="acct-menu" id="acctMenu"><summary class="sm" title="Account">${esc(syncUI.status.user?.displayName || 'Account')} ▾</summary>
+          <div class="acct-pop"><button class="sm ghost" id="btnAccount">Dashboard</button><button class="sm ghost" id="btnLogOut">Log Out</button></div></details>`
+      : '<button class="sm" id="btnAccount">Account</button>'}`;
   if (PAINT.setHtml($('topActions'), topActions)) {
-    $('btnAccount')?.addEventListener('click', () => showSync().catch(() => toast('Save failed; account view could not open.', 'err')));
+    // The signed-in account menu closes on any click outside it (one listener for the app's life).
+    if (!render.menuClose) {
+      render.menuClose = true;
+      document.addEventListener('click', (e) => { const m = $('acctMenu'); if (m && m.open && !m.contains(e.target)) m.open = false; });
+    }
+    $('btnAccount')?.addEventListener('click', () => { $('acctMenu')?.removeAttribute('open'); showSync().catch(() => toast('Save failed; account view could not open.', 'err')); });
+    $('btnLogOut')?.addEventListener('click', async () => {
+      $('acctMenu')?.removeAttribute('open');
+      try { await syncTransition(() => window.api.sync.signOut()); } catch (e) { toast(e && e.message ? e.message : 'Could not log out.', 'err'); }
+      render();
+    });
     $('btnRestart').addEventListener('click', restartEngine);
     $('btnDns')?.addEventListener('click', setCloudflareDns);
     $('btnFindFfprobe')?.addEventListener('click', locateFfprobe);

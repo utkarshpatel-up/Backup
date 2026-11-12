@@ -83,6 +83,9 @@ test('the merge table: applied, noop, stale_edit, delete_vs_edit, edit_vs_delete
   assert.equal(hist.has_more, true);
   const rest = s.rpc('op1', 'avb_target_history', { protocol_version: 1, type: 'session', key: k, before: hist.next_before, limit: 100 });
   assert.ok(rest.items.some((v) => v.accepted === false), 'stored incoming values are in the history');
+  const recent = s.rpc('op1', 'avb_recent_history', { protocol_version: 1, limit: 100 });
+  assert.ok(recent.items.length > 0 && recent.items.every((v) => v.target_type && v.created_at), 'the team feed lists accepted changes');
+  assert.ok(recent.items.some((v) => v.previous && v.payload && v.previous.topic !== v.payload.topic), 'an edit carries the value it replaced');
 });
 
 test('whole-schedule delete is admin-only, rev-checked, keeps children, and blocks edits inside it', () => {
@@ -182,4 +185,13 @@ test('versions, mutations and the member audit are append-only', () => {
   for (const sql of ['UPDATE avb_versions SET payload = NULL', 'DELETE FROM avb_versions', 'UPDATE avb_mutations SET response = \'{}\'', 'DELETE FROM avb_mutations']) {
     assert.throws(() => s.db.exec(sql), /avb:append_only/, sql);
   }
+});
+
+test('a member with no display_name is named by the name given at sign-up', () => {
+  const s = server();
+  s.db.prepare("INSERT INTO users (id, email, name) VALUES ('nn', 'nn@example.com', 'Nita N')").run();
+  s.db.prepare("INSERT INTO avb_members (id, user, role, is_active, display_name) VALUES ('m-nn', 'nn', 'operator', 1, '')").run();
+  assert.equal(s.rpc('nn', 'avb_me').display_name, 'Nita N');
+  assert.equal(s.rpc('nn', 'avb_team_members').find((m) => m.user_id === 'nn').display_name, 'Nita N');
+  assert.equal(s.rpc('op1', 'avb_me').display_name, 'op1', 'a set display_name still wins');
 });

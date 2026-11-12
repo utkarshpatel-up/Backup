@@ -398,7 +398,7 @@ function scheduleAddRow(key) {
   copy.session = null;
   copy.topic = '';
   copy.title = ''; copy.subtitle = ''; copy.placeText = ''; copy.source = 'Unplanned — added by hand';
-  copy.duration = ''; copy.clips = ''; copy.cameras = ''; copy.backedUp = null;
+  copy.duration = ''; copy.clips = ''; copy.cameras = ''; delete copy.remarks; copy.backedUp = null;
   copy.sharedFolder = copy.folder != null;  // its folder only holds while it stays on this day
   copy.flags = {
     session: 'Unplanned session — numbered in order for you; type M/E only if this is wrong.',
@@ -894,7 +894,7 @@ const SCHEDULE_HEAD = [['y', 'Year'], ['m', 'M'], ['d', 'D'], ['activity', 'Acti
   ['format', 'Format'], ['type', 'Satsang Type'], ['city', 'City'], ['state', 'State'], ['country', 'Country'],
   ['place', 'Place Detail'], ['session', 'Session'], ['events', 'Event Type'], ['topic', 'Topic/Description'],
   ['languages', 'Language'], ['duration', 'Duration'], ['clips', 'No of clips'], ['cameras', 'No of cameras'],
-  ['camPlan', 'Cam folders']];
+  ['remarks', 'Remarks'], ['camPlan', 'Cam folders']];
 
 /* ---------------------------------------------------- column widths */
 
@@ -996,8 +996,8 @@ function scheduleTableParts(problems) {
   const plans = SCHEDULE.folderPlan(s.sessions, s.starts, s.defaults);
   const prob = (row, field) => (problems.get(row.key) || {})[field];
   // Default widths; a column dragged wider or narrower overrides them.
-  const WIDTH = { city: 'w-city', place: 'w-wide', events: 'w-mid', topic: 'w-wide', languages: 'w-lang' };
-  const LONG = new Set(['city', 'place', 'events', 'topic', 'languages']);
+  const WIDTH = { city: 'w-city', place: 'w-wide', events: 'w-mid', topic: 'w-wide', languages: 'w-lang', remarks: 'w-wide' };
+  const LONG = new Set(['city', 'place', 'events', 'topic', 'languages', 'remarks']);
   const cell = (row, field, value, opts = {}) => {
     const p = prob(row, opts.flag || field);
     const text = String(value ?? '');
@@ -1079,6 +1079,7 @@ function scheduleTableParts(problems) {
       ${cell(row, 'duration', row.duration, { cls: 'w-dur', title: 'Filled in after the backup — or like 1h 2m 3s' })}
       ${cell(row, 'clips', row.clips, { cls: 'w-small' })}
       ${cell(row, 'cameras', row.cameras, { cls: 'w-small' })}
+      ${cell(row, 'remarks', row.remarks ?? '', { title: 'Frappe\'s Remark field' })}
       ${cell(row, 'camPlan', row.camPlan ?? '', { cls: 'w-small',
         placeholder: String(SCHEDULE.camsFor(row, s.defaults)),
         title: 'Camera folders the backup creates (more can be added on the Cameras page)' })}

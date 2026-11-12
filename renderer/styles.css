@@ -562,3 +562,17 @@ button[aria-busy="true"]::after {
 .update-notes h3 { margin: 0 0 10px; }
 .update-notes pre { white-space: pre-wrap; font: inherit; max-height: 60vh; overflow-y: auto; margin: 0 0 14px; }
 .update-notes form { display: flex; justify-content: flex-end; }
+
+/* Signed-in account menu in the top bar */
+.acct-menu { position: relative; }
+.acct-menu summary { list-style: none; cursor: pointer; border: 1px solid var(--line); border-radius: 6px; user-select: none; }
+.acct-menu summary::-webkit-details-marker { display: none; }
+.acct-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; display: flex; flex-direction: column; gap: 2px; min-width: 130px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px #0003; }
+
+/* Report: cells of existing data that were corrected (orange); double-click a cell to edit */
+.rep-table td.rep-ed { cursor: cell; }
+.rep-table td.rep-edit { background: #f7680833; color: #c2570a; font-weight: 600; }
+.rep-in { width: 100%; min-width: 90px; }
+
+.sync-history { margin: 8px 0; padding-left: 18px; font-size: 13px; }
+.sync-history li { margin: 3px 0; }

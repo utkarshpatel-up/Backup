@@ -41,6 +41,10 @@ function validate(action, p) {
       fields(p, ['email', 'password', 'name']);
       if (!string(p.email, 320) || !string(p.password, 1024) || !string(p.name, 200)) invalid();
       return;
+    case 'history':
+      fields(p, ['before']);
+      if (p.before !== undefined && !(Number.isSafeInteger(p.before) && p.before > 0)) invalid();
+      return;
     case 'commit':
       fields(p, ['baseRev', 'snapshot', 'busy']);
       if (!revision(p.baseRev) || !object(p.snapshot)) invalid();
@@ -112,6 +116,7 @@ function registerSyncIpc({ ipcMain, getWindow, appUrl, getHost, isClosing = () =
         case 'commit': result = engine.commit(p); break;
         case 'syncNow': result = await engine.syncNow(); break;
         case 'conflicts': result = engine.conflicts(); break;
+        case 'history': result = await engine.history(p.before); break;
         case 'reviews': result = engine.reviews(); break;
         case 'resolve': result = await engine.resolve(p); break;
         case 'review': result = engine.review(p); break;

@@ -288,6 +288,13 @@ class SyncEngine extends EventEmitter {
     return p;
   }
 
+  /** The team's recent changes, newest first (one page; pass `before` from the last page for the next). */
+  async history(before) {
+    const req = { protocol_version: PROTOCOL, limit: 50 };
+    if (before) req.before = before;
+    return this._call('avb_recent_history', req);
+  }
+
   /** One authenticated call; an expired token is refreshed once and the same request sent again. */
   async _call(name, request, raw) {
     return this._authed((client, token) => client.rpc(token, name, request, raw));

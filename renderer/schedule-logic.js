@@ -1174,6 +1174,7 @@
     activity: [/^activity$/],
     place: [/^place detail/],
     topic: [/^topic/],
+    remarks: [/^remarks?$/],
     clips: [/^no\.? ?of clips$/, /^no o/],
     cameras: [/^no\.? ?of cameras$/],
     events: [/^event type/],
@@ -1237,7 +1238,7 @@
         id, folder: Number(get(r, 'folder')) || null, format: get(r, 'format'), session: get(r, 'session'),
         author: get(r, 'author'), type: get(r, 'type'), date, duration: reportDuration(get(r, 'duration')),
         activity: get(r, 'activity'), place: get(r, 'place'), topic: get(r, 'topic'),
-        clips: get(r, 'clips'), cameras: get(r, 'cameras'),
+        clips: get(r, 'clips'), cameras: get(r, 'cameras'), ...(get(r, 'remarks') ? { remarks: get(r, 'remarks') } : {}),
         events: split(get(r, 'events')), languages: split(get(r, 'languages')),
         city: get(r, 'city') || (geo ? geo.city : ''), state: get(r, 'state') || (geo ? geo.state : ''),
         country: get(r, 'country') || (geo ? geo.country : ''), source: 'existing',
@@ -1268,7 +1269,7 @@
         id: masterId(s, n.folder, n.session), folder: Number(n.folder), format: s.format,
         session: String(n.session), author: s.author, type: s.type, date: sessionDay(s),
         duration: s.duration || '', activity: s.activity, place: s.place, topic: s.topic,
-        clips: s.clips ?? '', cameras: s.cameras ?? '', events: (s.events || []).slice(),
+        clips: s.clips ?? '', cameras: s.cameras ?? '', remarks: s.remarks || '', events: (s.events || []).slice(),
         languages: (s.languages || []).slice(), city: c ? c.city : s.city || '',
         state: c ? c.state : '', country: c ? c.country : '', source: 'schedule', schedule: label,
         backedUp: !!s.backedUp,
@@ -1378,7 +1379,7 @@
     ['Activity', 'activity'], ['Author', 'author'], ['Format', 'format'], ['Satsang Type', 'type'], ['City', 'city'],
     ['State', 'state'], ['Country', 'country'], ['Place Detail', 'place'], ['Session', 'session'],
     ['Event Type', 'events'], ['Topic/Description', 'topic'], ['Language', 'languages'], ['Duration', 'duration'],
-    ['No of clips', 'clips'], ['No of cameras', 'cameras']];
+    ['No of clips', 'clips'], ['No of cameras', 'cameras'], ['Remarks', 'remarks']];
 
   /** How often each event was held with each other one: Map(lowercase event -> Map(event -> times)). */
   function eventPartners(records) {

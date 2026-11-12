@@ -30,21 +30,52 @@ const REPORT_COLUMNS = [
   ['format', 'Format'], ['type', 'Satsang Type'], ['city', 'City'], ['state', 'State'], ['country', 'Country'],
   ['place', 'Place Detail'], ['session', 'Session'], ['events', 'Event Type'], ['topic', 'Topic/Description'],
   ['languages', 'Language'], ['duration', 'Duration'], ['clips', 'No of clips'], ['cameras', 'No of cameras'],
+  ['remarks', 'Remarks'],
 ];
 
 function reportState() {
   if (!state.report) state.report = { file: null, existing: null, loading: false, error: null, filters: {}, columns: {}, limit: REPORT_PAGE };
+  if (!state.report.edits) state.report.edits = reportLoadEdits();
   return state.report;
 }
 
-/** Save the entries the filters leave as an .xlsx, which can be chosen again later as the existing data. */
-async function reportExport() {
+// Cells of existing data the operator corrected, as {ID: {field: text}}. Kept on this computer only.
+const REPORT_EDITS_KEY = 'avb.reportEdits';
+const REPORT_EDITABLE = new Set(['activity', 'author', 'format', 'type', 'city', 'state', 'country', 'place', 'session',
+  'events', 'topic', 'languages', 'duration', 'clips', 'cameras', 'remarks']);
+const REPORT_LIST_FIELDS = new Set(['events', 'languages']);
+let reportEditRev = 0;
+function reportLoadEdits() {
+  try { const e = JSON.parse(localStorage.getItem(REPORT_EDITS_KEY) || '{}'); return e && typeof e === 'object' ? e : {}; } catch (_) { return {}; }
+}
+function reportEdit(id, key, text) {
   const r = reportState();
-  const records = reportShown(reportRecords().all);
-  if (!records.length) { toast('Nothing to export — no entries match these filters.', 'warn'); return; }
+  const rec = (r.existing || []).find((x) => x.id === id);
+  if (!rec || !REPORT_EDITABLE.has(key)) return;
+  const value = REPORT_LIST_FIELDS.has(key) ? text.split(/[,;]/).map((v) => v.trim()).filter(Boolean) : text.trim();
+  const same = String(reportValue(rec, key)) === String(Array.isArray(value) ? value.join(', ') : value);
+  const mine = r.edits[id] || (r.edits[id] = {});
+  if (same) delete mine[key]; else mine[key] = value;
+  if (!Object.keys(mine).length) delete r.edits[id];
+  reportEditRev++;
+  try { localStorage.setItem(REPORT_EDITS_KEY, JSON.stringify(r.edits)); } catch (_) { /* kept for this session only */ }
+  render();
+}
+
+/** Orange (edited), purple and blue (schedule) rows as an .xlsx ready to upload to Frappe. */
+function reportExportFrappe() {
+  const rows = reportRecords().all.filter((rec) => rec.source === 'schedule' || rec.edited);
+  return reportExport(rows, 'Frappe_Upload');
+}
+
+/** Save the entries the filters leave as an .xlsx, which can be chosen again later as the existing data. */
+async function reportExport(only, prefix = 'Raw_Video_Report') {
+  const r = reportState();
+  const records = only || reportShown(reportRecords().all);
+  if (!records.length) { toast(only ? 'Nothing to save — no edited or scheduled rows yet.' : 'Nothing to export — no entries match these filters.', 'warn'); return; }
   const day = new Date().toISOString().slice(0, 10);
-  const filtered = records.length < reportRecords().all.length;
-  const target = await window.api.saveXlsx(`Raw_Video_Report_${day}${filtered ? '_filtered' : ''}.xlsx`, 'Export the report entries');
+  const filtered = !only && records.length < reportRecords().all.length;
+  const target = await window.api.saveXlsx(`${prefix}_${day}${filtered ? '_filtered' : ''}.xlsx`, only ? 'Save the rows for Frappe' : 'Export the report entries');
   if (!target) return;
   try {
     const sheet = SCHEDULE.reportSheet(records);
@@ -120,11 +151,12 @@ function reportRecords() {
   const cities = scheduleCities();
   const items = ((state.schedules && state.schedules.items) || []).filter((item) => !item.busy);
   // Schedule rows are edited in place, so the memo is keyed by their content, not identity.
-  const key = JSON.stringify(items.map((item) => [item.sessions, item.starts, item.file]));
+  const key = JSON.stringify(items.map((item) => [item.sessions, item.starts, item.file])) + `|${reportEditRev}`;
   if (reportMemo && reportMemo.existing === r.existing && reportMemo.cities === cities && reportMemo.key === key) return reportMemo.value;
   const scheduled = [];
   for (const item of items) scheduled.push(...SCHEDULE.scheduleRecords(item.sessions, item.starts, cities, scheduleRange(item)));
-  const all = SCHEDULE.mergeReport(r.existing || [], scheduled);
+  const existing = (r.existing || []).map((rec) => (r.edits[rec.id] ? { ...rec, ...r.edits[rec.id], edited: new Set(Object.keys(r.edits[rec.id])) } : rec));
+  const all = SCHEDULE.mergeReport(existing, scheduled);
   reportMemo = { existing: r.existing, cities, key, value: { all, scheduled: scheduled.length, gaps: SCHEDULE.findGaps(all) } };
   return reportMemo.value;
 }
@@ -174,14 +206,15 @@ function reportRegions() {
     const tag = rec.source !== 'schedule' ? ''
       : both ? '<span class="rep-tag both">Schedule · replaces existing</span>'
         : '<span class="rep-tag sch">Schedule</span>';
-    const row = `<tr class="${both ? 'rep-both' : rec.source === 'schedule' ? 'rep-sch' : ''}">
+    const row = `<tr data-id="${esc(rec.id)}" class="${both ? 'rep-both' : rec.source === 'schedule' ? 'rep-sch' : ''}">
       <td class="fz rz1 mono" title="${esc(rec.source === 'schedule'
         ? `From the event schedule ${rec.schedule}${both ? '. The existing data has an entry with this ID too; this row shows the version from the schedule.' : ''}${rec.backedUp ? ' · backed up' : ''}`
         : 'Existing data')}"><div class="rep-id">${esc(rec.id)}${tag}</div></td>
       <td class="fz rz2">${esc(rec.folder ?? '')}</td>
       ${REPORT_COLUMNS.map(([k]) => {
         const v = reportValue(rec, k);
-        return `<td class="c-${k}"${String(v).length > 20 ? ` title="${esc(v)}"` : ''}>${esc(v)}</td>`;
+        const canEdit = rec.source !== 'schedule' && REPORT_EDITABLE.has(k);
+        return `<td class="c-${k}${rec.edited?.has(k) ? ' rep-edit' : ''}${canEdit ? ' rep-ed' : ''}" data-k="${k}"${String(v).length > 20 ? ` title="${esc(v)}"` : ''}>${esc(v)}</td>`;
       }).join('')}</tr>`;
     return [row, ...(gapAt.get(i) || []).map((t) => `<tr class="rep-gap"><td colspan="${width}">⚠ ${esc(t)}</td></tr>`)];
   });
@@ -194,11 +227,13 @@ function reportRegions() {
   return {
     title: `<div style="flex:1 1 320px;min-width:0"><h3 style="margin:0">Raw Video Data Report</h3>
           <div class="hint" style="margin:4px 0 0">Existing data: ${source} · Event schedules: <b>${scheduled}</b> sessions</div></div>
+        <button class="sm" id="repFrappe" title="Open the Frappe report site">Frappe Report</button>
         <button class="sm" id="repFile">${account ? 'Import file to team…' : r.existing ? 'Change file…' : 'Choose existing data…'}</button>
         ${r.file && !account ? '<button class="sm ghost" id="repReload" title="Read the file again">Refresh</button>' : ''}`,
     export: `<button class="sm" id="repExport" ${shown.length ? '' : 'disabled'}
           title="Save the entries these filters leave as an .xlsx. It can be chosen again later as the existing data.">Export ${shown.length.toLocaleString()} entries…</button>`,
-    tail: `${r.exported ? '<button class="sm ghost" id="repExported">Show exported file</button>' : ''}`,
+    tail: `<button class="sm" id="repFrappeXlsx" title="Save every orange (edited), purple and blue (schedule) row as an .xlsx to upload to Frappe">Save as Excel</button>
+      ${r.exported ? '<button class="sm ghost" id="repExported">Show exported file</button>' : ''}`,
     error: r.error ? `<div class="note err" style="margin-top:10px">${esc(r.error)}</div>` : '',
     filters: reportFiltersHtml(all, {}),
     gaps: gaps.length ? `<div class="rep-gaps"><b>${gaps.length} gap${gaps.length === 1 ? '' : 's'} in the numbering:</b>
@@ -300,7 +335,8 @@ function reportDatalists(all) {
 
 /** The two buttons a filter change redraws. */
 function wireReportButtons(root) {
-  root.querySelector('#repExport')?.addEventListener('click', reportExport);
+  root.querySelector('#repExport')?.addEventListener('click', () => reportExport());
+  root.querySelector('#repFrappeXlsx')?.addEventListener('click', reportExportFrappe);
   root.querySelector('#repMore')?.addEventListener('click', () => { reportState().limit += REPORT_PAGE; render(); });
 }
 
@@ -310,8 +346,22 @@ function wireReportPage() {
   reportDatalists(reportRecords().all);
   wireColumnResize(document.querySelector('.rep-table'), 'report');
   $('repFile')?.addEventListener('click', reportChooseFile);
+  $('repFrappe')?.addEventListener('click', () => window.api.openFrappe());
   $('repReload')?.addEventListener('click', () => reportLoad(r.file));
   wireReportButtons($('content'));
+  // Double-click a cell of the existing data to correct it; Enter or leaving the box saves, Esc cancels.
+  document.querySelector('.rep-table tbody')?.addEventListener('dblclick', (e) => {
+    const td = e.target.closest('td.rep-ed');
+    if (!td || td.querySelector('input')) return;
+    const id = td.parentElement.dataset.id, k = td.dataset.k, old = td.textContent;
+    const input = Object.assign(document.createElement('input'), { className: 'sch-in rep-in', value: old });
+    td.textContent = ''; td.appendChild(input); input.focus(); input.select();
+    let done = false;
+    // The old text goes back first: a no-op edit repaints nothing, so the cell must not keep the box.
+    const finish = (save) => { if (done) return; done = true; td.textContent = old; if (save && input.value !== old) reportEdit(id, k, input.value); };
+    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') finish(true); else if (ev.key === 'Escape') finish(false); });
+    input.addEventListener('blur', () => finish(true));
+  });
   $('repExported')?.addEventListener('click', () => window.api.reveal(r.exported));
   // Every filter applies by itself: menus and picked values at once, typing
   // after a short pause. A date counts only once it is a whole dd/mm/yyyy (or

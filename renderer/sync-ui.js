@@ -33,7 +33,7 @@ function syncTeamSettings(patch) {
 }
 function syncClear() {
   syncUI.epoch++; syncUI.rev = null; syncUI.team = {}; syncUI.deleted = [];
-  syncUI.conflicts = []; syncUI.reviews = []; syncUI.dirty = false; syncUI.viewSig = null;
+  syncUI.conflicts = []; syncUI.reviews = []; syncUI.dirty = false; syncUI.viewSig = null; syncUI.history = null;
   clearTimeout(scheduleRememberTimer); scheduleRememberTimer = null;
   state.schedules = { openId: null, items: [] }; state.schedule = null;
   state.cities = null; state.citySource = null; state.report = null; syncUI.teamCities = false;
@@ -242,6 +242,7 @@ async function showSync() {
   syncUI.conflicts = await window.api.sync.conflicts();
   syncUI.reviews = await window.api.sync.reviews();
   render();
+  if (syncAvailable()) syncLoadHistory(false);
 }
 const SYNC_PHASE = {
   online: ['Connected', 'ok'], offline: ['Offline', 'warn'], connecting: ['Connecting', ''], expired: ['Sign-in expired', 'warn'],
@@ -251,7 +252,18 @@ const syncNeedsSignIn = (s) => !s.signedIn || (s.phase === 'expired' && !s.locke
 const syncField = (id, label, attrs, extra = '') => `<div class="sync-field"><label for="${id}">${label}</label>
     <div class="sync-input">${`<input id="${id}" ${attrs} aria-describedby="${id}Err" spellcheck="false" autocapitalize="off" data-lock-input>`}${extra}</div>
     <p class="sync-err" id="${id}Err" hidden></p></div>`;
-const syncEmailField = () => syncField('syncEmail', 'Email', `type="email" autocomplete="username" value="${esc(syncUI.draftEmail || '')}"`);
+// Emails that signed in on this computer, newest first, offered as a dropdown on the sign-in form.
+const RECENT_EMAILS_KEY = 'avb.recentEmails';
+function syncRecentEmails() {
+  try { const l = JSON.parse(localStorage.getItem(RECENT_EMAILS_KEY) || '[]'); return Array.isArray(l) ? l.filter((e) => typeof e === 'string') : []; } catch (_) { return []; }
+}
+function syncRememberEmail(email) {
+  const e = String(email || '').trim();
+  if (!e) return;
+  try { localStorage.setItem(RECENT_EMAILS_KEY, JSON.stringify([e, ...syncRecentEmails().filter((x) => x.toLowerCase() !== e.toLowerCase())].slice(0, 10))); } catch (_) { /* storage unavailable: no recents */ }
+}
+const syncEmailField = () => syncField('syncEmail', 'Email', `type="email" autocomplete="username" list="syncRecentEmails" value="${esc(syncUI.draftEmail || '')}"`)
+  + `<datalist id="syncRecentEmails">${syncRecentEmails().map((e) => `<option value="${esc(e)}"></option>`).join('')}</datalist>`;
 const syncPasswordField = (hint, autocomplete) => syncField('syncPassword', 'Password', `type="password" autocomplete="${autocomplete}" placeholder="${hint}"`,
   '<button type="button" class="ghost sync-eye" data-toggle-password aria-pressed="false" aria-controls="syncPassword">Show</button>');
 
@@ -350,6 +362,50 @@ function syncTeamHtml(s, enabled) {
       <p class="hint sync-tuck">Offline access uses an encrypted cache. Membership revocation cannot be discovered until the server is reached.</p>
     </section>`;
 }
+// History: what each team member changed, as "NAME changed value of FIELD from A to B".
+const HISTORY_FIELDS = { date: 'Date', type: 'Satsang Type', activity: 'Activity', place: 'Place Detail', city: 'City', topic: 'Topic/Description',
+  events: 'Event Type', languages: 'Language', author: 'Author', format: 'Format', duration: 'Duration', clips: 'No of clips',
+  cameras: 'No of cameras', folder: 'Folder', session: 'Session', remarks: 'Remarks', state: 'State', country: 'Country', include: 'Included' };
+const historyText = (v) => (Array.isArray(v) ? v.join(', ') : v == null ? '' : String(v));
+function historyLines(h) {
+  const who = h.actor_name || 'A team member';
+  const p = h.payload || {}, prev = h.previous || {};
+  const what = h.target_type === 'report_record' ? `report entry ${p.id || prev.id || ''}`
+    : h.target_type === 'session' ? `session ${[p.date || prev.date, p.topic || prev.topic].filter(Boolean).join(' ')}`.trim()
+      : `schedule ${p.label || prev.label || ''}`.trim();
+  if (h.action === 'delete') return [`${who} deleted ${what}`];
+  if (h.action === 'restore') return [`${who} restored ${what}`];
+  if (h.action === 'create' || !h.previous) {
+    return [`${who} ${h.target_type === 'report_record' ? 'imported' : 'added'} ${what}`];
+  }
+  const out = [];
+  for (const [k, label] of Object.entries(HISTORY_FIELDS)) {
+    if (!(k in p) && !(k in prev)) continue;
+    const a = historyText(prev[k]), b = historyText(p[k]);
+    if (a !== b) out.push(`${who} changed value of ${label} from "${a}" to "${b}" on ${what}`);
+  }
+  if (h.target_type === 'assignment' && prev.label !== p.label) out.push(`${who} renamed ${what} (was "${historyText(prev.label)}")`);
+  return out;
+}
+async function syncLoadHistory(more) {
+  const h = syncUI.history || (syncUI.history = { items: [], next: null, loaded: false, error: '' });
+  try {
+    const r = await window.api.sync.history(more ? h.next : undefined);
+    h.items = more ? h.items.concat(r.items) : r.items;
+    h.next = r.has_more ? r.next_before : null; h.error = '';
+  } catch (e) { h.error = e && e.message ? e.message : 'History could not be loaded.'; }
+  h.loaded = true;
+  if (state.view === 'account') syncPaint();
+}
+function syncHistoryHtml() {
+  const h = syncUI.history;
+  if (!syncAvailable() || !h) return '';
+  const rows = h.items.flatMap((it) => historyLines(it).map((t) => `<li>${esc(t)} <span class="hint">— ${esc(fmtTime(it.created_at))}</span></li>`));
+  return `<section class="card sync-card" aria-labelledby="syncHistTitle"><h3 id="syncHistTitle">History</h3>
+    ${h.error ? `<p class="note err">${esc(h.error)}</p>` : ''}
+    ${rows.length ? `<ul class="sync-history">${rows.join('')}</ul>` : `<p class="hint">${h.loaded ? 'No changes yet.' : 'Loading…'}</p>`}
+    ${h.next ? '<button id="syncHistMore" class="sm">Show older changes</button>' : ''}</section>`;
+}
 function syncReviewHtml() {
   const disabled = syncBusy() || syncUI.changing ? 'disabled' : '';
   return `${(syncAvailable() ? syncUI.conflicts : []).map((c, i) => `<div class="card sync-panel"><h3>Conflict: ${esc(c.schedule || c.targetType)}</h3>
@@ -365,13 +421,13 @@ function syncRegions() {
   const s = syncUI.status, enabled = syncAccount();
   return { hero: syncHeroHtml(s, enabled), feedback: syncFeedbackHtml(s), auth: enabled ? syncAuthForm(s) : '',
     ...(enabled ? syncDashHtml(s) : { who: '', tiles: '', act: '' }), aside: enabled && state.scheduleRun && !state.busy ? '<p><button id="syncPutAside">Put aside prepared backup</button></p>' : '',
-    team: syncTeamHtml(s, enabled), review: syncReviewHtml() };
+    team: syncTeamHtml(s, enabled), history: syncHistoryHtml(), review: syncReviewHtml() };
 }
 function renderSyncPage(regions = syncRegions()) {
   const region = (name, attrs = '') => `<div data-region="${name}"${attrs}>${regions[name]}</div>`;
   return `<div class="sync-page">${region('hero')}${region('feedback', ' aria-live="polite"')}${region('auth')}
     <section class="card sync-card sync-dash" aria-labelledby="syncUser">${region('who')}${region('tiles')}${region('act')}</section>
-    ${region('aside')}${region('team')}${region('review')}</div>`;
+    ${region('aside')}${region('history')}${region('team')}${region('review')}</div>`;
 }
 function syncPaint() {
   const regions = syncRegions();
@@ -440,7 +496,7 @@ function syncSubmitAuth(form) {
   const mode = form.dataset.form;
   const values = { name: $('syncName')?.value || '', email: $('syncEmail').value, password: $('syncPassword').value };
   if (!syncShowErrors(['syncName', 'syncEmail', 'syncPassword'], syncCheckForm(mode, values))) return;
-  if (mode === 'signin') return syncAct('syncSignIn', async () => { await syncTransition(() => window.api.sync.signIn(values.email, values.password)); syncUI.draftEmail = ''; }, 'syncUser');
+  if (mode === 'signin') return syncAct('syncSignIn', async () => { await syncTransition(() => window.api.sync.signIn(values.email, values.password)); syncRememberEmail(values.email); syncUI.draftEmail = ''; }, 'syncUser');
   return syncAct('syncSignUp', async () => {
     const r = await window.api.sync.signUp(values.email, values.password, values.name);
     syncUI.notice = `Account created for ${r.email}. Ask the maintainer to add you to the team, then sign in.`;
@@ -464,6 +520,7 @@ function wireSyncPage() {
   const page = document.querySelector('.sync-page');
   const clicks = {
     syncSignOut: () => syncAct('syncSignOut', () => syncTransition(() => window.api.sync.signOut()), 'syncTitle'),
+    syncHistMore: () => syncLoadHistory(true),
     syncNow: () => syncAct('syncNow', async () => { await scheduleFlush(); await window.api.sync.syncNow(); await syncRefresh(); }, 'syncNow'),
     syncImport: () => syncAct('syncImport', syncImport, 'syncImport'),
     syncPutAside: () => syncAct('syncPutAside', async () => {

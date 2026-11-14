@@ -2572,10 +2572,14 @@ async function detectStructure(src, force = false, overrideRoot = null) {
 
 /* ------------------------------------------------------------ step: cameras */
 
-/** Expected vs received cameras for this session (#23); null without a structure. */
+/**
+ * Expected vs received cameras for this session (#23); null without a structure.
+ * A backup started from the event schedule expects no particular cameras: its
+ * camera folders are made as the cards' clips arrive, so none is "missing".
+ */
 function sessionCheck() {
   const src = primarySource();
-  if (!state.template || !src) return null;
+  if (!state.template || !src || state.scheduleRun) return null;
   return selectionRules.sessionCompleteness(state.template, selected(src), state.assign,
     sessionDate(), state.existingCamCounts);
 }

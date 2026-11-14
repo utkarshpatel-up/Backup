@@ -351,8 +351,8 @@ handle('shell:openFolders', async (_e, paths) => {
 
 // Open groups of folders as tabbed windows — one window per group (destinations
 // in one, camera cards in another), the folders inside it as tabs.
-handle('shell:openFolderGroups', (_e, groups) =>
-  openFolderGroups(groups, shell, process.platform));
+handle('shell:openFolderGroups', (_e, groups, options) =>
+  openFolderGroups(groups, shell, process.platform, options));
 
 handle('settings:get', () => loadSettings());
 handle('settings:set', (_e, patch) => saveSettings(patch));
@@ -363,17 +363,18 @@ const SCHEDULE_IMAGES = ['png', 'jpg', 'jpeg'];
 
 handle('dialog:pickSchedule', async () => {
   const r = await dialog.showOpenDialog(win, {
-    title: 'Choose the event schedule',
-    message: 'Choose the event schedule',   // macOS shows `message`, not `title`
+    title: 'Choose the event schedule (one file, or several pictures and PDFs)',
+    message: 'Choose the event schedule (one file, or several pictures and PDFs)',   // macOS shows `message`, not `title`
     defaultPath: app.getPath('downloads'),
     filters: [
       { name: 'Schedule (picture, PDF, Word, Excel, CSV)',
         extensions: [...SCHEDULE_IMAGES, 'pdf', 'docx', 'xlsx', 'xlsm', 'csv'] },
       { name: 'All files', extensions: ['*'] },
     ],
-    properties: ['openFile'],
+    // Several pictures or PDFs (a poster sent as two photos) read as one schedule.
+    properties: ['openFile', 'multiSelections'],
   });
-  return r.canceled ? null : r.filePaths[0];
+  return r.canceled || !r.filePaths.length ? null : r.filePaths;
 });
 
 handle('dialog:saveXlsx', async (_e, defaultName, title) => {

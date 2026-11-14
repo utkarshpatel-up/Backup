@@ -781,7 +781,7 @@
   /**
    * The session folder a structure zip would carry for this row:
    * Formal   'NN City Activity Event Topic E2. Dt-17-Oct-26'
-   * Informal 'NN City Topic Dt-17-Oct-26'
+   * Informal 'NN City Event Topic Dt-17-Oct-26'
    * Activity and event are left out when 'General' or already in the topic. NN
    * numbers the session within its folder and is left off when the folder has
    * one session (a lone informal session is then session 1, as the drive scan reads it).
@@ -791,18 +791,35 @@
     const topic = String(s.topic || '').trim();
     const parts = [];
     if (s.city && !norm(topic).startsWith(norm(s.city))) parts.push(s.city);
+    const ev = (s.events || [])[0];
+    const event = ev && ev !== 'General' && !has(topic, ev) ? ev : '';
     if (s.type === 'Formal') {
       if (s.activity && s.activity !== 'General' && !has(topic, s.activity)) parts.push(s.activity);
-      const ev = (s.events || [])[0];
-      if (ev && ev !== 'General' && !has(topic, ev)) parts.push(ev);
+      if (event) parts.push(event);
       if (topic) parts.push(topic);
       parts.push(`${session}.`);
+    } else if (topic) {
+      // 'Adalaj Diwali Pujyashree's Informal Satsang with Sankul': the event
+      // names what the informal recording was part of.
+      if (event) parts.push(event);
+      parts.push(topic);
     } else {
-      parts.push(topic || (s.events || [])[0] || 'Informal');
+      parts.push(ev || 'Informal');
     }
     const [y, m, d] = String(sessionDay(s)).split('-');
     const prefix = lead ? `${pad2(lead)} ` : '';
-    return safeName(`${prefix}${parts.join(' ')} Dt-${d}-${MON3[+m - 1]}-${y.slice(2)}`);
+    return safeName(`${prefix}${shortEvents(parts.join(' '))} Dt-${d}-${MON3[+m - 1]}-${y.slice(2)}`);
+  }
+
+  // Events written short in folder names, to keep the names short: in the event
+  // and in the topic alike, however they are spelled ("Guru Purnima", "Janmajayanti").
+  const SHORT_EVENTS = [
+    [/\bguru[\s-]*purnima\b/gi, 'GP'],
+    [/\bjanma[\s-]*jayanti\b/gi, 'JJ'],
+    [/\bpran[\s-]*prati(?:shtha|stha|shta|sta)\b/gi, 'PP'],
+  ];
+  function shortEvents(text) {
+    return SHORT_EVENTS.reduce((t, [re, short]) => t.replace(re, short), String(text));
   }
 
   /**
@@ -837,6 +854,35 @@
       });
     }
     return out;
+  }
+
+  /**
+   * A new schedule row copied from a report entry: its type, author, format,
+   * place, topic, events, languages and remarks, and its camera count as the
+   * row's camera folders. Not its date (the caller's `date`), folder number,
+   * duration or clip count — those belong to the new session. Its M/E is kept
+   * as the half of the day; the number itself is worked out on the schedule.
+   */
+  function sessionFromRecord(rec, key, date) {
+    const list = (v) => (Array.isArray(v) ? v : String(v ?? '').split(','))
+      .map((x) => String(x).trim()).filter(Boolean);
+    const type = /^informal$/i.test(String(rec.type || '').trim()) ? 'Informal' : 'Formal';
+    const dayHalf = /^([ME])\d*$/i.exec(String(rec.session || '').trim());
+    const cams = Number(String(rec.cameras ?? '').trim());
+    return {
+      key, include: true, date, start: null, end: null,
+      hint: type === 'Formal' && dayHalf ? dayHalf[1].toUpperCase() : null,
+      type, activity: String(rec.activity || '').trim(), place: String(rec.place || '').trim(),
+      city: String(rec.city || '').trim(), topic: String(rec.topic || '').trim(),
+      events: list(rec.events), languages: list(rec.languages),
+      author: String(rec.author || '').trim(), format: String(rec.format || '').trim(),
+      remarks: String(rec.remarks || '').trim(),
+      duration: '', clips: '', cameras: '', folder: null, session: null,
+      camPlan: Number.isInteger(cams) && cams > 0 && String(rec.cameras).trim() !== '' ? cams : null,
+      backedUp: null, title: '', subtitle: '', placeText: '',
+      source: `Copied from the report — ${rec.id || 'an entry'}`,
+      flags: { date: `Copied from ${rec.id || 'the report'} — set this session's date.` },
+    };
   }
 
   /* --------------------------------------------------------- checks */
@@ -1423,7 +1469,7 @@
   return { sortByRaw, COLUMNS, findDates, findTime, cleanTitle, similarity, readRows, classify,
            draftSessions, assignNumbers, masterId, sheetRows, fmtDuration, applyScan,
            learn, toIndian, fromIndian, sessionDay, half, camsFor, jobFolderName,
-           sessionFolderName, folderPlan, check, parseCities, findCity, cityOf, geolocation,
+           sessionFolderName, folderPlan, sessionFromRecord, check, parseCities, findCity, cityOf, geolocation,
            parseReport, reportSheet, eventPartners, scheduleRecords, seriesOf, mergeReport, findGaps, filterReport,
            reportDate, TITLE_RULES, PLACE_RULES };
 });

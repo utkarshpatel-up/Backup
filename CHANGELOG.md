@@ -4,6 +4,25 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.0
+
+- **Team server.** No new server files in this version, but the team server needs the files from 1.10.0 or later, or entries with Remarks are refused.
+- **Schedules with dark cells are read.** A schedule whose dates or title sit on a dark (navy or maroon) background, such as the JJ 119 Anand PDF, came out empty. It is now read in full, from the PDF or from a picture saved from it.
+- **Several files as one schedule.** Choose or drop several pictures and PDFs at once; they are read together into one schedule.
+- **Event in Informal folder names.** A backup started from the event schedule now names an Informal session folder with its event, for example `Adalaj Diwali Pujyashree's Informal Satsang with Sankul Dt-09-Nov-26`.
+- **Shorter names for three events.** Gurupurnima, Janma Jayanti and Pranpratishtha are written GP, JJ and PP in folder and clip names. The report and the sheet keep the full words.
+- **No empty Cam-01 folders.** A backup started from the event schedule makes a camera folder only when that camera's clips are copied, for Formal and Informal.
+- **Removing the structure stops a schedule backup in Formal too**, as it already did in Informal.
+- **Filter and sort the event schedule.** Every column has a filter box under its header, and clicking a header sorts by it (again to reverse, a third time for the schedule's own order). Only what is shown changes.
+- **Ctrl+D, as in Excel.** In the event schedule and the report, Ctrl+D (Cmd+D on a Mac) fills a cell from the cell above.
+- **Schedule titles.** Give a schedule your own title, at the top of the open schedule or in Past schedules. It is shared with the team; leave it empty to use the file name.
+- **Copy a report entry to the event schedule** with the ⧉ button by its Raw Video ID. The date, folder number, duration and number of clips are not copied; set the date on the new row.
+- **Suggestions when correcting the report.** The edit box offers the values already in the report, as the event schedule does.
+- **Faster typing with a team account.** After each entry is saved, only the changed rows are redrawn instead of the whole page, so the event schedule and the report no longer freeze for a moment after every entry.
+- **Remarks on re-import.** Importing the report file to the team again fills in empty fields, such as Remarks, on entries the team already has. Values that are already filled in, and corrected (orange) cells, are kept, and no conflicts are made.
+- **Camera cards open sorted by Type** (by Kind on a Mac) when you open them after a copy.
+- **Slim scrollbars** that follow the light or dark theme.
+
 ## 1.10.1
 
 - **Update the team server first.** Copy the new `server/pb_hooks` files to the PocketBase server and restart it before anyone uses this version. With the old server files, corrected (orange) report cells stay on the computer that made them and never reach the others.

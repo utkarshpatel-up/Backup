@@ -224,15 +224,29 @@ async function showReport() {
 
 /** Every record: existing data, then each schedule's ticked rows over it. */
 let reportMemo = null;
+// Each schedule's report rows, by that schedule's content (see reportRecords).
+const reportItemMemo = { cities: null, byKey: new Map() };
+
 function reportRecords() {
   const r = reportState();
   const cities = scheduleCities();
   const items = ((state.schedules && state.schedules.items) || []).filter((item) => !item.busy);
   // Schedule rows are edited in place, so the memo is keyed by their content, not identity.
-  const key = JSON.stringify(items.map((item) => [item.sessions, item.starts, item.file])) + `|${reportEditRev}`;
+  // Each schedule's rows are kept by that content too: a change to one schedule (or to
+  // the existing data alone, as a teammate's correction) works out only what changed.
+  const keys = items.map((item) => JSON.stringify([item.sessions, item.starts, item.file]));
+  const key = keys.join('|') + `|${reportEditRev}`;
   if (reportMemo && reportMemo.existing === r.existing && reportMemo.cities === cities && reportMemo.key === key) return reportMemo.value;
+  if (reportItemMemo.cities !== cities) { reportItemMemo.cities = cities; reportItemMemo.byKey = new Map(); }
+  const nextByKey = new Map();
   const scheduled = [];
-  for (const item of items) scheduled.push(...SCHEDULE.scheduleRecords(item.sessions, item.starts, cities, scheduleRange(item)));
+  items.forEach((item, i) => {
+    const k = `${keys[i]}|${scheduleRange(item)}`;
+    const rows = reportItemMemo.byKey.get(k) || SCHEDULE.scheduleRecords(item.sessions, item.starts, cities, scheduleRange(item));
+    nextByKey.set(k, rows);
+    scheduled.push(...rows);
+  });
+  reportItemMemo.byKey = nextByKey;
   const existing = (r.existing || []).map((rec) => (r.edits[rec.id] ? { ...rec, ...r.edits[rec.id], edited: new Set(Object.keys(r.edits[rec.id])) }
     : rec.edited ? { ...rec, edited: new Set(Array.isArray(rec.edited) ? rec.edited : Object.keys(rec.edited)) } : rec));
   const all = SCHEDULE.mergeReport(existing, scheduled);
@@ -279,6 +293,7 @@ function reportRegions() {
   }
   const width = REPORT_COLUMNS.length + 2;
   const team = typeof syncAccount === 'function' && syncAccount();
+  reportRegions.page = page;   // the listed records, for the Copy buttons
   const rows = page.flatMap((rec, i) => {
     // Schedule rows are blue; one that replaces an entry already in the existing
     // data (same ID) is purple and labelled, so it can't be taken for a new one.
@@ -293,12 +308,13 @@ function reportRegions() {
     const row = `<tr data-id="${esc(rec.id)}" class="${both ? 'rep-both' : rec.source === 'schedule' ? 'rep-sch' : ''}">
       <td class="fz rz1 mono${edited ? ' rep-edit-id' : ''}" title="${esc(rec.source === 'schedule'
         ? `From the event schedule ${rec.schedule}${both ? '. The existing data has an entry with this ID too; this row shows the version from the schedule.' : ''}${rec.backedUp ? ' · backed up' : ''}`
-        : edited ? 'Existing data, corrected (orange cells)' : 'Existing data')}"><div class="rep-id">${idText}${tag}</div></td>
+        : edited ? 'Existing data, corrected (orange cells)' : 'Existing data')}"><div class="rep-id">${idText}${tag}<button type="button"
+          class="rep-copy" data-copy="${i}" title="Copy to the event schedule">⧉</button></div></td>
       <td class="fz rz2">${esc(rec.folder ?? '')}</td>
       ${REPORT_COLUMNS.map(([k]) => {
         const v = reportValue(rec, k);
         const canEdit = rec.source !== 'schedule' && REPORT_EDITABLE.has(k);
-        return `<td class="c-${k}${rec.edited?.has(k) ? ' rep-edit' : ''}${canEdit ? ' rep-ed' : ''}" data-k="${k}"${String(v).length > 20 ? ` title="${esc(v)}"` : ''}>${esc(v)}</td>`;
+        return `<td class="c-${k}${rec.edited?.has(k) ? ' rep-edit' : ''}${canEdit ? ' rep-ed' : ''}" data-k="${k}"${canEdit ? ' tabindex="-1"' : ''}${String(v).length > 20 ? ` title="${esc(v)}"` : ''}>${esc(v)}</td>`;
       }).join('')}</tr>`;
     return [row, ...(gapAt.get(i) || []).map((t) => `<tr class="rep-gap"><td colspan="${width}">⚠ ${esc(t)}</td></tr>`)];
   });
@@ -405,8 +421,26 @@ function reportPaint() {
   });
 }
 
+/** The same column's cell in the entry listed above `td` (gap notes skipped). */
+function reportCellAbove(td) {
+  let tr = td.parentElement.previousElementSibling;
+  while (tr && !tr.dataset.id) tr = tr.previousElementSibling;
+  return tr ? tr.querySelector(`td[data-k="${CSS.escape(td.dataset.k)}"]`) : null;
+}
+
+/** Put the focus back on a cell after the table redraws, ready for the next Ctrl+D. */
+function reportRefocus(id, k) {
+  setTimeout(() => {
+    const cell = document.querySelector(`.rep-table tr[data-id="${CSS.escape(id)}"] td[data-k="${CSS.escape(k)}"]`);
+    if (cell) cell.focus();
+  }, 30);
+}
+
 // Filters that offer the values in the data to pick from.
 const REPORT_LISTS = ['activity', 'country', 'state', 'city', 'place', 'events', 'topic', 'languages', 'author'];
+// Cells whose edit box offers the values already in the report, as the event
+// schedule's boxes do: the filters' lists and a few more. Not the numbers.
+const REPORT_EDIT_LISTS = [...REPORT_LISTS, 'format', 'type', 'session', 'remarks'];
 
 /** The filters' pick-lists: every value in the report (and the city list). */
 function reportDatalists(all) {
@@ -417,7 +451,7 @@ function reportDatalists(all) {
   const extra = { city: cities.map((c) => c.city), state: cities.map((c) => c.state),
     country: cities.map((c) => c.country), activity: SCHEDULE_VOCAB.activities,
     events: SCHEDULE_VOCAB.events, languages: SCHEDULE_VOCAB.languages };
-  for (const k of REPORT_LISTS) setDatalist(`repList_${k}`, pickValues(values(k), extra[k]));
+  for (const k of REPORT_EDIT_LISTS) setDatalist(`repList_${k}`, pickValues(values(k), extra[k]));
 }
 
 /** The two buttons a filter change redraws. */
@@ -439,6 +473,8 @@ function wireReportPage() {
   wireReportButtons($('content'));
   // A blue, purple or orange row's Raw Video ID opens that entry's history.
   document.querySelector('.rep-table tbody')?.addEventListener('click', (e) => {
+    const copy = e.target.closest('button.rep-copy');
+    if (copy) { const rec = (reportRegions.page || [])[Number(copy.dataset.copy)]; if (rec) scheduleCopyRecord(rec); return; }
     const b = e.target.closest('button.rep-hist');
     if (b) showRecordHistory(b.dataset.histType, b.dataset.histKey, b.dataset.histId);
   });
@@ -448,12 +484,36 @@ function wireReportPage() {
     if (!td || td.querySelector('input')) return;
     const id = td.parentElement.dataset.id, k = td.dataset.k, old = td.textContent;
     const input = Object.assign(document.createElement('input'), { className: 'sch-in rep-in', value: old });
+    // The values already in the report drop down as you type, as in the event schedule.
+    if (REPORT_EDIT_LISTS.includes(k)) input.setAttribute('list', `repList_${k}`);
     td.textContent = ''; td.appendChild(input); input.focus(); input.select();
     let done = false;
     // The old text goes back first: a no-op edit repaints nothing, so the cell must not keep the box.
     const finish = (save) => { if (done) return; done = true; td.textContent = old; if (save && input.value !== old) reportEdit(id, k, input.value); };
-    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') finish(true); else if (ev.key === 'Escape') finish(false); });
+    input.addEventListener('keydown', (ev) => {
+      if (isFillDown(ev)) {
+        // Ctrl+D, as in Excel: the cell above's value, saved at once.
+        ev.preventDefault();
+        const above = reportCellAbove(td);
+        if (!above) { toast('There is no row above to copy from.', 'warn'); return; }
+        input.value = above.textContent;
+        finish(true);
+        reportRefocus(id, k);
+      } else if (ev.key === 'Enter') finish(true);
+      else if (ev.key === 'Escape') finish(false);
+    });
     input.addEventListener('blur', () => finish(true));
+  });
+  // Ctrl+D on a clicked (not opened) cell fills it from the cell above too.
+  document.querySelector('.rep-table tbody')?.addEventListener('keydown', (e) => {
+    const td = e.target.closest && e.target.closest('td.rep-ed');
+    if (!td || e.target !== td || !isFillDown(e)) return;
+    e.preventDefault();
+    const above = reportCellAbove(td);
+    if (!above) { toast('There is no row above to copy from.', 'warn'); return; }
+    const id = td.parentElement.dataset.id, k = td.dataset.k;
+    if (above.textContent !== td.textContent) reportEdit(id, k, above.textContent);
+    reportRefocus(id, k);
   });
   $('repExported')?.addEventListener('click', () => window.api.reveal(r.exported));
   // Every filter applies by itself: menus and picked values at once, typing

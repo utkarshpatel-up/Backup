@@ -72,7 +72,7 @@ contextBridge.exposeInMainWorld('api', {
   open: (p) => ipcRenderer.invoke('shell:open', p),
   openFrappe: () => ipcRenderer.invoke('shell:openFrappe'),
   openFolders: (paths) => ipcRenderer.invoke('shell:openFolders', paths),
-  openFolderGroups: (groups) => ipcRenderer.invoke('shell:openFolderGroups', groups),
+  openFolderGroups: (groups, options) => ipcRenderer.invoke('shell:openFolderGroups', groups, options),
 
   setBusy: (busy) => ipcRenderer.invoke('app:setBusy', busy),
   getSettings: () => ipcRenderer.invoke('settings:get'),

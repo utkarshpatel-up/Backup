@@ -927,6 +927,40 @@ test('explicit local import previews parsed report records without queuing and k
   assert.equal(fs.readFileSync(path.join(legacy,'settings.json'),'utf8'),original);
 });
 
+test('importing the sheet again fills empty fields (Remarks) on records the team has, without conflicts or overwriting', opts, async () => {
+  const server = world(), legacy = tmpDir();
+  const a = await device(server, 'op1@t.invalid', { legacyDir: legacy });
+  const base = (i, extra = {}) => ({ id: `DD-F-HD-${2400 + i}-M`, folder: 2400 + i, session: 'M', type: 'Formal', author: 'DD', format: 'HD',
+    date: '2026-10-01', topic: `Topic ${i}`, events: ['Shibir'], languages: ['Gujarati'], ...extra });
+  // First import: an older sheet, before the Remarks column.
+  assert.equal(a.importLocal({ confirm: true, report: [base(1), base(2), base(3)] }).ok, true);
+  await a.syncNow();
+  // A teammate corrects record 2's topic in the team's report.
+  const b = await device(server, 'op2@t.invalid');
+  const v = b.view();
+  const fixed = v.data.report.map((r) => (r.id === base(2).id ? { ...r, topic: 'Corrected topic', edited: { topic: 'Topic 2' } } : r));
+  assert.equal(b.commit({ baseRev: v.rev, snapshot: { ...v.data, report: fixed } }).ok, true);
+  await b.syncNow();
+  await a.syncNow();
+  // The newer download: remarks on 1 and 2; record 2 still has the old topic; a new record 4.
+  const sheet = [base(1, { remarks: 'Minor shaking in cam-3' }), base(2, { remarks: 'Audio low' }), base(3), base(4, { remarks: 'New one' })];
+  const preview = a.importLocal({ confirm: false, report: sheet });
+  assert.equal(preview.ok, true);
+  assert.equal(preview.counts.targets, 3, 'two remarks to fill and one new record; record 3 is unchanged');
+  assert.equal(a.importLocal({ confirm: true, report: sheet }).ok, true);
+  for (let i = 0; i < 5 && a.status().pending; i += 1) await a.syncNow();
+  assert.equal(a.status().pending, 0);
+  assert.equal(a.conflicts().length, 0, 'filling an empty field is no conflict');
+  const c = await device(server, 'admin@t.invalid');
+  const got = Object.fromEntries(c.view().data.report.map((r) => [r.id, r]));
+  assert.equal(got[base(1).id].remarks, 'Minor shaking in cam-3');
+  assert.equal(got[base(2).id].remarks, 'Audio low');
+  assert.equal(got[base(2).id].topic, 'Corrected topic', "the team's correction is kept, not the sheet's old value");
+  assert.deepEqual(got[base(2).id].edited, { topic: 'Topic 2' }, 'and it stays orange');
+  assert.equal(got[base(4).id].remarks, 'New one');
+  assert.equal(got[base(3).id].remarks, undefined);
+});
+
 test('a 17,000-record existing-data sheet imports in batches and reaches another device; duplicate IDs keep the last', opts, async () => {
   const server = world(), legacy = tmpDir();
   const a = await device(server, 'op1@t.invalid', { legacyDir: legacy });

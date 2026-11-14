@@ -81,5 +81,9 @@
     "electron-updater": "^6.8.11",
     "pdfjs-dist": "3.11.174",
     "tesseract.js": "7.0.0"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true,
+    "tesseract.js@7.0.0": true
   }
 }

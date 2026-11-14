@@ -376,3 +376,13 @@ test('session completeness stays out of the way without camera folders', () => {
   assert.equal(rules.sessionCompleteness(null, [], {}), null);
   assert.equal(rules.sessionCompleteness({ tree: ['Clips for Insert'] }, [], {}), null);
 });
+
+test('a schedule backup makes only the camera folders its clips go into', () => {
+  const formal = ['Clips for Insert', 'Clips for Insert/Cam-01', 'Clips for Insert/Cam-02', 'Clips for Insert/Cam-03', 'Notes'];
+  assert.deepEqual(rules.usedCamDirs(formal, { 2: ['/card/A001.MP4'], 3: [] }),
+    ['Clips for Insert', 'Clips for Insert/Cam-02', 'Notes']);
+  // No clips yet: no camera folders, and no empty Clips for Insert either.
+  assert.deepEqual(rules.usedCamDirs(formal, {}), ['Notes']);
+  // Informal camera folders sit in the session folder; a named one is matched by number.
+  assert.deepEqual(rules.usedCamDirs(['Cam-01', 'Cam-02 (Drone)'], { 2: ['/card/D.MP4'] }), ['Cam-02 (Drone)']);
+});

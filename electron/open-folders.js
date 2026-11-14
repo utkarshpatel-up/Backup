@@ -53,10 +53,11 @@ function sendKeysEscape(text) {
 // The path typed into the address bar needs per-path SendKeys escaping, so each
 // path is pre-escaped in JS and carried alongside its raw form (raw for launching
 // the first window and matching it in the shell window list).
-function windowsScriptFull(groups) {
+function windowsScriptFull(groups, sortByType = []) {
   const json = JSON.stringify(
     groups.map((g) => g.map((p) => ({ raw: p, keys: sendKeysEscape(p) })))
   ).replace(/'/g, "''");
+  const sortJson = JSON.stringify(sortByType).replace(/'/g, "''");
   return `
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
@@ -117,12 +118,33 @@ foreach ($g in $groups) {
   }
   $k++
 }
+
+# The camera-card folders are listed by Type, so the clips (one kind) sit
+# together apart from the cards' other files. Every window and tab is in the
+# shell's window list; a view that refuses is simply left as it was.
+$sortPaths = @(ConvertFrom-Json '${sortJson}') | ForEach-Object { Norm $_ }
+# A folder still loading puts its saved sort back over ours, so look again and
+# set it once more until every card folder shows it.
+$byType = 'prop:System.ItemTypeText;System.ItemNameDisplay;'
+for ($try = 0; $sortPaths.Count -and $try -lt 4; $try++) {
+  Start-Sleep -Milliseconds 700
+  $pending = 0
+  foreach ($w in $shell.Windows()) {
+    try {
+      if ($sortPaths -icontains (Norm $w.Document.Folder.Self.Path) -and $w.Document.SortColumns -ne $byType) {
+        $w.Document.SortColumns = $byType
+        $pending++
+      }
+    } catch {}
+  }
+  if ($pending -eq 0) { break }
+}
 `;
 }
 
-function openWindows(groups) {
+function openWindows(groups, sortByType) {
   return new Promise((resolve) => {
-    const script = windowsScriptFull(groups);
+    const script = windowsScriptFull(groups, sortByType);
     const file = path.join(os.tmpdir(),
       `av-open-${Date.now()}-${Math.random().toString(36).slice(2)}.ps1`);
     try { fs.writeFileSync(file, script, 'utf8'); }
@@ -148,7 +170,8 @@ function applescriptQuote(p) {
 const MAC_MIN_WIN_W = 476;
 const MAC_MIN_WIN_H = 280;
 
-function macScript(groups) {
+function macScript(groups, sortByType = []) {
+  const byType = new Set(sortByType);
   // macOS Finder has no scriptable way to open a folder as a TAB, and the Cmd+T
   // keystroke workaround is unreliable (it needs Accessibility permission and the
   // new tab lands on the wrong folder). So on the Mac we TILE each folder as its
@@ -169,7 +192,10 @@ set topM to 44
 `;
   gs.forEach((g, k) => {
     const paths = g.map((p) => `"${applescriptQuote(p)}"`).join(', ');
+    // Camera-card folders open in list view sorted by Kind, the clips together.
+    const kinds = g.map((p) => (byType.has(p) ? 'true' : 'false')).join(', ');
     s += `set grpPaths to {${paths}}
+set grpKind to {${kinds}}
 set m to count of grpPaths
 set sliceW to scrW / ${n}
 set maxCols to (sliceW div ${MAC_MIN_WIN_W})
@@ -192,6 +218,12 @@ repeat with j from 0 to (m - 1)
     set w to make new Finder window
     set target of w to POSIX file (item (j + 1) of grpPaths)
     set bounds of w to {winL, winT, winR, winB}
+    if item (j + 1) of grpKind then
+      try
+        set current view of w to list view
+        set sort column of list view options of w to column id kind column of list view options of w
+      end try
+    end if
   end tell
   delay 0.12
 end repeat
@@ -200,9 +232,9 @@ end repeat
   return s;
 }
 
-function openMac(groups) {
+function openMac(groups, sortByType) {
   return new Promise((resolve) => {
-    execFile('osascript', ['-e', macScript(groups)], { timeout: 60000 },
+    execFile('osascript', ['-e', macScript(groups, sortByType)], { timeout: 60000 },
       (err) => resolve(!err));
   });
 }
@@ -219,19 +251,23 @@ async function fallbackOpen(groups, shell) {
 
 /**
  * Open each group as one tabbed file-manager window.
- * groups: array of arrays of absolute folder paths.
+ * groups: array of arrays of absolute folder paths. options.sortByType: the
+ * folders among them to list by Type (Kind on the Mac) — the camera cards.
  * Returns { opened, missing } listing the folders that existed / were gone.
  */
-async function openFolderGroups(groups, shell, platform) {
+async function openFolderGroups(groups, shell, platform, options = {}) {
   const { cleaned, opened, missing } = partitionExisting(groups || []);
   if (!cleaned.length) return { opened, missing };
+  const listed = new Set(opened);
+  const sortByType = [...new Set((options && options.sortByType) || [])]
+    .filter((p) => typeof p === 'string' && listed.has(p));
   let ok = false;
   try {
-    if (platform === 'win32') ok = await openWindows(cleaned);
-    else if (platform === 'darwin') ok = await openMac(cleaned);
+    if (platform === 'win32') ok = await openWindows(cleaned, sortByType);
+    else if (platform === 'darwin') ok = await openMac(cleaned, sortByType);
   } catch { ok = false; }
   if (!ok) await fallbackOpen(cleaned, shell);
   return { opened, missing };
 }
 
-module.exports = { openFolderGroups };
+module.exports = { openFolderGroups, windowsScriptFull, macScript };

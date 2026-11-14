@@ -304,6 +304,31 @@ test('table cells are found from ruled lines, including a merged cell', () => {
   assert.notEqual(rows[0][1], rows[1][1]);
 });
 
+test('a dark filled column is a cell, merged until a black line divides it', () => {
+  // 300x260 white picture: a navy date column (x 11-99) beside two light columns,
+  // three rows. The first two rows share one navy cell (navy under the row line);
+  // a black line in the navy column starts the third row's own navy cell. A navy
+  // title band sits across the top.
+  const W = 300, H = 260;
+  const data = new Uint8Array(W * H * 4).fill(255);
+  const paint = (x, y, v) => { const i = (y * W + x) * 4; data[i] = data[i + 1] = data[i + 2] = v; };
+  for (let y = 10; y <= 40; y++) for (let x = 10; x < 290; x++) paint(x, y, 53);   // title band
+  for (let y = 41; y <= 250; y++) for (let x = 11; x < 100; x++) paint(x, y, 53);  // date column
+  for (let x = 30; x < 80; x++) for (let y = 70; y < 80; y++) paint(x, y, 250);    // light lettering
+  for (const y of [10, 40, 250]) for (let x = 10; x < 290; x++) paint(x, y, 0);
+  for (let x = 100; x < 290; x++) paint(x, 110, 0);                                 // row line, light columns only
+  for (let x = 10; x < 290; x++) paint(x, 180, 0);                                  // black line across all
+  for (const x of [10, 100, 200, 289]) for (let y = 40; y <= 250; y++) paint(x, y, 0);
+  const rows = findCells({ width: W, height: H, data, order: 'rgba' });
+  assert.equal(rows.length, 4, 'title band plus three rows');
+  assert.ok(rows[0].some((c) => c.dark && c.x1 - c.x0 > 200), 'the title band is one dark cell');
+  const date = (r) => rows[r].find((c) => c.dark);
+  assert.ok(date(1) && date(2) && date(3), 'every row has its navy date cell');
+  assert.equal(date(1), date(2), 'navy under the row line keeps one date cell');
+  assert.notEqual(date(2), date(3), 'the black line divides the navy column');
+  assert.equal(rows[1].filter((c) => !c.dark).length, 2, 'the two light columns stay cells');
+});
+
 const row = (key, over = {}) => ({ key, include: true, type: 'Formal', date: '2026-10-17', start: '21:00',
   author: 'DD', format: 'HD', activity: 'General', place: 'Dadanagar Hall', city: 'Adalaj', duration: '1h 2m 3s',
   topic: 'General Satsang', events: ['Soneri Satsang'], languages: ['Gujarati'], flags: {}, ...over });
@@ -339,7 +364,7 @@ test('a row gives the folders a structure zip would carry', () => {
   // One session alone in its folder carries no number; Informal has no M/E.
   const informal = [row(3, { type: 'Informal', topic: 'Gurupurnima Darshan', events: ['Darshan'] })];
   const p = S.folderPlan(informal, { informal: 2620 }).get(3);
-  assert.equal(p.sessionName, 'Adalaj Gurupurnima Darshan Dt-17-Oct-26');
+  assert.equal(p.sessionName, 'Adalaj GP Darshan Dt-17-Oct-26');
   assert.equal(p.id, 'DD-I-HD-2620-1');
   assert.equal(p.cams, 1);
 });
@@ -459,4 +484,54 @@ test('sortByRaw orders by folder number, numberless rows last and stable', () =>
   assert.equal(keys('asc'), 'caebd');
   assert.equal(keys('desc'), 'aecbd');
   assert.equal(rows[0].k, 'a');
+});
+
+test('an informal session folder names its event before the topic', () => {
+  const informal = (over) => row(1, { type: 'Informal', date: '2026-11-09', city: 'Adalaj', ...over });
+  assert.equal(S.sessionFolderName(informal({ topic: "Pujyashree's Informal Satsang with Sankul", events: ['Diwali'] }), '1', 0),
+    "Adalaj Diwali Pujyashree's Informal Satsang with Sankul Dt-09-Nov-26");
+  // Left out when General, or already in the topic.
+  assert.equal(S.sessionFolderName(informal({ topic: 'New Year Darshan', events: ['General'] }), '1', 0),
+    'Adalaj New Year Darshan Dt-09-Nov-26');
+  assert.equal(S.sessionFolderName(informal({ topic: 'Diwali Informal Recording', events: ['Diwali'] }), '1', 0),
+    'Adalaj Diwali Informal Recording Dt-09-Nov-26');
+  // No topic: the event alone names it, as before.
+  assert.equal(S.sessionFolderName(informal({ topic: '', events: ['Bhai Beej'] }), '2', 2),
+    '02 Adalaj Bhai Beej Dt-09-Nov-26');
+});
+
+test('a report entry copies to a new schedule row without its date, folder, duration or clips', () => {
+  const rec = { id: 'DD-F-HD-3061-E', folder: 3061, session: 'E', type: 'Formal', author: 'DD', format: 'HD',
+    date: '2026-11-10', duration: '2h 9m 33s', clips: '1', cameras: '2', activity: 'Hall', place: 'Dadanagar Hall',
+    city: 'Adalaj', topic: 'General Satsang', events: ['Diwali', 'Bhakti'], languages: 'Gujarati, Hindi', remarks: 'Note' };
+  const row = S.sessionFromRecord(rec, 9, '2026-11-14');
+  assert.equal(row.key, 9);
+  assert.equal(row.date, '2026-11-14');
+  assert.equal(row.folder, null);
+  assert.equal(row.session, null, 'numbered on the schedule');
+  assert.equal(row.hint, 'E', 'the evening stays the evening');
+  assert.equal(row.duration, '');
+  assert.equal(row.clips, '');
+  assert.equal(row.camPlan, 2, 'its cameras become the camera folders');
+  assert.deepEqual(row.events, ['Diwali', 'Bhakti']);
+  assert.deepEqual(row.languages, ['Gujarati', 'Hindi']);
+  assert.deepEqual([row.type, row.topic, row.place, row.city, row.remarks],
+    ['Formal', 'General Satsang', 'Dadanagar Hall', 'Adalaj', 'Note']);
+  assert.ok(row.flags.date, 'the date is flagged to be set');
+  assert.equal(S.sessionFromRecord({ ...rec, type: 'Informal', session: '2' }, 1, '2026-11-14').hint, null);
+});
+
+test('Gurupurnima, Janma Jayanti and Pranpratishtha are written short in folder names', () => {
+  const formal = (over) => row(1, { date: '2026-07-21', city: 'Adalaj', activity: 'General', ...over });
+  assert.equal(S.sessionFolderName(formal({ events: ['Gurupurnima'], topic: 'General Satsang' }), 'E', 0),
+    'Adalaj GP General Satsang E. Dt-21-Jul-26');
+  assert.equal(S.sessionFolderName(formal({ events: ['Janma Jayanti'], topic: 'Janmajayanti Day Darshan' }), 'M', 0),
+    'Adalaj JJ Day Darshan M. Dt-21-Jul-26');
+  assert.equal(S.sessionFolderName(formal({ events: ['Pranpratishtha'], topic: 'Pran Pratishtha of Simandhar Swami' }), 'M', 0),
+    'Adalaj PP of Simandhar Swami M. Dt-21-Jul-26');
+  assert.equal(S.sessionFolderName(row(1, { type: 'Informal', date: '2026-07-21', city: 'Adalaj',
+    events: ['Gurupurnima'], topic: 'Guru Purnima Day Pujan' }), '1', 0), 'Adalaj GP Day Pujan Dt-21-Jul-26');
+  // Other events, and the topic text in the sheet itself, are left as they are.
+  assert.equal(S.sessionFolderName(formal({ events: ['Diwali'], topic: 'General Satsang' }), 'E', 0),
+    'Adalaj Diwali General Satsang E. Dt-21-Jul-26');
 });

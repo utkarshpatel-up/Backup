@@ -33,7 +33,7 @@ function syncTeamSettings(patch) {
 }
 function syncClear() {
   syncUI.epoch++; syncUI.rev = null; syncUI.team = {}; syncUI.deleted = [];
-  syncUI.conflicts = []; syncUI.reviews = []; syncUI.dirty = false; syncUI.viewSig = null;
+  syncUI.conflicts = []; syncUI.reviews = []; syncUI.dirty = false; syncUI.viewSig = null; syncUI.citiesSig = null;
   clearTimeout(scheduleRememberTimer); scheduleRememberTimer = null;
   state.schedules = { openId: null, items: [] }; state.schedule = null;
   state.cities = null; state.citySource = null; state.report = null; syncUI.teamCities = false;
@@ -84,13 +84,44 @@ async function syncRefresh() {
     if (sig === syncUI.viewSig) { syncUI.waiting = false; if (state.view === 'account') render(); return; }
     syncUI.viewSig = sig;
     syncUI.team = view.data.team || {}; syncUI.deleted = view.data.deleted || [];
-    state.schedules = view.data.schedules;
     const settings = syncSettings();
+    const before = state.schedules;
+    state.schedules = view.data.schedules;
     state.schedules.items.forEach((s) => scheduleHydrate(s, settings));
-    state.schedule = state.schedules.items.find((s) => s.id === state.schedules.openId) || null;
+    // Keep the open schedule's object when it is the same assignment: the page then
+    // redraws only the rows that changed (an echo of this computer's own edit, or one
+    // row a teammate changed) instead of the whole grid, and the focus stays put.
+    const open = state.schedules.items.findIndex((s) => s.id === state.schedules.openId);
+    const kept = open >= 0 && state.schedule && state.schedule.id === state.schedules.items[open].id
+      && before && before.items.includes(state.schedule) ? state.schedule : null;
+    if (kept) {
+      const fresh = state.schedules.items[open];
+      // What is on screen stays as it was (the "what was read" panel, the last undo);
+      // everything else comes from the team's data, as a fresh object would.
+      const screen = Object.fromEntries(['showSource', 'undo'].filter((k) => k in kept).map((k) => [k, kept[k]]));
+      for (const k of Object.keys(kept)) if (!(k in fresh)) delete kept[k];
+      Object.assign(kept, fresh, screen);
+      state.schedules.items[open] = kept;
+    }
+    state.schedule = open >= 0 ? state.schedules.items[open] : null;
     // No team list yet: the built-in one (scheduleCities) is used, and not uploaded.
-    syncUI.teamCities = Array.isArray(view.data.cities); state.cities = view.data.cities || null; state.citySource = view.data.citySource;
-    state.report = { file: 'Team cache', existing: view.data.report || [], loading: false, filters: state.report?.filters || {}, columns: state.report?.columns || {}, limit: state.report?.limit || 300 };
+    // Only a different list replaces the one in use: a new one (even the built-in
+    // list parsed again) would make the report work out every row afresh.
+    const citiesSig = JSON.stringify([view.data.cities || null, view.data.citySource || null]);
+    if (citiesSig !== syncUI.citiesSig || !state.cities) {
+      syncUI.citiesSig = citiesSig;
+      state.cities = view.data.cities || null; state.citySource = view.data.citySource;
+    }
+    syncUI.teamCities = Array.isArray(view.data.cities);
+    // The report keeps its object too (filters, columns, how many rows are shown):
+    // only the records are new.
+    if (state.report && state.report.file === 'Team cache') {
+      state.report.existing = view.data.report || [];
+      state.report.loading = false;
+      state.report.error = null;
+    } else {
+      state.report = { file: 'Team cache', existing: view.data.report || [], loading: false, filters: state.report?.filters || {}, columns: state.report?.columns || {}, limit: state.report?.limit || 300 };
+    }
     syncUI.waiting = false;
     render();
   } finally { syncUI.loading = false; }

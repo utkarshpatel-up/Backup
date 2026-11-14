@@ -180,6 +180,25 @@
     return kept;
   }
 
+  /**
+   * The folders to make for a backup started from the event schedule: the
+   * layout without the camera folders no clip goes into. A camera's folder is
+   * made when its card's clips are copied, never as an empty folder ahead of
+   * them (one the operator deletes would only come back on the next copy).
+   * `cams` maps camera number -> clip paths. "Clips for Insert" goes too when
+   * no camera folder is left inside it.
+   */
+  function usedCamDirs(dirs, cams) {
+    const used = new Set(Object.entries(cams || {})
+      .filter(([, paths]) => (paths || []).length).map(([cam]) => Number(cam)));
+    const kept = (dirs || []).filter((entry) => {
+      const match = /(?:^|\/)Cam-(\d+)(?:\s[^/]*)?$/i.exec(entry);
+      return !match || used.has(Number(match[1]));
+    });
+    const insert = kept.some((entry) => /^clips for insert\//i.test(entry));
+    return kept.filter((entry) => insert || entry.toLowerCase() !== 'clips for insert');
+  }
+
   /** A footage-drive scan must not replace the layout supplied by a ZIP template. */
   function cameraCountAfterDetection(template, currentCount, detected, minimum = 3) {
     if (template) return currentCount;
@@ -345,7 +364,7 @@
 
   return { pathKey, isJunkPath, cameraFiles, cameraFilenamePrefix, cameraGroupKey,
            cameraGroups, filterCameraFiles, camsForAssignments, removeCardImports,
-           importedCamCount, informalSetupReady, normalizedTemplateDirs,
+           importedCamCount, informalSetupReady, normalizedTemplateDirs, usedCamDirs,
            cameraCountAfterDetection, occupiedCamNumbers, existingCamCounts,
            entryExitCeremonyClips, cleanSessionName,
            lowestAvailableCams, emptyCamNumbers, unexpectedPlanClips,

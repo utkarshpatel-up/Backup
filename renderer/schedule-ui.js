@@ -113,23 +113,31 @@ function scheduleFlush() {
   return scheduleSaveChain;
 }
 
-async function openSchedule(file) {
-  return typeof syncOperation === 'function' ? syncOperation(() => openScheduleInner(file)) : openScheduleInner(file);
+async function openSchedule(files) {
+  return typeof syncOperation === 'function' ? syncOperation(() => openScheduleInner(files)) : openScheduleInner(files);
 }
-async function openScheduleInner(file) {
+async function openScheduleInner(given) {
   if (state.schedule && state.schedule.busy) return;
   if (state.schedule && !await window.api.confirm({
     message: `Close the schedule ${scheduleRange(state.schedule)} and read a new one?`,
     detail: 'It is kept under Past schedules, with everything in it, until you delete it.',
     confirmLabel: 'Close and continue', danger: false,
   })) return;
-  const path = file || await window.api.pickSchedule();
-  if (!path) return;
+  const picked = given || await window.api.pickSchedule();
+  const files = [].concat(picked || []).filter(Boolean);
+  if (!files.length) return;
+  // A Word, Excel or CSV schedule is a whole table: read it alone. Pictures and
+  // PDFs can come several at a time (a poster sent as two photos, PDF pages).
+  const tables = files.filter((f) => SCHEDULE_TABLES.includes(scheduleExt(f)));
+  if (files.length > 1 && tables.length) {
+    toast('Choose a Word, Excel or CSV schedule on its own; only pictures and PDFs can be read together.', 'warn');
+    return;
+  }
   if (typeof syncAccount === 'function' && syncAccount() && !syncAvailable()) return;
   const settings = typeof syncSettings === 'function' ? syncSettings(await window.api.getSettings().catch(() => ({}))) : await window.api.getSettings().catch(() => ({}));
   const prev = state.schedule;
   const item = scheduleHydrate({
-    id: newScheduleId(), created: new Date().toISOString(), file: path, rows: [], read: null,
+    id: newScheduleId(), created: new Date().toISOString(), file: files[0], files, rows: [], read: null,
     sessions: [], scan: null, saved: null,
     starts: { ...(settings.scheduleStarts || {}) },
     defaults: prev ? { ...prev.defaults } : {},
@@ -160,9 +168,9 @@ async function schedulePdfPages(path) {
   const pages = [];
   for (let n = 1; n <= Math.min(pdf.numPages, 10); n++) {
     const page = await pdf.getPage(n);
-    // About 2000 px wide: the size the poster pictures OCR well at.
     const base = page.getViewport({ scale: 1 });
-    const viewport = page.getViewport({ scale: Math.min(4, Math.max(1, 2000 / base.width)) });
+    // About 3000 px wide: the size the poster pictures OCR well at (2000 px misread "12:00pm").
+    const viewport = page.getViewport({ scale: Math.min(6, Math.max(1, 3000 / base.width)) });
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(viewport.width);
     canvas.height = Math.round(viewport.height);
@@ -180,24 +188,39 @@ function scheduleError(e) {
   return String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 }
 
+function scheduleExt(file) {
+  return String(file).split('.').pop().toLowerCase();
+}
+
+/** The cell rows of one schedule file; `label` prefixes the progress note. */
+async function scheduleFileRows(s, file, label) {
+  const ext = scheduleExt(file);
+  if (SCHEDULE_PICTURES.includes(ext)) {
+    if (label) { s.busy = `Reading ${label}…`; render(); }
+    return (await window.api.ocrScheduleFile(file)).rows;
+  }
+  if (ext === 'pdf') {
+    const rows = [];
+    const pages = await schedulePdfPages(file);
+    for (let i = 0; i < pages.length; i++) {
+      s.busy = `Reading ${label ? `${label}, ` : ''}page ${i + 1} of ${pages.length}…`;
+      render();
+      rows.push(...(await window.api.ocrScheduleImage(pages[i])).rows);
+    }
+    return rows;
+  }
+  if (SCHEDULE_TABLES.includes(ext)) return (await call('schedule_read_table', { path: file })).rows;
+  throw new Error(`Can't read .${ext} files — use a JPG/PNG picture, PDF, Word, Excel or CSV schedule.`);
+}
+
 async function readSchedule() {
   const s = state.schedule;
-  const ext = String(s.file).split('.').pop().toLowerCase();
+  const files = s.files && s.files.length ? s.files : [s.file];
   try {
     let rows = [];
-    if (SCHEDULE_PICTURES.includes(ext)) {
-      rows = (await window.api.ocrScheduleFile(s.file)).rows;
-    } else if (ext === 'pdf') {
-      const pages = await schedulePdfPages(s.file);
-      for (let i = 0; i < pages.length; i++) {
-        s.busy = `Reading page ${i + 1} of ${pages.length}…`;
-        render();
-        rows.push(...(await window.api.ocrScheduleImage(pages[i])).rows);
-      }
-    } else if (SCHEDULE_TABLES.includes(ext)) {
-      rows = (await call('schedule_read_table', { path: s.file })).rows;
-    } else {
-      throw new Error(`Can't read .${ext} files — use a JPG/PNG picture, PDF, Word, Excel or CSV schedule.`);
+    for (let i = 0; i < files.length; i++) {
+      const label = files.length > 1 ? `file ${i + 1} of ${files.length}` : '';
+      rows.push(...await scheduleFileRows(s, files[i], label));
     }
     s.rows = rows;
     s.read = SCHEDULE.readRows(rows);
@@ -420,6 +443,46 @@ function scheduleAddRow(key) {
 }
 
 /**
+ * Copy a report entry into the event schedule as a new session — into the open
+ * schedule, or a new one when none is open. The date, folder number, duration
+ * and clip count are not copied: the row is dated like the schedule (today on a
+ * new one) and flagged so the date is set before its backup.
+ */
+async function scheduleCopyRecord(rec) {
+  return typeof syncOperation === 'function' ? syncOperation(() => scheduleCopyRecordInner(rec)) : scheduleCopyRecordInner(rec);
+}
+async function scheduleCopyRecordInner(rec) {
+  if (state.schedule && state.schedule.busy) return;
+  if (typeof syncAccount === 'function' && syncAccount() && !syncAvailable()) return;
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  let s = state.schedule;
+  if (!s) {
+    const settings = typeof syncSettings === 'function' ? syncSettings(await window.api.getSettings().catch(() => ({}))) : await window.api.getSettings().catch(() => ({}));
+    s = scheduleHydrate({
+      id: newScheduleId(), created: new Date().toISOString(), file: '', rows: [], read: null,
+      sessions: [], scan: null, saved: null, starts: { ...(settings.scheduleStarts || {}) }, defaults: {},
+    }, settings);
+    if (!state.schedules) state.schedules = { openId: null, items: [] };
+    state.schedules.items.unshift(s);
+    state.schedule = s;
+  }
+  scheduleHoldNumbers(s);
+  const days = s.sessions.map((x) => x.date).filter(Boolean).sort();
+  const key = s.sessions.reduce((m, x) => Math.max(m, x.key), 0) + 1;
+  const row = SCHEDULE.sessionFromRecord(rec, key, days.length ? days[days.length - 1] : today);
+  if (!row.author) row.author = s.defaults.author || 'DD';
+  if (!row.format) row.format = s.defaults.format || 'HD';
+  if (typeof syncAccount === 'function' && syncAccount()) row.uid = crypto.randomUUID();
+  s.sessions.push(row);
+  s.saved = null;
+  scheduleRemember();
+  state.view = 'schedule';
+  render();
+  scheduleFocusRow(row.key);
+  toast(`${rec.id || 'The entry'} copied to the event schedule — set its date.`, 'ok');
+}
+
+/**
  * Remove rows from the open schedule. The last removal can be undone (until the
  * next one), so a slip costs nothing; a row that was already backed up asks first.
  */
@@ -459,7 +522,9 @@ function scheduleUndoDelete() {
 }
 
 function scheduleTickAll(on) {
-  for (const row of state.schedule.sessions) row.include = on;
+  // With the column filters on, only the rows shown are ticked or unticked.
+  const shown = new Set(scheduleShownKeys);
+  for (const row of state.schedule.sessions) if (shown.has(row.key)) row.include = on;
   state.schedule.saved = null;
   scheduleRemember();
   render();
@@ -997,6 +1062,70 @@ function wireColumnResize(table, scope) {
   });
 }
 
+/* ----------------------------------------------- column filters and sort */
+
+// What the grid shows, separately from the schedule itself: a filter box under
+// each header and a sorted column. Only the view changes — the rows keep their
+// order in the schedule, their numbers and their Raw Video IDs. Kept per
+// schedule for this session.
+function scheduleView() {
+  const s = state.schedule;
+  if (!state.scheduleView || state.scheduleView.id !== (s && s.id)) state.scheduleView = { id: s && s.id, filters: {}, sort: null };
+  return state.scheduleView;
+}
+const SCHEDULE_FILTER_COLS = ['id', 'folder', ...SCHEDULE_HEAD.map(([k]) => k)];
+
+/** A row's text in column `k`, as the cell shows it (the worked-out number where none is typed). */
+function scheduleColumnText(row, k, n, cities) {
+  const [y, m, d] = /^\d{4}-\d{2}-\d{2}$/.test(row.date || '') ? row.date.split('-') : ['', '', ''];
+  switch (k) {
+    case 'id': return row.include ? SCHEDULE.masterId(row, n.folder, n.session) : '';
+    case 'folder': return String(row.folder ?? n.folder ?? '');
+    case 'session': return String(row.session || n.session || '');
+    case 'y': return y;
+    case 'm': return m;
+    case 'd': return d;
+    case 'state': case 'country': { const c = SCHEDULE.cityOf(row, cities); return c ? c[k] : ''; }
+    case 'events': case 'languages': return (row[k] || []).join(', ');
+    case 'camPlan': return String(row.camPlan ?? SCHEDULE.camsFor(row, state.schedule.defaults));
+    default: return String(row[k] ?? '');
+  }
+}
+
+/** The rows the filters leave, in the sorted column's order (else the schedule's). */
+function scheduleShownRows(nums, cities) {
+  const v = scheduleView();
+  const s = state.schedule;
+  const want = Object.entries(v.filters).map(([k, t]) => [k, String(t || '').trim().toLowerCase()]).filter(([, t]) => t);
+  let rows = want.length ? s.sessions.filter((row) => {
+    const n = nums.get(row.key) || {};
+    return want.every(([k, t]) => scheduleColumnText(row, k, n, cities).toLowerCase().includes(t));
+  }) : s.sessions.slice();
+  if (v.sort) {
+    const { col, dir } = v.sort;
+    const text = new Map(rows.map((row) => [row.key, scheduleColumnText(row, col, nums.get(row.key) || {}, cities)]));
+    const order = new Map(s.sessions.map((row, i) => [row.key, i]));
+    rows.sort((a, b) => {
+      const x = text.get(a.key), y = text.get(b.key);
+      // Empty cells go last either way; ties keep the schedule's order.
+      if (!x !== !y) return x ? -1 : 1;
+      const c = x.localeCompare(y, undefined, { numeric: true, sensitivity: 'base' });
+      return (dir === 'desc' ? -c : c) || order.get(a.key) - order.get(b.key);
+    });
+  }
+  return rows;
+}
+// The keys of the rows on screen, in their order (for redrawing just the changed ones).
+let scheduleShownKeys = [];
+
+/** A header that sorts its column when clicked: ▲ ascending, ▼ descending, then off. */
+function scheduleTh(key, label, cls = '') {
+  const v = scheduleView();
+  const mark = v.sort && v.sort.col === key ? (v.sort.dir === 'desc' ? ' ▼' : ' ▲') : '';
+  return `<th class="c-${key} ${cls} sch-sortable" data-sort="${key}" title="Click to sort by ${esc(label)}">${label}${mark}<span
+    class="col-grip" data-grip="${key}" title="Drag to widen or narrow · double-click for the default"></span></th>`;
+}
+
 function scheduleTableParts(problems) {
   const s = state.schedule;
   const cities = scheduleCities();
@@ -1038,7 +1167,9 @@ function scheduleTableParts(problems) {
   };
   const activities = pickValues(SCHEDULE_VOCAB.activities);
   const authors = pickValues(['DD', 'DJM', 'NM'], knownValues('author'));
-  const rows = s.sessions.map((row) => {
+  const shown = scheduleShownRows(nums, cities);
+  scheduleShownKeys = shown.map((row) => row.key);
+  const rows = shown.map((row) => {
     const n = nums.get(row.key) || {};
     const plan = plans.get(row.key);
     const id = row.include ? SCHEDULE.masterId(row, n.folder, n.session) : '—';
@@ -1096,8 +1227,13 @@ function scheduleTableParts(problems) {
   const ticked = s.sessions.filter((x) => x.include).length;
   return { rows, thead: `<tr><th class="fz fz1"><input type="checkbox" id="schTickAll" ${ticked && ticked === s.sessions.length ? 'checked' : ''}
       ${ticked && ticked < s.sessions.length ? 'data-some="1"' : ''} title="Tick all / untick all"></th>
-      <th class="fz fz2"></th>${resizableTh('id', 'Raw Video Id', 'fz fz3')}${resizableTh('folder', 'Folder', 'fz fz4')}
-      ${SCHEDULE_HEAD.map(([k, h]) => resizableTh(k, h)).join('')}</tr>` };
+      <th class="fz fz2"></th>${scheduleTh('id', 'Raw Video Id', 'fz fz3')}${scheduleTh('folder', 'Folder', 'fz fz4')}
+      ${SCHEDULE_HEAD.map(([k, h]) => scheduleTh(k, h)).join('')}</tr>
+    <tr class="sch-colf"><th class="fz fz1"></th><th class="fz fz2"><button class="sm ghost" id="schFiltersClear"
+      title="Empty every filter box and show every row again">Clear filters</button></th>
+      ${SCHEDULE_FILTER_COLS.map((k) => `<th class="c-${k}${k === 'id' ? ' fz fz3' : k === 'folder' ? ' fz fz4' : ''}"><input class="sch-in"
+        data-sch-filter="${k}" aria-label="Filter ${esc(k === 'id' ? 'Raw Video Id' : k === 'folder' ? 'Folder' : (SCHEDULE_HEAD.find(([x]) => x === k) || [k, k])[1])}"
+        placeholder="Filter"></th>`).join('')}</tr>` };
 }
 
 function scheduleSourceHtml() {
@@ -1113,6 +1249,28 @@ function scheduleSourceHtml() {
   </details>`;
 }
 
+/** The box to type a schedule's title in; empty, it shows (and keeps) the file's name. */
+function scheduleTitleInput(item) {
+  const file = String(item.file || '').split(/[\\/]/).pop();
+  const own = String(item.label || '').trim();
+  const value = own && own !== file ? own : '';
+  return `<input class="sch-in sch-title" data-title="${esc(item.id)}" value="${esc(value)}" maxlength="200"
+    placeholder="${esc(file ? `${file} — type a title` : 'Type a title, e.g. JJ 119 Anand')}"
+    title="The schedule's title, shown here and to the team. Leave it empty to use the file's name." aria-label="Schedule title">`;
+}
+
+/** Save a schedule's typed title (empty: back to the file's name). */
+function scheduleSetTitle(id, text) {
+  const item = ((state.schedules && state.schedules.items) || []).find((x) => x.id === id);
+  if (!item) return;
+  if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) return;
+  const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (t === String(item.label || '').trim()) return;
+  if (t) item.label = t; else delete item.label;
+  scheduleRemember();
+  render();
+}
+
 /** The kept assignments, newest first, each by the dates it holds. */
 function schedulePastHtml() {
   const items = ((state.schedules && state.schedules.items) || []).filter((x) => x !== state.schedule && !x.busy);
@@ -1123,12 +1281,13 @@ function schedulePastHtml() {
     <h3>Past schedules</h3>
     <p class="hint">Kept with everything in them until you delete them. Open one to edit it again.</p>
     <table class="sch-past">
-      <thead><tr><th>Dates</th><th>Sessions</th><th>Backed up</th><th>Schedule file</th><th></th></tr></thead>
+      <thead><tr><th>Dates</th><th>Title</th><th>Sessions</th><th>Backed up</th><th>Schedule file</th><th></th></tr></thead>
       <tbody>${items.map((x) => {
         const ticked = x.sessions.filter((r) => r.include).length;
         const done = x.sessions.filter((r) => r.include && r.backedUp).length;
         return `<tr>
           <td><b>${esc(scheduleRange(x))}</b></td>
+          <td>${scheduleTitleInput(x)}</td>
           <td>${ticked}</td>
           <td>${done}${ticked ? ` of ${ticked}` : ''}</td>
           <td class="mono sch-past-file" title="${esc(x.file || '')}">${esc(String(x.file || '').split(/[\\/]/).pop())}</td>
@@ -1158,7 +1317,9 @@ function scheduleRegions() {
     card: `<div class="card">
       <div class="row" style="align-items:flex-start">
         <div style="flex:1;min-width:0"><h3 style="margin:0">Event schedule · ${esc(scheduleRange(s))}</h3>
-          <div class="path" style="margin-top:4px">${esc(s.file || '')}</div></div>
+          <div style="margin-top:6px">${scheduleTitleInput(s)}</div>
+          <div class="path" style="margin-top:4px">${esc(s.file || '')}${(s.files || []).length > 1
+            ? ` <span class="hint">+ ${s.files.length - 1} more file${s.files.length > 2 ? 's' : ''}</span>` : ''}</div></div>
         <button class="sm" id="schAnother">Read another schedule…</button>
         <button class="sm" id="schDrive" ${s.sessions.length ? '' : 'disabled'}
           title="Read durations, clip and camera counts from the filed session folders">Fill durations from drive…</button>
@@ -1195,7 +1356,8 @@ function scheduleRegions() {
       ${run && !run.backedUp ? `<br>Backup in progress: <b>${esc(state.scheduleRun.id)}</b>` : ''}
       ${s.scan ? `<br>Durations read from <span class="mono">${esc(s.scan.root)}</span>:
         ${s.scan.filled} filled${s.scan.missing ? `, ${s.scan.missing} not on the drive` : ''}.` : ''}
-      ${s.saved ? `<br>Saved to <span class="mono">${esc(s.saved)}</span>.` : ''}</div>` : '',
+      ${s.saved ? `<br>Saved to <span class="mono">${esc(s.saved)}</span>.` : ''}
+      ${scheduleShownKeys.length < s.sessions.length ? `<br>Showing <b>${scheduleShownKeys.length}</b> of ${s.sessions.length} rows — the column filters hide the rest.` : ''}</div>` : '',
     thead: table.thead,
     rows: table.rows,
     after: `<div class="row" style="margin-top:8px">
@@ -1216,11 +1378,12 @@ function renderSchedulePage(regions = scheduleRegions()) {
       <h3>Start from the event schedule</h3>
       <p class="hint">Read the event's schedule — a WhatsApp poster, a photo, a PDF, or a Word, Excel or
         CSV file — into rows laid out like the <b>Raw Satsang Master</b>. Pictures and PDFs are read on this
-        computer (no internet, no AI). Check every row, then press <b>Start backup</b> on a row: it sets up
-        that session's folders, so no structure zip is needed.</p>
+        computer (no internet, no AI); choose several of them at once to read them as one schedule. Check
+        every row, then press <b>Start backup</b> on a row: it sets up that session's folders, so no
+        structure zip is needed.</p>
       <div class="row">
         <button class="sm primary" id="btnSchedule">Choose schedule…</button>
-        <span class="hint" style="margin:0">or drop the schedule file on this card.</span>
+        <span class="hint" style="margin:0">or drop the schedule files on this card.</span>
       </div>
     </div>
     ${schedulePastHtml()}
@@ -1247,7 +1410,7 @@ function schedulePaint() {
   // A prepared backup disables every control after drawing: always start from a full draw.
   const locked = typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing);
   const regions = locked ? null : scheduleRegions();
-  const forced = regions ? [...scheduleForced].map((key) => s.sessions.findIndex((r) => r.key === key)).filter((i) => i >= 0) : [];
+  const forced = regions ? [...scheduleForced].map((key) => scheduleShownKeys.indexOf(key)).filter((i) => i >= 0) : [];
   scheduleForced.clear();
   if (!regions) { host.innerHTML = renderSchedulePage(); wireSchedulePage(); return; }
   PAINT.paint(host, s, regions, {
@@ -1263,10 +1426,50 @@ function schedulePaint() {
   });
 }
 
+/** Title boxes: saved on Enter or on leaving the box; Esc puts the saved one back. */
+function wireScheduleTitles(host) {
+  host.querySelectorAll('[data-title]').forEach((el) => {
+    if (el.dataset.wired) return;
+    el.dataset.wired = '1';
+    el.addEventListener('change', () => scheduleSetTitle(el.dataset.title, el.value));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') el.blur();
+      else if (e.key === 'Escape') { el.value = el.defaultValue; el.blur(); }
+    });
+  });
+}
+
+let scheduleFilterTimer = null;
+/** The filter boxes (typed values are the boxes' own: redraws leave them) and the sorting headers. */
+function wireScheduleFilters(host) {
+  const v = scheduleView();
+  host.querySelectorAll('[data-sch-filter]').forEach((el) => {
+    el.value = v.filters[el.dataset.schFilter] || '';
+    el.addEventListener('input', () => {
+      v.filters[el.dataset.schFilter] = el.value;
+      clearTimeout(scheduleFilterTimer);
+      scheduleFilterTimer = setTimeout(render, 150);
+    });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.value) { el.value = ''; el.dispatchEvent(new Event('input')); } });
+  });
+  host.querySelectorAll('th[data-sort]').forEach((th) => th.addEventListener('click', (e) => {
+    if (e.target.closest('.col-grip') || document.body.classList.contains('col-resizing')) return;
+    const col = th.dataset.sort;
+    v.sort = !v.sort || v.sort.col !== col ? { col, dir: 'asc' } : v.sort.dir === 'asc' ? { col, dir: 'desc' } : null;
+    render();
+  }));
+  $('schFiltersClear')?.addEventListener('click', () => {
+    v.filters = {};
+    host.querySelectorAll('[data-sch-filter]').forEach((el) => { el.value = ''; });
+    render();
+  });
+}
+
 /** The listeners on the grid's rows, for a whole table or one redrawn row. */
 function wireScheduleRows(root) {
   root.querySelectorAll('[data-k][data-f]').forEach((el) => {
     el.addEventListener('change', () => scheduleSet(el.dataset.k, el.dataset.f, el.type === 'checkbox' ? el.checked : el.value));
+    el.addEventListener('keydown', (e) => { if (isFillDown(e)) { e.preventDefault(); scheduleFillDown(el.dataset.k, el.dataset.f); } });
     openPickerOnClick(el);
   });
   root.querySelectorAll('[data-chip-del]').forEach((b) => b.addEventListener('click', () =>
@@ -1283,7 +1486,8 @@ function wireScheduleRows(root) {
     });
     el.addEventListener('change', () => commit(false));
     el.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(true); }
+      if (isFillDown(e)) { e.preventDefault(); el.value = ''; scheduleFillDown(key, field); }
+      else if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(true); }
       else if (e.key === 'Backspace' && !el.value) {
         const row = scheduleFind(key);
         if ((row[field] || []).length) scheduleChipRemove(key, field, row[field].length - 1, true);
@@ -1294,6 +1498,41 @@ function wireScheduleRows(root) {
   root.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => scheduleDeleteRows([b.dataset.del])));
   root.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', () => scheduleStartBackup(b.dataset.start)));
   root.querySelectorAll('[data-clips]').forEach((b) => b.addEventListener('click', () => scheduleClipsOnly(b.dataset.clips)));
+}
+
+/** Ctrl+D (Cmd+D on the Mac), as in Excel: fill this cell from the one above. */
+function isFillDown(e) {
+  return (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && String(e.key).toLowerCase() === 'd';
+}
+
+/**
+ * Ctrl+D in the event schedule: the cell takes the value of the same column in
+ * the row shown above it — every chip of an Event Type or Language cell — and
+ * keeps the focus, so it can be pressed down a column row after row.
+ */
+function scheduleFillDown(key, field) {
+  const tr = document.querySelector(`tr[data-row="${CSS.escape(String(key))}"]`);
+  let above = tr && tr.previousElementSibling;
+  while (above && !above.dataset.row) above = above.previousElementSibling;
+  if (!above) { toast('There is no row above to copy from.', 'warn'); return; }
+  let value;
+  if (field === 'events' || field === 'languages') {
+    const row = scheduleFind(above.dataset.row);
+    value = ((row && row[field]) || []).join(',');
+  } else {
+    const src = above.querySelector(`[data-f="${CSS.escape(field)}"]`);
+    if (!src) return;
+    value = src.type === 'checkbox' ? src.checked : src.value;
+  }
+  const chip = field === 'events' || field === 'languages';
+  if (chip) scheduleChipFocus = { key: String(key), field };
+  scheduleSet(key, field, value);
+  if (!chip) {
+    setTimeout(() => {
+      const el = document.querySelector(`[data-k="${CSS.escape(String(key))}"][data-f="${CSS.escape(field)}"]`);
+      if (el) el.focus();
+    }, 20);
+  }
 }
 
 function scheduleApplyChipFocus(host) {
@@ -1312,6 +1551,7 @@ function wireSchedulePage() {
   $('btnSchedule')?.addEventListener('click', () => openSchedule());
   const host = $('content');
   host.querySelectorAll('[data-reopen]').forEach((b) => b.addEventListener('click', () => reopenSchedule(b.dataset.reopen)));
+  wireScheduleTitles(host);
   host.querySelectorAll('[data-delete]').forEach((b) => b.addEventListener('click', () => deleteSchedule(b.dataset.delete)));
   const drop = $('scheduleDrop');
   if (drop) {
@@ -1322,9 +1562,9 @@ function wireSchedulePage() {
       if (!hasFiles(e)) return;
       e.preventDefault();
       drop.classList.remove('dropping');
-      const file = e.dataTransfer.files[0];
-      const p = file && window.api.pathForFile ? window.api.pathForFile(file) : null;
-      if (p) openSchedule(p);
+      const paths = [...e.dataTransfer.files]
+        .map((f) => (window.api.pathForFile ? window.api.pathForFile(f) : null)).filter(Boolean);
+      if (paths.length) openSchedule(paths);
     });
   }
   const s = state.schedule;
@@ -1373,6 +1613,7 @@ function wireSchedulePage() {
   }
   wireScheduleKeys(host.querySelector('.sch-table'));
   wireColumnResize(host.querySelector('.sch-table'), 'schedule');
+  wireScheduleFilters(host);
   host.querySelector('details.sch-source')?.addEventListener('toggle', (e) => { s.showSource = e.target.open; });
 }
 

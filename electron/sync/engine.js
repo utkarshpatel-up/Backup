@@ -1034,12 +1034,26 @@ class SyncEngine extends EventEmitter {
     // nothing twice. Natural keys (cities, learned, report, team) equal to the team's are skipped;
     // different ones are sent as creates, which the server keeps as create_collision conflicts.
     const MAPPED = new Set(['assignment', 'session', 'source_line', 'source_skip']);
+    // A report record the team has already: the sheet only fills the fields the team's copy
+    // leaves empty (Remarks, on records imported before that column was read), as an edit on
+    // the team's version. What the team has — a teammate's correction included — is kept, so
+    // a newer download of the same report brings no conflicts.
+    const empty = (v) => v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
+    const fills = new Map();
+    for (const [id, t] of Object.entries(built.targets)) {
+      const s = d.server[id];
+      if (t.type !== 'report_record' || d.local[id] || !(s && s.head) || s.deleted || !s.payload) continue;
+      const next = { ...s.payload };
+      for (const [k, v] of Object.entries(t.payload)) if (!empty(v) && empty(next[k])) next[k] = v;
+      fills.set(id, canon(next) === canon(s.payload) ? null : next);
+    }
     const fresh = Object.entries(built.targets).filter(([id, t]) => {
       if (d.local[id]) return false;
+      if (fills.has(id)) return fills.get(id) !== null;
       const s = d.server[id];
       if (!(s && s.head)) return true;
       return !MAPPED.has(t.type) && !s.deleted && s.payload !== undefined && canon(s.payload) !== canon(t.payload);
-    });
+    }).map(([id, t]) => (fills.get(id) ? [id, { ...t, payload: fills.get(id) }] : [id, t]));
     const counts = { schedules: items.length, rows: fresh.filter(([, t]) => t.type === 'session').length, targets: fresh.length };
     if (!confirm) { this._save(); return { ok: true, preview: true, counts, warnings }; }
     if (this.protected) throw new SyncError('config', 'busy', 'Finish or put aside the backup that is set up first.');
@@ -1050,7 +1064,9 @@ class SyncEngine extends EventEmitter {
       const src = path.join(this.legacyDir, name);
       if (this.fs.existsSync(src)) this.fs.copyFileSync(src, path.join(backup, name));
     }
-    for (const [id, t] of fresh) d.local[id] = { type: t.type, key: t.key, a: t.a || null, value: t.payload, base: null, inflight: null, held: null, error: null, at: this.now() };
+    // A filled-in record goes as an edit on the team's version; everything else as before.
+    for (const [id, t] of fresh) d.local[id] = { type: t.type, key: t.key, a: t.a || null, value: t.payload,
+      base: fills.get(id) ? d.server[id].head : null, inflight: null, held: null, error: null, at: this.now() };
     for (const item of items) {
       d.overlay.items[item.id] = { file: item.file || '', saved: item.saved || null, scan: item.scan || null };
       d.overlay.keys[item.id] = Object.fromEntries(item.sessions.filter((r) => Number.isInteger(r.key)).map((r) => [r.uid, r.key]));

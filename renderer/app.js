@@ -936,6 +936,18 @@ function setBackupType(next) {
   }
 }
 
+/**
+ * The structure is removed (Formal's Remove on its card, Informal's Remove
+ * structure): a backup started from an event schedule row ends with it, as if
+ * it had not been started, and the row is let go for the team.
+ */
+function dropTemplate() {
+  state.scheduleRun = null;
+  if (typeof syncRelease === 'function') syncRelease().catch(() => {});
+  state.template = null;
+  state.templates = [];
+}
+
 function wireSources() {
   document.querySelectorAll('[data-backup-type]').forEach((button) =>
     button.addEventListener('click', () => {
@@ -965,10 +977,7 @@ function wireSources() {
   });
   $('btnRemoveTemplate')?.addEventListener('click', () => {
     state.sources = state.sources.filter((source) => source.role !== 'template');
-    state.scheduleRun = null;
-    if (typeof syncRelease === 'function') syncRelease().catch(() => {});
-    state.template = null;
-    state.templates = [];
+    dropTemplate();
     state.plan = null; state.namingPreview = null;
     render();
   });
@@ -997,10 +1006,7 @@ function wireSources() {
   }));
   document.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', () => {
     const gone = state.sources.find((s) => s.path === b.dataset.remove);
-    if (gone && gone.role === 'template') {
-      state.template = null;
-      state.templates = [];
-    }
+    if (gone && gone.role === 'template') dropTemplate();
     state.sources = state.sources.filter((s) => s.path !== b.dataset.remove);
     state.plan = null; state.namingPreview = null;
     render();
@@ -1868,6 +1874,15 @@ function editedTemplateDirs(template) {
   return selectionRules.normalizedTemplateDirs(template, state.camCount, isInformal());
 }
 
+/**
+ * The folders a copy makes. A backup started from the event schedule makes a
+ * camera folder only for a camera whose clips are in this copy; a structure
+ * zip's layout is mirrored as it is, empty camera folders and all.
+ */
+function plannedFolders(dirs, cams) {
+  return state.scheduleRun ? selectionRules.usedCamDirs(dirs, cams) : dirs;
+}
+
 /** The editable camera-folder skeleton when completing an existing folder. */
 function cameraStructureDirs() {
   return Array.from({ length: state.camCount }, (_, index) =>
@@ -2037,7 +2052,9 @@ function renderTemplateFolder(src) {
             ? `, and it already matches what the structure came with`
             : `, replacing the <b>Dur-${esc(fmtDurLike(t.current_dur, t.session_name))}</b>
                placeholder the structure came with`)
-        : ''}.`} Empty camera folders are recreated with the names shown above.</p>
+        : ''}.`} ${state.scheduleRun
+        ? 'Each camera folder is made when its clips are copied; no empty camera folder is made ahead of them.'
+        : 'Empty camera folders are recreated with the names shown above.'}</p>
     <div class="row" style="margin-top:12px">
       ${isInformal()
         ? `<span class="badge informal">Output → ${esc(state.informalDest)}</span>`
@@ -3016,7 +3033,7 @@ function buildSpec() {
                    allow_no_master: isInformal(), rename_camera_clips: isInformal(),
                    direct_camera_folders: isInformal(),
                    skip_existing_by_size: isInformal() && state.skipExistingBySize,
-                   template_dirs: t ? editedTemplateDirs(t) : cameraStructureDirs() };
+                   template_dirs: plannedFolders(t ? editedTemplateDirs(t) : cameraStructureDirs(), cams) };
     // After the first copy, file additional cameras straight into the existing
     // session folder, so nothing about the master or the name is recomputed.
     if (filed) {
@@ -3405,7 +3422,8 @@ function wireCopy() {
     goStep(4);
   });
   $('btnOpenAll')?.addEventListener('click', async () => {
-    const res = await window.api.openFolderGroups(finderGroups());
+    // The camera cards are listed by Type; the backed-up session folders as they are.
+    const res = await window.api.openFolderGroups(finderGroups(), { sortByType: [...new Set(cardFolders())] });
     if (res.missing && res.missing.length) {
       toast(`Opened ${res.opened.length} folder${res.opened.length === 1 ? '' : 's'}. `
         + `${res.missing.length} not found; a card may be ejected.`, 'warn');
@@ -3416,7 +3434,8 @@ function wireCopy() {
   // The destination drives are often already open from the last card, so this
   // opens just the cards that were copied, as tabs in one window.
   $('btnOpenCards')?.addEventListener('click', async () => {
-    const res = await window.api.openFolderGroups([[...new Set(cardFolders())]]);
+    const cards = [...new Set(cardFolders())];
+    const res = await window.api.openFolderGroups([cards], { sortByType: cards });
     if (res.missing && res.missing.length) {
       toast(`Opened ${res.opened.length} card${res.opened.length === 1 ? '' : 's'}. `
         + `${res.missing.length} not found; a card may be ejected.`, 'warn');

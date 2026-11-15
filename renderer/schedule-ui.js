@@ -998,7 +998,7 @@ function applyColWidths() {
   }
   // The frozen ID and Folder columns: a wider ID moves the Folder column along,
   // since both stay pinned at the left while the rest scrolls.
-  const FZ3_LEFT = 296;
+  const FZ3_LEFT = 212;   // styles.css: .fz1 (34px) + .fz2 (178px)
   if (sched.id) {
     rules.push(fixed('.sch-table:not(.rep-table) .fz3', sched.id),
       `.sch-table:not(.rep-table) .fz3 { overflow: hidden; text-overflow: ellipsis; }`,
@@ -1175,6 +1175,8 @@ function scheduleTableParts(problems) {
     const id = row.include ? SCHEDULE.masterId(row, n.folder, n.session) : '—';
     const blocked = row.include && blocksStart(problems.get(row.key)).length;
     const running = state.scheduleRun && state.scheduleRun.key === row.key && state.scheduleRun.scheduleId === s.id;
+    // Started but not finished: Clips only (on the row's right-click menu) completes it.
+    const unfinished = row.startedAt && !row.backedUp && !running;
     const startTitle = plan ? `${plan.jobName}\n  ${plan.sessionName}\n  ${plan.cams} camera folder${plan.cams === 1 ? '' : 's'}` : '';
     const [y, m, d] = /^\d{4}-\d{2}-\d{2}$/.test(row.date || '') ? row.date.split('-') : ['', '', ''];
     const c = SCHEDULE.cityOf(row, cities);
@@ -1182,14 +1184,12 @@ function scheduleTableParts(problems) {
     return `<tr class="${row.include ? '' : 'sch-off'} ${running ? 'sch-running' : ''}" data-row="${row.key}">
       <td class="fz fz1"><input type="checkbox" data-k="${row.key}" data-f="include" ${row.include ? 'checked' : ''}
         title="Include this session in the sheet (Space ticks, ↑/↓ moves between rows)"></td>
-      <td class="fz fz2"><div class="sch-acts">${row.include ? `<button class="sm ${row.backedUp ? '' : 'primary'}" data-start="${row.key}"
-        ${blocked || state.busy ? 'disabled' : ''} title="${esc(blocked
-          ? `Fix the red cells first: ${blocksStart(problems.get(row.key))[0].msg}` : startTitle)}">
-        ${row.backedUp ? 'Backed up ✓' : running ? 'In progress…' : 'Start backup'}</button>
-        <button class="sm ${row.startedAt && !row.backedUp && !running ? 'primary' : 'ghost'}" data-clips="${row.key}"
-          ${blocked || state.busy ? 'disabled' : ''} title="${esc(row.startedAt && !row.backedUp
-            ? 'This backup did not finish: add the camera clips to the session already on the drive'
-            : 'Add camera clips to this session already on the drive (late clips, or a backup that stopped)')}">Clips only</button>` : ''}
+      <td class="fz fz2"><div class="sch-acts">${row.include ? `<button class="sm ${row.backedUp ? '' : 'primary'} ${unfinished ? 'sch-unfinished' : ''}" data-start="${row.key}"
+        ${blocked || state.busy ? 'disabled' : ''} title="${esc((blocked
+          ? `Fix the red cells first: ${blocksStart(problems.get(row.key))[0].msg}` : startTitle)
+          + (unfinished ? '\n\nThis backup did not finish: right-click the row → Clips only.' : '')
+          + '\n\nRight-click the row for Clips only and the H264 MM Backup.')}">
+        ${row.backedUp ? 'Backed up ✓' : running ? 'In progress…' : 'Start backup'}</button>` : ''}
         <button class="sm ghost" data-add="${row.key}" title="Add an unplanned session below this one (same day, place and event)">＋</button>
         <button class="sm ghost sch-del" data-del="${row.key}" title="Delete this row (Undo brings it back)">✕</button></div></td>
       <td class="fz fz3 mono sch-id ${idProblem && idProblem.hard ? 'sch-id-err' : ''}"
@@ -1380,7 +1380,7 @@ function renderSchedulePage(regions = scheduleRegions()) {
         CSV file — into rows laid out like the <b>Raw Satsang Master</b>. Pictures and PDFs are read on this
         computer (no internet, no AI); choose several of them at once to read them as one schedule. Check
         every row, then press <b>Start backup</b> on a row: it sets up that session's folders, so no
-        structure zip is needed.</p>
+        structure zip is needed. Right-click a row for <b>Clips only</b> and the <b>H264 MM Backup</b>.</p>
       <div class="row">
         <button class="sm primary" id="btnSchedule">Choose schedule…</button>
         <span class="hint" style="margin:0">or drop the schedule files on this card.</span>
@@ -1497,7 +1497,116 @@ function wireScheduleRows(root) {
   root.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => scheduleAddRow(b.dataset.add)));
   root.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => scheduleDeleteRows([b.dataset.del])));
   root.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', () => scheduleStartBackup(b.dataset.start)));
-  root.querySelectorAll('[data-clips]').forEach((b) => b.addEventListener('click', () => scheduleClipsOnly(b.dataset.clips)));
+  const trs = root.matches && root.matches('tr[data-row]') ? [root] : root.querySelectorAll('tr[data-row]');
+  trs.forEach((tr) => tr.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    scheduleRowMenu(tr.dataset.row, e);
+  }));
+}
+
+/* ------------------------------------------------------- row menu (right-click) */
+
+/** Close the row menu, if one is open. */
+function scheduleMenuClose() {
+  const menu = document.getElementById('schRowMenu');
+  if (menu) menu.remove();
+  document.removeEventListener('mousedown', scheduleMenuOutside, true);
+  document.removeEventListener('keydown', scheduleMenuKey, true);
+  window.removeEventListener('blur', scheduleMenuClose);
+  window.removeEventListener('resize', scheduleMenuClose);
+  document.removeEventListener('scroll', scheduleMenuClose, true);
+}
+function scheduleMenuOutside(e) {
+  const menu = document.getElementById('schRowMenu');
+  if (menu && !menu.contains(e.target)) scheduleMenuClose();
+}
+function scheduleMenuKey(e) {
+  const menu = document.getElementById('schRowMenu');
+  if (!menu) return;
+  const items = [...menu.querySelectorAll('button:not([disabled])')];
+  const at = items.indexOf(document.activeElement);
+  if (e.key === 'Escape') { e.preventDefault(); scheduleMenuClose(); }
+  else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!items.length) return;
+    const step = e.key === 'ArrowDown' ? 1 : -1;
+    items[(at + step + items.length) % items.length].focus();
+  }
+}
+
+/**
+ * The row's own actions that would crowd it as buttons: Clips only (finish a
+ * backup that stopped, or add late clips) and the H264 MM Backup.
+ */
+function scheduleRowMenu(key, e) {
+  scheduleMenuClose();
+  const s = state.schedule;
+  const row = scheduleFind(key);
+  if (!row || !row.include) return;
+  if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) return;
+  const hard = blocksStart(scheduleProblems().get(row.key));
+  const block = state.busy ? 'Busy with another job.' : hard.length ? `Fix the red cells first: ${hard[0].msg}` : '';
+  const unfinished = row.startedAt && !row.backedUp;
+  const informal = row.type === 'Informal';
+  const item = (act, label, sub, why) => `<button type="button" role="menuitem" data-menu="${act}"
+      ${why ? `disabled title="${esc(why)}"` : ''}><b>${label}</b><span>${esc(sub)}</span></button>`;
+  const menu = document.createElement('div');
+  menu.id = 'schRowMenu';
+  menu.className = 'ctx-menu';
+  menu.tabIndex = -1;
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = item('clips', `Clips only${unfinished ? ' <i>· did not finish</i>' : ''}`,
+      unfinished ? 'Add the camera clips to the session already on the drive'
+        : 'Add camera clips to the session on the drive (late clips, or a backup that stopped)', block)
+    + item('h264', 'H264 MM Backup…', 'HyperDeck Studio Mini SD card, named like the masters with the folder number in front',
+      block || (informal ? 'Formal sessions only: the HyperDeck records the formal master.' : ''));
+  document.body.appendChild(menu);
+  // At the pointer; from the keyboard (Menu key, Shift+F10), under the row's focused cell.
+  let x = e.clientX, y = e.clientY;
+  if (!x && !y) {
+    const r = (e.target && e.target.getBoundingClientRect) ? e.target.getBoundingClientRect() : { left: 40, bottom: 40 };
+    x = r.left; y = r.bottom;
+  }
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - w - 4))}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - h - 4))}px`;
+  menu.querySelectorAll('[data-menu]').forEach((b) => b.addEventListener('click', () => {
+    scheduleMenuClose();
+    if (b.dataset.menu === 'clips') scheduleClipsOnly(key);
+    else scheduleEditCopy(key);
+  }));
+  (menu.querySelector('button:not([disabled])') || menu).focus();
+  document.addEventListener('mousedown', scheduleMenuOutside, true);
+  document.addEventListener('keydown', scheduleMenuKey, true);
+  window.addEventListener('blur', scheduleMenuClose);
+  window.addEventListener('resize', scheduleMenuClose);
+  document.addEventListener('scroll', scheduleMenuClose, true);
+}
+
+/**
+ * The H264 MM Backup for one Formal row: its folder number and session name
+ * name the HyperDeck files. The row itself is left as it is; this copy adds
+ * nothing to its duration or clip count.
+ */
+function scheduleEditCopy(key) {
+  const s = state.schedule;
+  const row = scheduleFind(key);
+  if (!row || state.busy || row.type === 'Informal') return;
+  const hard = blocksStart(scheduleProblems().get(row.key));
+  if (hard.length) { toast(`Fix this row first: ${hard[0].msg}`, 'warn'); return; }
+  const plan = SCHEDULE.folderPlan(s.sessions, s.starts, s.defaults).get(row.key);
+  if (!plan) return;
+  const number = editCopyJobNumber(plan.jobName);
+  const fixed = row.folder != null && String(row.folder).trim() !== '';
+  openEditCopy({
+    from: 'schedule',
+    fromLabel: `Event schedule · ${plan.id}`,
+    sessions: [{ job_name: plan.jobName, session_name: plan.sessionName }],
+    jobNumber: number,
+    sessionName: editCopyCleanName(plan.sessionName),
+    note: fixed ? '' : `Folder number ${number} is the schedule's suggestion and is not fixed on the row yet. `
+      + 'Check it matches the folder the masters go into.',
+  });
 }
 
 /** Ctrl+D (Cmd+D on the Mac), as in Excel: fill this cell from the one above. */

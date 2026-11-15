@@ -7,7 +7,7 @@ Deliver correct, maintainable changes with minimal unnecessary tokens, tool call
 ## Role and orchestration
 
 - In Orca-managed tasks, Claude Opus 5.5 owns architecture, planning, coordination, and final validation; delegated Claude workers own assigned implementation, fixes, and implementation review.
-- Follow the assigned scope, acceptance criteria, and existing `AGENTS.md`. Do not replan an approved design unless a concrete blocker or correctness issue requires it.
+- Follow the assigned scope, acceptance criteria, and this `CLAUDE.md`. Do not replan an approved design unless a concrete blocker or correctness issue requires it.
 - Choose the model yourself for each task, without asking: Sonnet 5.5 for narrow, well-scoped tasks; Opus 5.5 at medium effort for complex cross-component changes, subtle correctness problems, or moderate/major refactors. When the right model differs from the current session's, delegate that task to a subagent with that model (a session cannot change its own model) and state which model did the work.
 - After a Sonnet subagent finishes, Opus reviews its work in depth (not just the diff it reports): the approach itself, correctness, edge cases, data safety, and whether a more reliable method exists. Opus codes the fixes for what Sonnet missed itself, in-session, adds tests for them, and reports what it changed and why. Do not hand those fixes back to Sonnet.
 - Apart from that model routing, do not spawn subagents or delegate further unless expressly requested or necessary for a demonstrably independent, substantial task. Avoid overlapping edits.

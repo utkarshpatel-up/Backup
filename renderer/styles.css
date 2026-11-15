@@ -430,11 +430,34 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .sch-table .fz { position: sticky; z-index: 1; background: var(--panel); }
 .sch-table thead th.fz { z-index: 3; background: var(--panel-2); }
 .sch-table .fz1 { left: 0; width: 34px; min-width: 34px; max-width: 34px; }
-.sch-table .fz2 { left: 34px; width: 262px; min-width: 262px; max-width: 262px; }
-.sch-table .fz3 { left: 296px; width: 158px; min-width: 158px; max-width: 158px; }
-.sch-table .fz4 { left: 454px; width: 86px; min-width: 86px; max-width: 86px;
+/* Start backup, ＋ and ✕ (Clips only and the H264 MM Backup are on the row's right-click menu). */
+.sch-table .fz2 { left: 34px; width: 178px; min-width: 178px; max-width: 178px; }
+.sch-table .fz3 { left: 212px; width: 158px; min-width: 158px; max-width: 158px; }
+.sch-table .fz4 { left: 370px; width: 86px; min-width: 86px; max-width: 86px;
   box-shadow: inset -2px 0 0 var(--line); }
 .sch-table .sch-acts { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
+/* A backup that started and did not finish: Clips only on the row's menu completes it. */
+.sch-table .sch-unfinished { position: relative; }
+.sch-table .sch-unfinished::after {
+  content: ""; position: absolute; top: -3px; right: -3px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--warn); border: 1.5px solid var(--panel);
+}
+
+/* The event schedule row's right-click menu. */
+.ctx-menu {
+  position: fixed; z-index: 60; min-width: 260px; max-width: 380px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .22); outline: none;
+}
+.ctx-menu button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
+  padding: 7px 10px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--text); text-align: left; cursor: pointer; font: inherit; font-size: 12px;
+}
+.ctx-menu button span { color: var(--muted); font-size: 11px; white-space: normal; }
+.ctx-menu button i { color: var(--warn); font-style: normal; font-weight: 500; }
+.ctx-menu button:hover:not([disabled]), .ctx-menu button:focus-visible { background: var(--accent-soft); outline: none; }
+.ctx-menu button[disabled] { opacity: .5; cursor: default; }
 .sch-table td.sch-ro { color: var(--muted); white-space: nowrap; padding: 3px 8px; }
 .sch-table td.sch-id-err { color: var(--err); }
 .sch-in.w-year { width: 58px; }

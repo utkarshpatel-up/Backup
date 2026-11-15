@@ -4,6 +4,11 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.1
+
+- **H264 MM Backup.** A new backup for the HyperDeck Studio Mini's H.264 recording of a Formal master, for the multimedia team. Open it from the new card under **Only camera clips** on the Formal Sources page, or right-click a Formal row on the Event schedule. Each file is named exactly like the H.265/ProRes masters with the folder number in front, for example `3058 Adalaj Soneri Satsang E. Dt-17-Oct-26 Dur-44m43s Clip-01.mp4`, and only the files are copied, flat into one folder on the server, an HDD or an SSD. Clips are numbered from the HyperDeck Studio Mini SD card itself, so a card that split the recording differently is still numbered correctly. Every file is checked after copying, and nothing is ever overwritten. This copy is never counted in a session's duration or in the report, so it cannot be saved inside a job folder.
+- **Right-click menu on the event schedule.** **Clips only** and **H264 MM Backup** are on a row's right-click menu (or the keyboard's Menu key) instead of buttons, so the schedule shows more columns. A row whose backup started and did not finish has an orange dot on its Start backup button.
+
 ## 2.0.0
 
 - **Team server.** No new server files in this version, but the team server needs the files from 1.10.0 or later, or entries with Remarks are refused.

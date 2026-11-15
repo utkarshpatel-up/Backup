@@ -58,6 +58,7 @@ const state = {
   verify: null,         // Offline CSV comparison page: {open, root, csv, busy, result, error}
   schedule: null,       // Event schedule page and its master rows (schedule-ui.js)
   scheduleRun: null,    // the schedule row the current backup was started from: {key, id}
+  editCopy: null,       // H264 MM Backup window (edit-copy-ui.js): {open, jobNumber, sessionName, source, dest, plan, result}
 };
 
 const STEPS = [
@@ -908,6 +909,7 @@ function renderSources() {
     c.push(`</div>`);
   }
   c.push(clipsOnlyCardHtml());
+  c.push(editCopyCardHtml());
   return c.join('');
 }
 
@@ -985,6 +987,7 @@ function wireSources() {
   makeFolderDropTarget($('renameDrop'), (folder) => openRenameTool(folder));
   $('btnClipsOnly')?.addEventListener('click', enterClipsOnly);
   $('btnClipsOnlyExit')?.addEventListener('click', exitClipsOnly);
+  $('btnEditCopy')?.addEventListener('click', () => openEditCopy());
   $('btnSecondCopy')?.addEventListener('click', addSecondCopy);
   $('btnSecondCopyOff')?.addEventListener('click', dropSecondCopy);
   $('btnVerifyCsv')?.addEventListener('click', () => openVerifyCsv());
@@ -4031,6 +4034,7 @@ function renderModals() {
   if (!host) return;
   if (state.rename && state.rename.open) return renderRenameModal();
   if (state.verify && state.verify.open) return renderVerifyModal();
+  if (state.editCopy && state.editCopy.open) return renderEditCopyModal();
   host.innerHTML = '';
   host.classList.remove('show');
 }
@@ -4509,6 +4513,8 @@ window.api.onProgress(({ id, data }) => {
   }
   // Repaint the footer only — re-rendering the whole page mid-copy is wasteful.
   renderFooter();
+  // The H264 MM Backup shows its progress inside its own window.
+  if (state.editCopy && state.editCopy.open) renderModals();
 });
 
 window.api.onStatus((msg) => {

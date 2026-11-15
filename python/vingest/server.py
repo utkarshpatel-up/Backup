@@ -18,7 +18,7 @@ import threading
 import traceback
 from pathlib import Path
 
-from . import (__version__, compare, ingest, master_sheet, naming,
+from . import (__version__, compare, edit_copy, ingest, master_sheet, naming,
                organize, probe, report, sources, structure, verify_csv)
 from .hashing import algorithm
 
@@ -290,6 +290,17 @@ def m_plan_rename(p, _id):
 def m_apply_rename(p, _id):
     """Perform a rename plan produced by plan_rename."""
     return organize.apply_rename(p["plan"])
+
+
+def m_edit_copy_plan(p, req_id):
+    """Preview the H.264 edit copy: the HyperDeck clips and their new names."""
+    return edit_copy.build_plan(p, _progress(req_id))
+
+
+def m_edit_copy_run(p, req_id):
+    """Copy the H.264 edit copy flat into its output folder, then check it."""
+    return edit_copy.run(p["plan"], p.get("verify", "size"),
+                         _progress(req_id), _cancelled(req_id))
 
 
 def m_verify_csv(p, req_id):

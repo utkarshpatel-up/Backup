@@ -90,3 +90,35 @@ test('character counter becomes red only above 225', () => {
   assert.doesNotMatch(run("nameCount('a'.repeat(225))"), /over-limit/);
   assert.match(run("nameCount('a'.repeat(226))"), /over-limit/);
 });
+
+test('#42 a schedule backup started after a same-type clips-only job leaves clips-only', () => {
+  const run = setup();
+  run(`state.backupType = 'formal'; state.clipsOnly = true; state.mastersFiled = true;
+    state.filedSessions = {other: 'E:/3064 Job/Old session'}; state.clipsOnlyDate = '2026-11-13';
+    state.assign = {'E:/old.MP4': 1};`);
+  run(`setBackupType('formal', true);
+    state.sources = [{path:'E:/', role:'h265'}, {path:'F:/', role:'prores'}];`);
+  assert.equal(run('state.clipsOnly'), false);
+  assert.equal(run('JSON.stringify(state.filedSessions)'), '{}');
+  assert.equal(run('state.clipsOnlyDate'), null);
+  assert.equal(run('JSON.stringify(state.assign)'), '{}');
+  // Sources → Folder is open again for the new job's drives.
+  assert.equal(run('stepReady(1)'), true);
+  // The Formal/Informal toggle still keeps a same-type choice untouched.
+  run(`state.assign = {'E:/a.MP4': 2}; setBackupType('formal');`);
+  assert.equal(run('JSON.stringify(state.assign)'), '{"E:/a.MP4":2}');
+});
+
+test('#41 clips-only knows the session date on first load, and Folder never re-detects it', async () => {
+  const run = setup();
+  run(`state.backupType = 'formal'; state.clipsOnly = true;
+    state.filedSessions = {other: 'E:/3064 Job/Session Dt-13-Nov-26'};
+    state.clipsOnlyDate = '2026-11-13';`);
+  assert.equal(run('sessionDate()'), '2026-11-13');
+  assert.equal(run("defaultAssignmentFor({shoot_date: '2026-11-14'})"), 'skip');
+  const calls = [];
+  run('window.api').call = async (method) => { calls.push(method); return { ok: true, result: {} }; };
+  await run('enterFolderStep()');
+  // Detecting would adopt a master and reset the operator's cam assignments.
+  assert.deepEqual(calls, []);
+});

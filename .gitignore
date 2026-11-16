@@ -13,3 +13,4 @@ __pycache__/
 .ffmpeg-mac/
 .neon
 .env.local
+.claude/settings.local.json

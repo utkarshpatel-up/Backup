@@ -741,7 +741,7 @@ async function scheduleStartBackupInner(key) {
     const r = await call('schedule_structure',
       { job: plan.jobName, session: plan.sessionName, cams: plan.cams },
       { label: `Preparing ${plan.id}` });
-    setBackupType(plan.type === 'Informal' ? 'informal' : 'formal');
+    setBackupType(plan.type === 'Informal' ? 'informal' : 'formal', true);
     state.sources = state.sources.filter((x) => x.role !== 'template');
     state.template = null;
     state.templates = [];
@@ -832,7 +832,7 @@ async function scheduleClipsOnlyInner(key) {
   row.startedAt = row.startedAt || new Date().toISOString();
   scheduleHoldNumbers(s);
   scheduleRemember();
-  setBackupType(informal ? 'informal' : 'formal');
+  setBackupType(informal ? 'informal' : 'formal', true);
   state.scheduleRun = { key: row.key, id: plan.id, scheduleId: s.id, clipsOnly: true };
   try { await clipsOnlyInto(paths); } finally { if (typeof syncUI !== 'undefined') syncUI.preparing = false; }
   toast(`${plan.id}: ${row.duration ? `${row.duration}, ${row.clips} clip${Number(row.clips) === 1 ? '' : 's'} so far. ` : ''}`

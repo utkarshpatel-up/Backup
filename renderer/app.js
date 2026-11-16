@@ -53,6 +53,7 @@ const state = {
   busy: null,           // {label, id, percent, detail}
   rename: null,         // in-place rename/clip-count tool: {open, root, plan, scanning, applying, result}
   clipsOnly: false,     // "only camera clips": skip the master step, add clips into an existing session
+  clipsOnlyDate: null,  // clips-only: the shoot date the existing session folder's name states
   camSeededKey: null,   // signature of the existing session(s) whose cam-folder names have been adopted
   existingCamCounts: {},// cam number -> clips already filed on disk (shown beside each camera chip)
   verify: null,         // Offline CSV comparison page: {open, root, csv, busy, result, error}
@@ -299,7 +300,7 @@ function filedKeyFor(srcPath) {
 function sessionDate() {
   if (state.template) return state.template.session_date || null;
   const d = primarySource() ? state.detected[primarySource().path] : null;
-  return (d && d.session_date) || null;
+  return (d && d.session_date) || (state.clipsOnly && state.clipsOnlyDate) || null;
 }
 
 /** Everything loaded for a source, before the date suggestion is applied. */
@@ -913,9 +914,10 @@ function renderSources() {
   return c.join('');
 }
 
-/** Switch between Formal and Informal, dropping everything chosen for the other. */
-function setBackupType(next) {
-  if (next === state.backupType) return;
+/** Switch between Formal and Informal, dropping everything chosen for the other.
+ *  `fresh` drops it even when the type is unchanged: a new job is starting. */
+function setBackupType(next, fresh = false) {
+  if (next === state.backupType && !fresh) return;
   state.backupType = next;
   state.assignment = null;
   state.masters = {};
@@ -924,6 +926,7 @@ function setBackupType(next) {
   state.mastersFiled = false;
   state.filedSessions = {};
   state.clipsOnly = false;
+  state.clipsOnlyDate = null;
   state.camSeededKey = null;
   state.completedCams = new Set();
   state.assign = {};
@@ -1358,6 +1361,14 @@ async function finishClipsOnlyEntry() {
   state.mastersFiled = true;              // reuse the in-place, no-master plan path
   state.masters = {}; state.masterSource = null;
   state.plan = null; state.namingPreview = null; state.runResult = null;
+  // The folder's date drives the session-date / other-day defaults on the
+  // Cameras page from its first load (no structure zip supplies it here).
+  state.clipsOnlyDate = null;
+  const session = clipsOnlySessions()[0];
+  if (session) {
+    try { state.clipsOnlyDate = (await call('detect_structure', { root: session })).session_date || null; }
+    catch (_) { /* no date: clips start on a cam, as for a folder that states none */ }
+  }
   // Learn the real (possibly suffixed) names of the cameras already in the
   // folder, so the Cameras page shows "Cam-05 (Drone)" and a clip assigned to
   // cam 5 files into that folder instead of a new bare "Cam-05".
@@ -1439,6 +1450,7 @@ async function seedExistingCamNames() {
 
 function exitClipsOnly() {
   state.clipsOnly = false;
+  state.clipsOnlyDate = null;
   state.mastersFiled = false;
   state.filedSessions = {};
   state.camSeededKey = null;
@@ -2971,6 +2983,9 @@ function wireCameras() {
 // detectStructure both skip anything already loaded, so re-entering the step
 // (or having pressed Scan by hand) costs nothing.
 async function enterFolderStep() {
+  // Clips-only leaves the master and folder name alone; detecting here would
+  // adopt a master and reset the cam assignments already made.
+  if (state.clipsOnly) return;
   if (!state.template) await detectStructure(primarySource());
   else refreshSessionNumbering();
   if (isInformal()) return;

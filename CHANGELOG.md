@@ -4,6 +4,11 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.2
+
+- **Starting a backup from the event schedule after Only camera clips.** After an **Only camera clips** job, starting the next backup of the same type (Formal or Informal) from the event schedule kept the old clips-only job, so **Next** on the Sources page stayed greyed out. Each backup started from the schedule now begins fresh.
+- **Only camera clips keeps the session's date and your camera choices.** The Cameras page now uses the date in the chosen session folder's name from the moment it opens, so clips from another day are flagged correctly. Going on to the Folder step no longer picks a master or clears the cameras you had assigned.
+
 ## 2.0.1
 
 - **H264 MM Backup.** A new backup for the HyperDeck Studio Mini's H.264 recording of a Formal master, for the multimedia team. Open it from the new card under **Only camera clips** on the Formal Sources page, or right-click a Formal row on the Event schedule. Each file is named exactly like the H.265/ProRes masters with the folder number in front, for example `3058 Adalaj Soneri Satsang E. Dt-17-Oct-26 Dur-44m43s Clip-01.mp4`, and only the files are copied, flat into one folder on the server, an HDD or an SSD. Clips are numbered from the HyperDeck Studio Mini SD card itself, so a card that split the recording differently is still numbered correctly. Every file is checked after copying, and nothing is ever overwritten. This copy is never counted in a session's duration or in the report, so it cannot be saved inside a job folder.

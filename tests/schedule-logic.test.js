@@ -247,6 +247,29 @@ test('report entries export under headers that read back as the same entries', (
   assert.deepEqual(again[0].languages, ['Gujarati', 'Hindi']);
 });
 
+test('a schedule row the existing data already holds unchanged shows as existing data', () => {
+  const sched = [{ id: 'DD-F-4K-3065-E', folder: 3065, format: '4K', session: 'E', author: 'DD', type: 'Formal',
+    date: '2026-11-14', duration: '59m 36s', activity: 'General', place: 'Trimandir', topic: 'General Satsang',
+    clips: 1, cameras: 2, remarks: '', events: ['Soneri Satsang', 'Bhakti'], languages: ['Gujarati'],
+    city: 'Adalaj', state: 'Gujarat', country: 'India', source: 'schedule', schedule: 'Nov', uid: 'u1' }];
+  // Uploaded to Frappe and downloaded again: text cells, Frappe's hh:mm:ss duration, lists in another order.
+  const sheet = S.reportSheet(sched);
+  const row = sheet.rows[0].map(String);
+  row[sheet.columns.indexOf('Duration')] = '00:59:36';
+  row[sheet.columns.indexOf('Event Type')] = 'Bhakti, Soneri Satsang';
+  const existing = S.parseReport([sheet.columns, row], []);
+
+  const same = S.mergeReport(existing, sched);
+  assert.equal(same.length, 1);
+  assert.equal(same[0].source, 'existing', 'identical: shown as normal existing data');
+  assert.equal(same[0].alsoSchedule, true, 'still found by the "In both" filter');
+  assert.equal(existing[0].alsoSchedule, undefined, 'the existing record itself is not changed');
+
+  const changed = S.mergeReport(existing, [{ ...sched[0], topic: 'Satsang with Sector-4 MHTs' }]);
+  assert.equal(changed[0].source, 'schedule', 'different: the schedule version replaces it');
+  assert.equal(changed[0].alsoExisting, true);
+});
+
 test('the operator\'s corrections are remembered for the next schedule', () => {
   const { sessions } = draft('oct-14-to-nov-5-2026', {});
   const ap = sessions.find((s) => /આપ્તપુત્ર/.test(s.title));

@@ -21,7 +21,7 @@ const REPORT_FILTERS = [
 ];
 
 /** Where a record came from, as the Source filter names it. */
-const reportSource = (rec) => (rec.source !== 'schedule' ? 'Existing data'
+const reportSource = (rec) => (rec.source !== 'schedule' ? (rec.alsoSchedule ? 'In both' : 'Existing data')
   : rec.alsoExisting ? 'In both' : 'Event schedule');
 
 // The grid: [column key, header]; ID and Folder are frozen.
@@ -269,7 +269,7 @@ function reportShown(all) {
   const { source: wantSource, ...frappeFilters } = r.filters;
   return SCHEDULE.filterReport(all, frappeFilters)
     .filter((rec) => !wantSource || reportSource(rec) === wantSource
-      || (wantSource === 'Event schedule' && rec.source === 'schedule'))
+      || (wantSource === 'Event schedule' && (rec.source === 'schedule' || rec.alsoSchedule)))
     .filter((rec) => Object.entries(r.columns).every(([k, q]) => !String(q || '').trim()
       || String(k === 'id' ? rec.id : k === 'folder' ? rec.folder : reportValue(rec, k)).toLowerCase()
         .includes(String(q).trim().toLowerCase())));

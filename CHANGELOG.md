@@ -4,6 +4,10 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.3
+
+- **Report: schedule rows already in Frappe show as normal.** After uploading the event schedule to Frappe and reading the downloaded report back in, a session that is exactly the same in both now shows in normal white text instead of purple "Schedule · replaces existing". **Save as Excel** leaves it out, so it is not uploaded twice. If anything differs, the schedule's version is still shown in purple. The **Source** filter still finds these rows under **In both**.
+
 ## 2.0.2
 
 - **Starting a backup from the event schedule after Only camera clips.** After an **Only camera clips** job, starting the next backup of the same type (Formal or Informal) from the event schedule kept the old clips-only job, so **Next** on the Sources page stayed greyed out. Each backup started from the schedule now begins fresh.

@@ -1344,7 +1344,10 @@
     for (const r of existing || []) byId.set(r.id.toUpperCase(), r);
     for (const r of scheduled || []) {
       const prev = byId.get(r.id.toUpperCase());
-      byId.set(r.id.toUpperCase(), prev ? { ...r, alsoExisting: true } : r);
+      // Already in the existing data exactly as scheduled (e.g. uploaded to Frappe and read
+      // back): keep the existing row, so it shows as normal data and is not exported again.
+      byId.set(r.id.toUpperCase(), !prev ? r
+        : sameReportRecord(prev, r) ? { ...prev, alsoSchedule: true } : { ...r, alsoExisting: true });
     }
     return [...byId.values()].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)
       || (b.folder || 0) - (a.folder || 0) || sessionRank(b.session) - sessionRank(a.session));
@@ -1456,6 +1459,20 @@
     };
     return { columns: REPORT_SHEET.map(([h]) => h),
       rows: (records || []).map((r) => REPORT_SHEET.map(([, k]) => value(r, k))) };
+  }
+
+  /**
+   * Whether two records would write the same report sheet row: every exported column equal,
+   * ignoring case and extra spaces, lists in any order, and the duration's hh:mm:ss form.
+   */
+  function sameReportRecord(a, b) {
+    const norm = (r, k) => {
+      let v = ['year', 'month', 'day'].includes(k) ? r.date : r[k];   // the sheet's Year, M, D come from the date
+      if (k === 'duration') v = reportDuration(v);
+      if (Array.isArray(v)) v = v.map((x) => String(x).trim().toLowerCase()).filter(Boolean).sort().join('|');
+      return String(v ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+    };
+    return REPORT_SHEET.every(([, k]) => norm(a, k) === norm(b, k));
   }
 
   /** Rows ordered by Raw (folder) number; rows without a number keep their order at the end. */

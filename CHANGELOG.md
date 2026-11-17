@@ -4,6 +4,16 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.4
+
+- **See what the Excel file had for a purple row.** In the report, a purple "Schedule · replaces existing" row now has a ▸ in front of its Raw Video ID. Click it to show the entry from the existing data (Excel) underneath, with the cells that differ highlighted.
+- **Keep one of the two.** Right-click a purple row, or the Excel entry under it:
+  - **Keep the Excel entry** asks first and lists every change, then changes the event schedule row to match. The row turns white on every computer and **Save as Excel** leaves it out.
+  - **Keep the event schedule entry** leaves it purple, ready to upload to Frappe.
+  - When the dates differ, Keep the Excel entry is greyed out: change the date on the event schedule row yourself, since it can renumber the schedule.
+- **New schedules start after every folder already used.** The first Formal and Informal folder numbers of a newly read schedule now come after every folder the team's schedules use, including sessions added later with **Add unplanned session**, and after the report's own folders. Pressing **Save .xlsx** is no longer needed to keep them right.
+- **Right-click on the event schedule explains itself.** While a backup is set up but not finished, the schedule is locked; right-clicking a row now says so and how to put that backup aside, instead of doing nothing. Right-clicking a row that isn't ticked says to tick it first.
+
 ## 2.0.3
 
 - **Report: schedule rows already in Frappe show as normal.** After uploading the event schedule to Frappe and reading the downloaded report back in, a session that is exactly the same in both now shows in normal white text instead of purple "Schedule · replaces existing". **Save as Excel** leaves it out, so it is not uploaded twice. If anything differs, the schedule's version is still shown in purple. The **Source** filter still finds these rows under **In both**.

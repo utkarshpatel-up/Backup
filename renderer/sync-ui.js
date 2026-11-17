@@ -120,7 +120,7 @@ async function syncRefresh() {
       state.report.loading = false;
       state.report.error = null;
     } else {
-      state.report = { file: 'Team cache', existing: view.data.report || [], loading: false, filters: state.report?.filters || {}, columns: state.report?.columns || {}, limit: state.report?.limit || 300 };
+      state.report = { file: 'Team cache', existing: view.data.report || [], loading: false, filters: state.report?.filters || {}, columns: state.report?.columns || {}, limit: state.report?.limit || 300, open: state.report?.open };
     }
     syncUI.waiting = false;
     render();

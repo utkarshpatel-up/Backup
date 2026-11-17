@@ -1317,7 +1317,7 @@
         duration: s.duration || '', activity: s.activity, place: s.place, topic: s.topic,
         clips: s.clips ?? '', cameras: s.cameras ?? '', remarks: s.remarks || '', events: (s.events || []).slice(),
         languages: (s.languages || []).slice(), city: c ? c.city : s.city || '',
-        state: c ? c.state : '', country: c ? c.country : '', source: 'schedule', schedule: label, uid: s.uid,
+        state: c ? c.state : '', country: c ? c.country : '', source: 'schedule', schedule: label, uid: s.uid, key: s.key,
         backedUp: !!s.backedUp,
       });
     }
@@ -1347,7 +1347,7 @@
       // Already in the existing data exactly as scheduled (e.g. uploaded to Frappe and read
       // back): keep the existing row, so it shows as normal data and is not exported again.
       byId.set(r.id.toUpperCase(), !prev ? r
-        : sameReportRecord(prev, r) ? { ...prev, alsoSchedule: true } : { ...r, alsoExisting: true });
+        : sameReportRecord(prev, r) ? { ...prev, alsoSchedule: true } : { ...r, alsoExisting: true, existing: prev });
     }
     return [...byId.values()].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)
       || (b.folder || 0) - (a.folder || 0) || sessionRank(b.session) - sessionRank(a.session));
@@ -1462,17 +1462,76 @@
   }
 
   /**
-   * Whether two records would write the same report sheet row: every exported column equal,
-   * ignoring case and extra spaces, lists in any order, and the duration's hh:mm:ss form.
+   * The report sheet columns two records write differently, in sheet order: case, extra spaces,
+   * the order of a list and the duration's hh:mm:ss form do not count.
    */
-  function sameReportRecord(a, b) {
+  function reportDiff(a, b) {
     const norm = (r, k) => {
-      let v = ['year', 'month', 'day'].includes(k) ? r.date : r[k];   // the sheet's Year, M, D come from the date
+      let v = ['year', 'month', 'day'].includes(k) ? reportSheet([{ date: r.date }]).rows[0][REPORT_SHEET.findIndex(([, f]) => f === k)] : r[k];
       if (k === 'duration') v = reportDuration(v);
       if (Array.isArray(v)) v = v.map((x) => String(x).trim().toLowerCase()).filter(Boolean).sort().join('|');
       return String(v ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
     };
-    return REPORT_SHEET.every(([, k]) => norm(a, k) === norm(b, k));
+    return REPORT_SHEET.map(([, k]) => k).filter((k) => norm(a, k) !== norm(b, k));
+  }
+
+  /** Whether two records would write the same report sheet row (see reportDiff). */
+  function sameReportRecord(a, b) {
+    return !reportDiff(a, b).length;
+  }
+
+  // What a schedule row takes from an existing entry to match it. State and country follow the
+  // city. The ID's parts (folder, session, author, format, type) already match, or the IDs would
+  // differ; the date can renumber the schedule, so it is left to the operator.
+  const REPORT_KEEP = ['activity', 'place', 'topic', 'events', 'languages', 'city', 'duration', 'clips', 'cameras', 'remarks'];
+  const REPORT_FOLLOWS = ['state', 'country'];
+
+  /**
+   * The schedule row's fields that make it read like `existing`, for the `diff` columns:
+   * {patch, blocked}, `blocked` being the differing columns it cannot take (the date).
+   */
+  function keepExisting(existing, diff) {
+    const patch = {};
+    const blocked = [];
+    for (const k of diff || []) {
+      if (REPORT_FOLLOWS.includes(k)) continue;
+      if (!REPORT_KEEP.includes(k)) { blocked.push(k); continue; }
+      const v = existing[k];
+      if (k === 'events' || k === 'languages') patch[k] = (Array.isArray(v) ? v : String(v ?? '').split(',')).map((x) => String(x).trim()).filter(Boolean);
+      else if (k === 'duration') patch[k] = reportDuration(v);
+      else if (k === 'clips' || k === 'cameras') patch[k] = /^\d+$/.test(String(v ?? '').trim()) ? Number(v) : String(v ?? '').trim();
+      else patch[k] = String(v ?? '').trim();
+    }
+    return { patch, blocked };
+  }
+
+  /**
+   * Starting folder numbers for a new schedule: the team's saved ones, raised past every folder
+   * the schedules already number (rows added after their last Save .xlsx included) and every
+   * folder in the report's DD HD/4K numbering, which the schedules continue.
+   */
+  function nextStarts(starts, schedules, records) {
+    const out = { ...(starts || {}) };
+    const raise = (k, folder) => {
+      const n = folder == null || String(folder).trim() === '' ? NaN : Number(folder);
+      if (!Number.isFinite(n)) return;
+      const cur = Number(out[k]);
+      if (!(Number.isFinite(cur) && cur > n)) out[k] = n + 1;
+    };
+    for (const item of schedules || []) {
+      const nums = assignNumbers(item.sessions || [], item.starts || {});
+      for (const s of item.sessions || []) {
+        const n = nums.get(s.key);
+        // Counted as Save .xlsx counts them: ticked Formal and Informal rows.
+        if (s.include && n && (s.type === 'Formal' || s.type === 'Informal')) raise(s.type === 'Informal' ? 'informal' : 'formal', n.folder);
+      }
+    }
+    for (const r of records || []) {
+      const series = seriesOf(r);
+      if (series === 'DD Formal HD/4K') raise('formal', r.folder);
+      else if (series === 'DD Informal HD/4K') raise('informal', r.folder);
+    }
+    return out;
   }
 
   /** Rows ordered by Raw (folder) number; rows without a number keep their order at the end. */
@@ -1488,5 +1547,6 @@
            learn, toIndian, fromIndian, sessionDay, half, camsFor, jobFolderName,
            sessionFolderName, folderPlan, sessionFromRecord, check, parseCities, findCity, cityOf, geolocation,
            parseReport, reportSheet, eventPartners, scheduleRecords, seriesOf, mergeReport, findGaps, filterReport,
+           reportDiff, keepExisting, nextStarts,
            reportDate, TITLE_RULES, PLACE_RULES };
 });

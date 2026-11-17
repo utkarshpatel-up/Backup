@@ -270,6 +270,55 @@ test('a schedule row the existing data already holds unchanged shows as existing
   assert.equal(changed[0].alsoExisting, true);
 });
 
+test('a purple row carries the existing entry it replaces, and which cells differ', () => {
+  const base = { id: 'DD-I-HD-2625-2', folder: 2625, format: 'HD', session: '2', author: 'DD', type: 'Informal',
+    date: '2026-11-11', duration: '1h 8m 40s', activity: 'General', place: 'Vatsalya', topic: 'Bhai Beej',
+    clips: 10, cameras: 1, remarks: '', events: ['Bhai Beej'], languages: ['Gujarati'],
+    city: 'Adalaj', state: 'Gujarat', country: 'India' };
+  const existing = { ...base, clips: '10', cameras: '1', source: 'existing' };
+  const sched = { ...base, activity: 'Sankul - Bhaio Behno', topic: 'Bhai Beej Satsang', source: 'schedule', key: 7 };
+  const [row] = S.mergeReport([existing], [sched]);
+  assert.equal(row.source, 'schedule');
+  assert.equal(row.existing, existing, 'the Excel entry stays reachable from the purple row');
+  assert.deepEqual(S.reportDiff(row, row.existing), ['activity', 'topic']);
+  assert.deepEqual(S.reportDiff(row, { ...row.existing, date: '2026-11-12' }), ['day', 'activity', 'topic']);
+});
+
+test('keeping the Excel entry copies its values into the schedule session, never its date', () => {
+  const existing = { id: 'X', date: '2026-11-11', activity: 'General', topic: 'Bhai Beej', place: 'Vatsalya',
+    events: ['Bhai Beej', 'Visit'], languages: ['Gujarati'], city: 'Adalaj', state: 'Gujarat', country: 'India',
+    duration: '01:08:40', clips: '10', cameras: '', remarks: 'ok' };
+  const keep = S.keepExisting(existing, ['activity', 'topic', 'events', 'duration', 'clips', 'cameras', 'remarks', 'state']);
+  assert.deepEqual(keep.blocked, []);
+  assert.deepEqual(keep.patch, { activity: 'General', topic: 'Bhai Beej', events: ['Bhai Beej', 'Visit'],
+    duration: '1h 8m 40s', clips: 10, cameras: '', remarks: 'ok' });
+  assert.notEqual(keep.patch.events, existing.events, 'lists are copied, not shared');
+  // State and country follow the city; a date is the operator's to change (it can renumber the schedule).
+  assert.deepEqual(S.keepExisting(existing, ['day', 'topic']).blocked, ['day']);
+});
+
+test('a new schedule starts past every folder already numbered, not only the saved team numbers', () => {
+  const item = { starts: { formal: 3066, informal: 2626 }, sessions: [
+    { key: 1, include: true, date: '2026-11-19', type: 'Formal', hint: 'E' },
+    { key: 2, include: true, date: '2026-11-20', type: 'Formal', hint: 'M' },
+    // Added later with "Add unplanned session", after the last Save .xlsx.
+    { key: 3, include: true, date: '2026-11-24', type: 'Formal', hint: 'E' },
+    { key: 4, include: true, date: '2026-11-17', type: 'Informal' },
+    { key: 5, include: false, date: '2026-11-25', type: 'Informal' },
+  ] };
+  const used = S.assignNumbers(item.sessions, item.starts);
+  const maxFormal = Math.max(...[1, 2, 3].map((k) => used.get(k).folder));
+  assert.deepEqual(S.nextStarts({ formal: 3066, informal: 2626 }, [item], []),
+    { formal: maxFormal + 1, informal: 2627 });
+  // Higher saved numbers win; the report's own DD HD/4K folders count too, other series do not.
+  const report = [{ author: 'DD', type: 'Informal', format: 'HD', folder: 2700 },
+    { author: 'DD', type: 'Formal', format: 'DV', folder: 9000 }, { author: 'NM', type: 'Formal', format: 'HD', folder: 9100 }];
+  assert.deepEqual(S.nextStarts({ formal: 5000 }, [item], report), { formal: 5000, informal: 2701 });
+  assert.deepEqual(S.nextStarts(undefined, [], []), {});
+  // An entry with no folder number raises nothing (an empty box stays empty).
+  assert.deepEqual(S.nextStarts({}, [], [{ author: 'DD', type: 'Formal', format: 'HD', folder: null }]), {});
+});
+
 test('the operator\'s corrections are remembered for the next schedule', () => {
   const { sessions } = draft('oct-14-to-nov-5-2026', {});
   const ap = sessions.find((s) => /આપ્તપુત્ર/.test(s.title));

@@ -36,6 +36,8 @@ const REPORT_COLUMNS = [
 function reportState() {
   if (!state.report) state.report = { file: null, existing: null, loading: false, error: null, filters: {}, columns: {}, limit: REPORT_PAGE };
   // This computer's local-mode corrections never overlay the team's report (team edits live in the record).
+  // Purple rows whose existing (Excel) entry is shown underneath, by ID.
+  if (!state.report.open) state.report.open = new Set();
   if (!state.report.edits) state.report.edits = typeof syncAccount === 'function' && syncAccount() ? {} : reportLoadEdits();
   return state.report;
 }
@@ -305,18 +307,30 @@ function reportRegions() {
     const hist = team && (rec.source === 'schedule' ? rec.uid && ['session', rec.uid] : edited && ['report_record', rec.id.trim().toUpperCase()]);
     const idText = hist ? `<button type="button" class="rep-hist" data-hist-type="${hist[0]}" data-hist-key="${esc(hist[1])}" data-hist-id="${esc(rec.id)}"
         title="Show every change to this entry">${esc(rec.id)}</button>` : esc(rec.id);
+    // A purple row's ▸ shows the existing (Excel) entry it replaces underneath, with the cells that differ marked.
+    const open = both && rec.existing && r.open.has(rec.id);
+    const diff = open ? new Set(SCHEDULE.reportDiff(rec, rec.existing)) : null;
+    const twisty = both && rec.existing ? `<button type="button" class="rep-twisty" data-twisty="${esc(rec.id)}" aria-expanded="${open}"
+        title="${open ? 'Hide' : 'Show'} the entry from the existing data (Excel) · right-click to keep one of them">${open ? '▾' : '▸'}</button>` : '';
     const row = `<tr data-id="${esc(rec.id)}" class="${both ? 'rep-both' : rec.source === 'schedule' ? 'rep-sch' : ''}">
       <td class="fz rz1 mono${edited ? ' rep-edit-id' : ''}" title="${esc(rec.source === 'schedule'
         ? `From the event schedule ${rec.schedule}${both ? '. The existing data has an entry with this ID too; this row shows the version from the schedule.' : ''}${rec.backedUp ? ' · backed up' : ''}`
-        : edited ? 'Existing data, corrected (orange cells)' : 'Existing data')}"><div class="rep-id">${idText}${tag}<button type="button"
+        : edited ? 'Existing data, corrected (orange cells)' : 'Existing data')}"><div class="rep-id">${twisty}${idText}${tag}<button type="button"
           class="rep-copy" data-copy="${i}" title="Copy to the event schedule">⧉</button></div></td>
       <td class="fz rz2">${esc(rec.folder ?? '')}</td>
       ${REPORT_COLUMNS.map(([k]) => {
         const v = reportValue(rec, k);
         const canEdit = rec.source !== 'schedule' && REPORT_EDITABLE.has(k);
-        return `<td class="c-${k}${rec.edited?.has(k) ? ' rep-edit' : ''}${canEdit ? ' rep-ed' : ''}" data-k="${k}"${canEdit ? ' tabindex="-1"' : ''}${String(v).length > 20 ? ` title="${esc(v)}"` : ''}>${esc(v)}</td>`;
+        return `<td class="c-${k}${rec.edited?.has(k) ? ' rep-edit' : ''}${canEdit ? ' rep-ed' : ''}${diff?.has(k) ? ' rep-diff' : ''}" data-k="${k}"${canEdit ? ' tabindex="-1"' : ''}${String(v).length > 20 ? ` title="${esc(v)}"` : ''}>${esc(v)}</td>`;
       }).join('')}</tr>`;
-    return [row, ...(gapAt.get(i) || []).map((t) => `<tr class="rep-gap"><td colspan="${width}">⚠ ${esc(t)}</td></tr>`)];
+    const incoming = open ? `<tr class="rep-incoming" data-of="${esc(rec.id)}">
+      <td class="fz rz1 mono" title="The entry in the existing data (Excel) that the schedule row above replaces"><div class="rep-id"><span class="rep-twisty-pad"></span>${esc(rec.existing.id)}<span class="rep-tag inc">Excel · existing</span></div></td>
+      <td class="fz rz2${diff.has('folder') ? ' rep-diff' : ''}">${esc(rec.existing.folder ?? '')}</td>
+      ${REPORT_COLUMNS.map(([k]) => {
+        const v = reportValue(rec.existing, k);
+        return `<td class="c-${k}${diff.has(k) ? ' rep-diff' : ''}"${String(v).length > 20 ? ` title="${esc(v)}"` : ''}>${esc(v)}</td>`;
+      }).join('')}</tr>` : '';
+    return [row, ...(incoming ? [incoming] : []), ...(gapAt.get(i) || []).map((t) => `<tr class="rep-gap"><td colspan="${width}">⚠ ${esc(t)}</td></tr>`)];
   });
   if (!rows.length) rows.push(`<tr><td colspan="${width}" class="hint" style="padding:14px">Nothing matches these filters.</td></tr>`);
   const account = typeof syncAccount === 'function' && syncAccount();
@@ -462,6 +476,92 @@ function wireReportButtons(root) {
   root.querySelector('#repMore')?.addEventListener('click', () => { reportState().limit += REPORT_PAGE; render(); });
 }
 
+/** The schedule row (and its schedule) a purple report row comes from. */
+function reportScheduleRow(rec) {
+  for (const item of (state.schedules && state.schedules.items) || []) {
+    const row = item.sessions.find((x) => x.key === rec.key);
+    if (!row) continue;
+    // Keys are unique only within a schedule: confirm it is this ID.
+    const mine = SCHEDULE.scheduleRecords(item.sessions, item.starts, scheduleCities(), scheduleRange(item)).find((x) => x.key === rec.key);
+    if (mine && mine.id === rec.id) return { item, row };
+  }
+  return null;
+}
+
+/** Why the schedule can't be changed from here right now, or ''. */
+function reportScheduleLocked() {
+  if (typeof syncAccount !== 'function' || !syncAccount()) return '';
+  if (state.scheduleRun || syncUI.preparing) return 'A backup is set up for the team: finish it, or put it aside under Account.';
+  if (!syncAvailable()) return 'Sign in under Account to change the team\'s event schedule.';
+  return '';
+}
+
+/** Right-click on a purple row: show/hide the Excel entry, or keep one of the two. */
+function reportBothMenu(rec, e) {
+  const diff = SCHEDULE.reportDiff(rec, rec.existing);
+  const { blocked } = SCHEDULE.keepExisting(rec.existing, diff);
+  const open = reportState().open.has(rec.id);
+  const label = (k) => (REPORT_COLUMNS.find(([c]) => c === k) || [k, k])[1];
+  const why = reportScheduleLocked()
+    || (blocked.length ? `The ${blocked.map(label).join(', ')} differ${blocked.length === 1 ? 's' : ''}: change the date on the event schedule row itself, since it can renumber the schedule.` : '');
+  contextMenu([
+    ['toggle', open ? 'Hide the Excel entry' : 'Show the Excel entry', 'The existing data\'s entry for this ID, under this row'],
+    ['excel', 'Keep the Excel entry <i>· white</i>', `The event schedule row takes its ${diff.map(label).join(', ') || 'values'}, so it turns white and is left out of Save as Excel`, why],
+    ['schedule', 'Keep the event schedule entry <i>· purple</i>', 'It stays purple: upload it to Frappe with Save as Excel'],
+  ], e, (act) => {
+    const set = reportState().open;
+    if (act === 'toggle') { if (!set.delete(rec.id)) set.add(rec.id); render(); }
+    else if (act === 'schedule') {
+      set.delete(rec.id); render();
+      toast(`${rec.id}: the event schedule entry is kept; upload it with Save as Excel.`, 'ok');
+    } else reportKeepExisting(rec).catch((err) => toast(err?.message || 'Could not change the event schedule.', 'err'));
+  });
+}
+
+/**
+ * Keep the Excel entry: the event schedule row takes its values, so the two match and the
+ * report shows the existing entry (white). The schedule row is the one changed, so every
+ * computer on the team sees the same and the next Save as Excel leaves it out.
+ */
+async function reportKeepExisting(rec) {
+  const locked = reportScheduleLocked();
+  if (locked) { toast(locked, 'warn'); return; }
+  const found = reportScheduleRow(rec);
+  if (!found) { toast(`${rec.id} is no longer on an event schedule.`, 'warn'); return; }
+  const diff = SCHEDULE.reportDiff(rec, rec.existing);
+  const { patch, blocked } = SCHEDULE.keepExisting(rec.existing, diff);
+  if (blocked.length) return;
+  const label = (k) => (REPORT_COLUMNS.find(([c]) => c === k) || [k, k])[1];
+  const keys = Object.keys(patch);
+  if (!keys.length) return;
+  const ok = await window.api.confirm({
+    message: `Keep the Excel entry for ${rec.id}?`,
+    detail: `The event schedule row changes to match it:\n\n${keys.map((k) => `${label(k)}: "${reportValue(rec, k)}" → "${reportValue(rec.existing, k)}"`).join('\n')}`,
+    confirmLabel: 'Keep Excel entry',
+  });
+  if (!ok) return;
+  // A teammate's change may have arrived while the question was open: apply only what was shown.
+  const again = reportScheduleRow(rec);
+  const still = again && reportRecords().all.find((x) => x.id === rec.id);
+  if (reportScheduleLocked() || !again || again.row !== found.row || !still?.existing
+    || JSON.stringify(SCHEDULE.keepExisting(still.existing, SCHEDULE.reportDiff(still, still.existing)).patch) !== JSON.stringify(patch)) {
+    toast(`${rec.id} changed in the meantime; nothing was changed. Check it and try again.`, 'warn');
+    return;
+  }
+  const { item, row } = found;
+  Object.assign(row, patch);
+  if (row.flags) for (const k of keys) delete row.flags[k];
+  item.saved = null;
+  reportState().open.delete(rec.id);
+  scheduleRemember();
+  render();
+  const now = reportRecords().all.find((x) => x.id === rec.id);
+  if (now && now.alsoExisting && now.existing) {
+    const left = SCHEDULE.reportDiff(now, now.existing).map(label);
+    toast(`${rec.id}: the event schedule row now has the Excel values, but ${left.join(', ')} still differ${left.length === 1 ? 's' : ''} (from the city list).`, 'warn');
+  } else toast(`${rec.id}: kept the Excel entry. The event schedule row was changed to match.`, 'ok');
+}
+
 let reportFilterTimer = null;
 function wireReportPage() {
   const r = reportState();
@@ -473,10 +573,21 @@ function wireReportPage() {
   wireReportButtons($('content'));
   // A blue, purple or orange row's Raw Video ID opens that entry's history.
   document.querySelector('.rep-table tbody')?.addEventListener('click', (e) => {
+    const tw = e.target.closest('button.rep-twisty');
+    if (tw) { const open = reportState().open; if (!open.delete(tw.dataset.twisty)) open.add(tw.dataset.twisty); render(); return; }
     const copy = e.target.closest('button.rep-copy');
     if (copy) { const rec = (reportRegions.page || [])[Number(copy.dataset.copy)]; if (rec) scheduleCopyRecord(rec); return; }
     const b = e.target.closest('button.rep-hist');
     if (b) showRecordHistory(b.dataset.histType, b.dataset.histKey, b.dataset.histId);
+  });
+  // Right-click a purple row (or the Excel entry under it) to keep one of the two.
+  document.querySelector('.rep-table tbody')?.addEventListener('contextmenu', (e) => {
+    const tr = e.target.closest('tr.rep-both, tr.rep-incoming');
+    const id = tr && (tr.dataset.id || tr.dataset.of);
+    const rec = id && (reportRegions.page || []).find((x) => x.id === id && x.alsoExisting && x.existing);
+    if (!rec) return;
+    e.preventDefault();
+    reportBothMenu(rec, e);
   });
   // Double-click a cell of the existing data to correct it; Enter or leaving the box saves, Esc cancels.
   document.querySelector('.rep-table tbody')?.addEventListener('dblclick', (e) => {

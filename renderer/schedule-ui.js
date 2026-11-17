@@ -139,7 +139,7 @@ async function openScheduleInner(given) {
   const item = scheduleHydrate({
     id: newScheduleId(), created: new Date().toISOString(), file: files[0], files, rows: [], read: null,
     sessions: [], scan: null, saved: null,
-    starts: { ...(settings.scheduleStarts || {}) },
+    starts: scheduleNextStarts(settings),
     defaults: prev ? { ...prev.defaults } : {},
   }, settings);
   item.busy = 'Reading the schedule…';
@@ -391,6 +391,15 @@ function scheduleEventPick(key) {
 }
 
 /**
+ * A new schedule's first folder numbers: the team's saved ones, raised past every folder the
+ * schedules and the report already use, so a row added after the last Save .xlsx is not reused.
+ */
+function scheduleNextStarts(settings) {
+  return SCHEDULE.nextStarts(settings.scheduleStarts, (state.schedules && state.schedules.items) || [],
+    (state.report && state.report.existing) || []);
+}
+
+/**
  * A session with folders on a drive keeps its number: type its current number
  * into any such row, so adding a session before it moves only the rows not yet
  * started. Their folder names on the drive would no longer match otherwise.
@@ -460,7 +469,7 @@ async function scheduleCopyRecordInner(rec) {
     const settings = typeof syncSettings === 'function' ? syncSettings(await window.api.getSettings().catch(() => ({}))) : await window.api.getSettings().catch(() => ({}));
     s = scheduleHydrate({
       id: newScheduleId(), created: new Date().toISOString(), file: '', rows: [], read: null,
-      sessions: [], scan: null, saved: null, starts: { ...(settings.scheduleStarts || {}) }, defaults: {},
+      sessions: [], scan: null, saved: null, starts: scheduleNextStarts(settings), defaults: {},
     }, settings);
     if (!state.schedules) state.schedules = { openId: null, items: [] };
     state.schedules.items.unshift(s);
@@ -1506,6 +1515,13 @@ function wireScheduleRows(root) {
 
 /* ------------------------------------------------------- row menu (right-click) */
 
+/** Why the schedule is locked while a backup is set up for the team. */
+function scheduleLockedNote() {
+  const run = state.scheduleRun;
+  toast(`${run ? `The backup for ${run.id} is set up` : 'A backup is being set up'}, so the schedule is locked. `
+    + 'Finish it, or use Put aside prepared backup under Account.', 'warn');
+}
+
 /** Close the row menu, if one is open. */
 function scheduleMenuClose() {
   const menu = document.getElementById('schRowMenu');
@@ -1542,26 +1558,37 @@ function scheduleRowMenu(key, e) {
   scheduleMenuClose();
   const s = state.schedule;
   const row = scheduleFind(key);
-  if (!row || !row.include) return;
-  if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) return;
+  if (!row) return;
+  if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) { scheduleLockedNote(); return; }
+  if (!row.include) { toast('Tick this row first: its menu is for sessions on the schedule.', 'warn'); return; }
   const hard = blocksStart(scheduleProblems().get(row.key));
   const block = state.busy ? 'Busy with another job.' : hard.length ? `Fix the red cells first: ${hard[0].msg}` : '';
   const unfinished = row.startedAt && !row.backedUp;
   const informal = row.type === 'Informal';
-  const item = (act, label, sub, why) => `<button type="button" role="menuitem" data-menu="${act}"
-      ${why ? `disabled title="${esc(why)}"` : ''}><b>${label}</b><span>${esc(sub)}</span></button>`;
+  contextMenu([
+    ['clips', `Clips only${unfinished ? ' <i>· did not finish</i>' : ''}`,
+      unfinished ? 'Add the camera clips to the session already on the drive'
+        : 'Add camera clips to the session on the drive (late clips, or a backup that stopped)', block],
+    ['h264', 'H264 MM Backup…', 'HyperDeck Studio Mini SD card, named like the masters with the folder number in front',
+      block || (informal ? 'Formal sessions only: the HyperDeck records the formal master.' : '')],
+  ], e, (act) => (act === 'clips' ? scheduleClipsOnly(key) : scheduleEditCopy(key)));
+}
+
+/**
+ * A right-click menu at the pointer (from the keyboard's Menu key or Shift+F10, under the
+ * focused element). `items` are [action, label html, explanation, why disabled]; `pick(action)`
+ * runs the chosen one. Shared by the event schedule and the report.
+ */
+function contextMenu(items, e, pick) {
+  scheduleMenuClose();
   const menu = document.createElement('div');
   menu.id = 'schRowMenu';
   menu.className = 'ctx-menu';
   menu.tabIndex = -1;
   menu.setAttribute('role', 'menu');
-  menu.innerHTML = item('clips', `Clips only${unfinished ? ' <i>· did not finish</i>' : ''}`,
-      unfinished ? 'Add the camera clips to the session already on the drive'
-        : 'Add camera clips to the session on the drive (late clips, or a backup that stopped)', block)
-    + item('h264', 'H264 MM Backup…', 'HyperDeck Studio Mini SD card, named like the masters with the folder number in front',
-      block || (informal ? 'Formal sessions only: the HyperDeck records the formal master.' : ''));
+  menu.innerHTML = items.map(([act, label, sub, why]) => `<button type="button" role="menuitem" data-menu="${act}"
+      ${why ? `disabled title="${esc(why)}"` : ''}><b>${label}</b><span>${esc(sub)}</span></button>`).join('');
   document.body.appendChild(menu);
-  // At the pointer; from the keyboard (Menu key, Shift+F10), under the row's focused cell.
   let x = e.clientX, y = e.clientY;
   if (!x && !y) {
     const r = (e.target && e.target.getBoundingClientRect) ? e.target.getBoundingClientRect() : { left: 40, bottom: 40 };
@@ -1572,8 +1599,7 @@ function scheduleRowMenu(key, e) {
   menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - h - 4))}px`;
   menu.querySelectorAll('[data-menu]').forEach((b) => b.addEventListener('click', () => {
     scheduleMenuClose();
-    if (b.dataset.menu === 'clips') scheduleClipsOnly(key);
-    else scheduleEditCopy(key);
+    pick(b.dataset.menu);
   }));
   (menu.querySelector('button:not([disabled])') || menu).focus();
   document.addEventListener('mousedown', scheduleMenuOutside, true);
@@ -1654,6 +1680,8 @@ function scheduleApplyChipFocus(host) {
 function wireSchedulePage() {
   if (typeof syncAccount === 'function' && syncAccount() && (state.scheduleRun || syncUI.preparing)) {
     document.querySelectorAll('#content input, #content select, #content button, #content textarea').forEach((el) => { el.disabled = true; });
+    // Everything is disabled, so a right-click would otherwise do nothing at all: say why.
+    document.querySelectorAll('#content tr[data-row]').forEach((tr) => tr.addEventListener('contextmenu', (e) => { e.preventDefault(); scheduleLockedNote(); }));
     return;
   }
   if (state.schedule && !state.schedule.busy) scheduleDatalists();

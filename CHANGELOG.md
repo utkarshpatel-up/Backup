@@ -4,6 +4,12 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.5
+
+- **Event schedule opens in date order.** Every time you open a schedule, the rows are sorted by date, oldest first (D ▲). Sorting by Y, M or D now uses the whole date, so the end of one month no longer comes after the start of the next. Click the D header to switch between oldest first, newest first and the schedule's own order.
+- **Durations come from the ProRes / SSD drive.** When a backup finishes, the row's duration is read from the ProRes destination first, then from a drive named like SSD-01, SSD-09 or SSD 15, then from any other destination.
+- **Adding camera clips uses the SSD drives first.** When you add camera clips to a session that is already backed up and it is on several drives, the SSD-named drives take the clips and give the row its duration, including the value shown before the copy finishes.
+
 ## 2.0.4
 
 - **See what the Excel file had for a purple row.** In the report, a purple "Schedule · replaces existing" row now has a ▸ in front of its Raw Video ID. Click it to show the entry from the existing data (Excel) underneath, with the cells that differ highlighted.

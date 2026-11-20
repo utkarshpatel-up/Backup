@@ -812,6 +812,9 @@ async function scheduleClipsOnlyInner(key) {
     found = r.found || [];
   } catch (e) { toast(scheduleError(e), 'err'); return; }
   const informal = plan.type === 'Informal';
+  // SSD-named drives first: they take the clips and give the row its duration.
+  found = found.map((f, i) => ({ f, i, r: SSD_NAME.test(scheduleDriveLabel(f.session_path)) ? 0 : 1 }))
+    .sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.f);
   let paths = found.map((f) => f.session_path).slice(0, informal ? 1 : 2);
   if (paths.length) {
     const ok = await window.api.confirm({
@@ -848,6 +851,33 @@ async function scheduleClipsOnlyInner(key) {
     + 'Bring in the camera clips (Import camera cards, or Add files).', 'ok');
 }
 
+/** A drive named like SSD-1, SSD-09 or SSD 15 — the ProRes backup drives. */
+const SSD_NAME = /^SSD[\s_-]*\d+$/i;
+
+/** The name of the drive a path sits on: the label of the drive or source holding it, else the path's own folder names. */
+function scheduleDriveLabel(p) {
+  const norm = (x) => pathKey(String(x || '').replace(/[\\/]+$/, '')).replace(/\\/g, '/');
+  const target = norm(p);
+  let best = null;
+  for (const v of [...(state.volumes || []), ...(state.sources || [])]) {
+    const root = v.path && norm(v.path);
+    if (root && v.label && (target === root || target.startsWith(`${root}/`))
+      && (!best || root.length > best.root.length)) best = { root, label: v.label };
+  }
+  if (best) return String(best.label).trim();
+  // Unlisted: a macOS/Linux mount point names the drive (/Volumes/SSD-01/…).
+  return String(p || '').split(/[\\/]/).find((part) => SSD_NAME.test(part.trim())) || '';
+}
+
+/**
+ * Destinations in the order a row should take its duration from: a ProRes
+ * drive first, then one named like SSD-01, then the rest as they were.
+ */
+function scheduleDurationOrder(targets) {
+  const rank = (t) => (t.role === 'prores' ? 0 : 2) + (SSD_NAME.test(scheduleDriveLabel(t.session_path || t.source_root)) ? 0 : 1);
+  return targets.map((t, i) => ({ t, i, r: rank(t) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.t);
+}
+
 /**
  * After a copy started from a schedule row: read the duration, clip and camera
  * counts back from the job folder(s) it filed into, the same way the drive scan
@@ -861,7 +891,7 @@ async function scheduleAfterRun(plan) {
   if (!s) return;
   const row = scheduleFind(run.key, s);
   if (!row) return;
-  const jobs = [...new Set((plan.targets || []).map((t) => parentDir(t.session_path)).filter(Boolean))];
+  const jobs = [...new Set(scheduleDurationOrder(plan.targets || []).map((t) => parentDir(t.session_path)).filter(Boolean))];
   for (const job of jobs) {
     try {
       const res = await call('schedule_scan', { root: job });
@@ -1076,10 +1106,10 @@ function wireColumnResize(table, scope) {
 // What the grid shows, separately from the schedule itself: a filter box under
 // each header and a sorted column. Only the view changes — the rows keep their
 // order in the schedule, their numbers and their Raw Video IDs. Kept per
-// schedule for this session.
+// schedule for this session; a schedule opens sorted by date, oldest first.
 function scheduleView() {
   const s = state.schedule;
-  if (!state.scheduleView || state.scheduleView.id !== (s && s.id)) state.scheduleView = { id: s && s.id, filters: {}, sort: null };
+  if (!state.scheduleView || state.scheduleView.id !== (s && s.id)) state.scheduleView = { id: s && s.id, filters: {}, sort: { col: 'd', dir: 'asc' } };
   return state.scheduleView;
 }
 const SCHEDULE_FILTER_COLS = ['id', 'folder', ...SCHEDULE_HEAD.map(([k]) => k)];
@@ -1112,7 +1142,11 @@ function scheduleShownRows(nums, cities) {
   }) : s.sessions.slice();
   if (v.sort) {
     const { col, dir } = v.sort;
-    const text = new Map(rows.map((row) => [row.key, scheduleColumnText(row, col, nums.get(row.key) || {}, cities)]));
+    // Y, M and D all sort by the whole date, so D runs across month ends.
+    const byDate = col === 'y' || col === 'm' || col === 'd';
+    const text = new Map(rows.map((row) => [row.key, byDate
+      ? (/^\d{4}-\d{2}-\d{2}$/.test(row.date || '') ? row.date : '')
+      : scheduleColumnText(row, col, nums.get(row.key) || {}, cities)]));
     const order = new Map(s.sessions.map((row, i) => [row.key, i]));
     rows.sort((a, b) => {
       const x = text.get(a.key), y = text.get(b.key);

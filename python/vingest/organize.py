@@ -20,9 +20,14 @@ The naming rules are shared with the rest of the app (see ``naming`` and
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
 
 from . import naming
 from .ingest import CLIP_COUNT_EXTS, _count_clip_files
+
+# A camera folder inside a job or session: 'Cam-01', 'Cam-07 (Drone)'.
+CAM_DIR_RE = re.compile(r"^Cam-\d+\b", re.IGNORECASE)
 
 
 def _cam_label(folder_name: str):
@@ -207,3 +212,94 @@ def apply_rename(plan: dict) -> dict:
         "renamed_folders": renamed_folders,
         "errors": errors,
     }
+
+
+# ------------------------------------------- rename a filed session to a row
+
+def plan_session_rename(session_path: str, new_session: str,
+                        new_job: str = "") -> dict:
+    """Preview renaming an already backed-up session folder to an event
+    schedule row's name, without touching anything.
+
+    The folder keeps its own Dur- and Clips- tokens (they describe what is in
+    it) and takes the row's name in front of them. Files named after the folder
+    follow it: Formal masters ('Anand JJ … E. Dt-21-Nov-26 Dur-46m41s Clip-02')
+    and Informal clips ('Cam-01 Anand JJ … Clip-001'). Anything else, such as
+    Formal camera clips keeping their card names, is left alone. The job folder
+    takes the row's job name too, but only when this session is the only one
+    in it: renaming a shared job folder would relabel the other sessions.
+    """
+    session = Path(os.path.abspath(session_path))
+    if not session.is_dir():
+        raise ValueError(f"“{session}” is not a folder.")
+    old_name = session.name
+    base = naming.session_base(naming.sanitize(new_session or ""))
+    if not base:
+        raise ValueError("The row has no session name.")
+    tokens = [m.group(0).strip() for m in (naming.DUR_TOKEN_RE.search(old_name),
+                                            naming.CLIPS_TOKEN_RE.search(old_name)) if m]
+    new_name = naming.sanitize(" ".join([base, *tokens]))
+
+    def core(name):      # a master's name before its Dur-/Clip- tokens
+        return naming.LEADING_INDEX_RE.sub("", naming.session_base(name)).strip()
+
+    swaps = [(core(old_name), core(new_name)),
+             (naming.informal_event_name(old_name), naming.informal_event_name(new_name))]
+    swaps = [(a, b) for a, b in swaps if a and a != b]
+
+    files, kept = [], 0
+    taken = set()
+    for dirpath, dirnames, filenames in os.walk(session):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for f in sorted(filenames):
+            stem, ext = os.path.splitext(f)
+            if f.startswith(".") or ext.lower() not in CLIP_COUNT_EXTS:
+                continue
+            new_stem = next((stem.replace(a, b, 1) for a, b in swaps if a in stem), None)
+            if new_stem is None:
+                kept += 1
+                continue
+            new_file = naming.sanitize(new_stem) + ext
+            old_path = os.path.join(dirpath, f)
+            new_path = os.path.join(dirpath, new_file)
+            key = os.path.normcase(new_path)
+            if key in taken or (os.path.exists(new_path)
+                                and os.path.normcase(new_path) != os.path.normcase(old_path)):
+                raise ValueError(f"“{new_file}” is already there — nothing renamed.")
+            taken.add(key)
+            files.append({"old_path": old_path, "new_path": new_path,
+                          "rel_old": os.path.relpath(old_path, session.parent),
+                          "rel_new": os.path.relpath(new_path, session.parent)})
+
+    folders, notes = [], []
+    if new_name != old_name:
+        target = session.with_name(new_name)
+        if target.exists() and os.path.normcase(str(target)) != os.path.normcase(str(session)):
+            raise ValueError(f"“{new_name}” is already there — nothing renamed.")
+        folders.append({"old_path": str(session), "new_path": str(target),
+                        "rel_old": old_name, "rel_new": new_name})
+
+    job = session.parent
+    job_new = naming.sanitize(new_job or "")
+    if job_new and job_new != job.name:
+        try:
+            siblings = [c for c in job.iterdir() if c.is_dir() and c != session
+                        and not c.name.startswith(".") and not CAM_DIR_RE.match(c.name)]
+        except OSError:
+            siblings = []
+        if siblings:
+            notes.append(f"The job folder “{job.name}” holds other sessions too, so it keeps "
+                         f"its name (the row's is “{job_new}”).")
+        elif job.with_name(job_new).exists():
+            notes.append(f"“{job_new}” is already there, so “{job.name}” keeps its name.")
+        else:
+            folders.append({"old_path": str(job), "new_path": str(job.with_name(job_new)),
+                            "rel_old": job.name, "rel_new": job_new})
+    if kept:
+        notes.append(f"{kept} file(s) not named after the folder keep their names.")
+
+    final_session = Path(folders[-1]["new_path"]) / new_name \
+        if folders and folders[-1]["old_path"] == str(job) else session.with_name(new_name)
+    return {"root": str(session), "old_name": old_name, "new_name": new_name,
+            "job_old": job.name, "files": files, "folders": folders, "notes": notes,
+            "final_path": str(final_session)}

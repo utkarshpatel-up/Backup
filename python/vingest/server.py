@@ -292,6 +292,16 @@ def m_apply_rename(p, _id):
     return organize.apply_rename(p["plan"])
 
 
+def m_plan_session_rename(p, _id):
+    """Preview renaming a backed-up session folder to an event schedule row."""
+    return organize.plan_session_rename(p["session_path"], p["session_name"], p.get("job_name", ""))
+
+
+def m_apply_session_rename(p, _id):
+    """Perform a plan from plan_session_rename (files first, then folders)."""
+    return organize.apply_rename(p["plan"])
+
+
 def m_edit_copy_plan(p, req_id):
     """Preview the H.264 edit copy: the HyperDeck clips and their new names."""
     return edit_copy.build_plan(p, _progress(req_id))

@@ -1645,6 +1645,14 @@ class TestMasterClipNaming:
         assert naming.ceremony_clip_name(folder, "Pujyashree's Exit", 247, 1, 1, ".MP4") == \
             "Adalaj Pujyashree's Exit E2. Dt-03-Sep-26 Dur-4m7s.MP4"
 
+    def test_a_ceremony_clip_keeps_the_event_code(self):
+        # 'JJ' (Janmajayanti) names the event the ceremony belongs to.
+        assert naming.replace_topic(
+            "Anand JJ General Satsang E. Dt-21-Nov-26 Dur-3m6s Clip-01.mp4", "Pujyashree's Entry") == \
+            "Anand JJ Pujyashree's Entry E. Dt-21-Nov-26 Dur-3m6s Clip-01.mp4"
+        assert naming.ceremony_clip_name("02 Adalaj GP Guru Vandana M. Dt-03-Sep-26", "Pujyashree's Exit",
+                                         247, 1, 1, ".MOV") == "Adalaj GP Pujyashree's Exit M. Dt-03-Sep-26 Dur-4m7s.MOV"
+
     def test_a_name_without_a_session_indicator_still_swaps_the_topic(self):
         assert naming.replace_topic(
             "Adalaj Soneri Satsang Dt-03-Sep-26 Dur-4m7s.MP4", "Pujyashree's Entry") == \

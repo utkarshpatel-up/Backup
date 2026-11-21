@@ -4,6 +4,14 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.6
+
+- **H264 MM Backup: copy only the clips you tick.** Each clip in the list has a tick box, with a tick-all box on top. With nothing ticked, every clip is copied as before. Clips keep their numbers from the whole card.
+- **H264 MM Backup shows the transfer speed** and the time left while copying.
+- **Informal with one camera: clips go straight into the session folder.** When an Informal session has one camera folder at most, its clips are filed into the session folder (Root) instead of Cam-01, and no empty Cam-01 is left. Insert a second card or press Add Cam-02 to use camera folders again.
+- **Rename a backed-up folder to an event schedule row.** Right-click a row and choose **Rename backed-up folder to this row…**, pick the session folder, and choose whether to rename its copy on the other drive too. You see every change before anything is renamed. The folder keeps its Dur- and Clips-, the masters named after it are renamed too, and the job folder is renamed only when this session is the only one in it. The row then takes its duration and clip count from the renamed folder.
+- **Pujyashree's Entry / Welcome / Exit keep the event.** Ticking one of these now gives "Anand JJ Pujyashree's Entry E. …" instead of dropping the JJ (and GP, PP the same way).
+
 ## 2.0.5
 
 - **Event schedule opens in date order.** Every time you open a schedule, the rows are sorted by date, oldest first (D ▲). Sorting by Y, M or D now uses the whole date, so the end of one month no longer comes after the start of the next. Click the D header to switch between oldest first, newest first and the schedule's own order.

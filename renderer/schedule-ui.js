@@ -1605,7 +1605,10 @@ function scheduleRowMenu(key, e) {
         : 'Add camera clips to the session on the drive (late clips, or a backup that stopped)', block],
     ['h264', 'H264 MM Backup…', 'HyperDeck Studio Mini SD card, named like the masters with the folder number in front',
       block || (informal ? 'Formal sessions only: the HyperDeck records the formal master.' : '')],
-  ], e, (act) => (act === 'clips' ? scheduleClipsOnly(key) : scheduleEditCopy(key)));
+    ['rename', 'Rename backed-up folder to this row…',
+      'A session already on the drive(s) takes this row\'s folder and session name — on one drive or both', block],
+  ], e, (act) => (act === 'clips' ? scheduleClipsOnly(key)
+    : act === 'rename' ? scheduleRenameFolder(key) : scheduleEditCopy(key)));
 }
 
 /**
@@ -1667,6 +1670,99 @@ function scheduleEditCopy(key) {
     note: fixed ? '' : `Folder number ${number} is the schedule's suggestion and is not fixed on the row yet. `
       + 'Check it matches the folder the masters go into.',
   });
+}
+
+/**
+ * Rename a session folder that is already backed up to this row's names: the
+ * session folder (keeping its Dur-/Clips-), the files named after it, and the
+ * job folder when the session is alone in it. The operator picks the folder;
+ * its copy on another drive is found by name and offered too. The row then
+ * takes its duration and clip count from the renamed folder.
+ */
+async function scheduleRenameFolder(key) {
+  return typeof syncPreparation === 'function' ? syncPreparation(() => scheduleRenameFolderInner(key)) : scheduleRenameFolderInner(key);
+}
+async function scheduleRenameFolderInner(key) {
+  const s = state.schedule;
+  const row = scheduleFind(key);
+  if (!row || state.busy) return;
+  const hard = blocksStart(scheduleProblems().get(row.key));
+  if (hard.length) { toast(`Fix this row first: ${hard[0].msg}`, 'warn'); return; }
+  const plan = SCHEDULE.folderPlan(s.sessions, s.starts, s.defaults).get(row.key);
+  if (!plan) return;
+  try {
+    const vols = await call('list_volumes', {});
+    state.volumes = vols.volumes || state.volumes;
+  } catch (_) { /* use the drives listed already */ }
+  const first = await window.api.pickFolder(`Choose the backed-up session folder to rename to ${plan.id}`);
+  if (!first) return;
+  const paths = [first];
+  const twin = await findSessionCopies(first);
+  if (twin && await window.api.confirm({
+    message: 'Rename the copy on the other drive too?',
+    detail: `The same session is also on another drive:\n${twin}\n\nChoose "Only this one" to rename ${first} alone.`,
+    confirmLabel: 'Both drives', cancelLabel: 'Only this one', danger: false,
+  })) paths.push(twin);
+
+  const plans = [];
+  try {
+    for (const p of paths) {
+      plans.push(await call('plan_session_rename',
+        { session_path: p, session_name: plan.sessionName, job_name: plan.jobName }));
+    }
+  } catch (e) { toast(scheduleError(e), 'err'); return; }
+  const changes = plans.filter((p) => p.folders.length || p.files.length);
+  if (!changes.length) { toast(`${plan.id}: the folder already has this row's name.`, 'ok'); return; }
+  const lines = plans.map((p) => [
+    p.root,
+    ...p.folders.map((f) => `  ${f.rel_old}\n    → ${f.rel_new}`),
+    `  ${p.files.length} file${p.files.length === 1 ? '' : 's'} renamed with the folder`,
+    ...p.notes.map((n) => `  ${n}`),
+  ].join('\n'));
+  const ok = await window.api.confirm({
+    message: `Rename ${plans.length === 1 ? 'this folder' : `these ${plans.length} folders`} to ${plan.id}?`,
+    detail: `${lines.join('\n\n')}\n\nClose any Explorer/Finder window or player showing these files first.`,
+    confirmLabel: 'Rename', danger: false,
+  });
+  if (!ok) return;
+  try { if (typeof syncProtect === 'function') await syncProtect(s, row); }
+  catch (e) { toast(scheduleError(e), 'err'); return; }
+  const errors = [];
+  for (const p of plans) {
+    try {
+      const r = await call('apply_session_rename', { plan: p }, { label: `Renaming ${p.old_name}` });
+      errors.push(...r.errors);
+    } catch (e) { errors.push(scheduleError(e)); }
+  }
+  // The row takes its duration and clips from the renamed folder, an SSD first.
+  const finals = plans.map((p) => p.final_path).sort((a, b) =>
+    (SSD_NAME.test(scheduleDriveLabel(a)) ? 0 : 1) - (SSD_NAME.test(scheduleDriveLabel(b)) ? 0 : 1));
+  for (const f of finals) {
+    try {
+      const res = await call('schedule_scan', { root: parentDir(f) });
+      SCHEDULE.applyScan(s.sessions, s.starts, res.sessions);
+      if (row.duration) break;
+    } catch (_) { /* the rename stands; Fill durations from drive can read it later */ }
+  }
+  if (!errors.length) {
+    row.startedAt = row.startedAt || new Date().toISOString();
+    row.backedUp = row.backedUp || new Date().toISOString();
+  }
+  scheduleHoldNumbers(s);
+  s.saved = null;
+  scheduleRemember();
+  if (typeof syncAccount === 'function' && syncAccount()) {
+    clearTimeout(scheduleRememberTimer); scheduleRememberTimer = null;
+    await syncCommit(syncUI.backupBase).catch((e) => toast(scheduleError(e), 'err'));
+  } else await scheduleFlush();
+  render();
+  if (errors.length) {
+    await window.api.confirm({ message: `${plan.id}: not everything could be renamed`,
+      detail: `${errors.slice(0, 12).join('\n')}\n\nIf a folder is "in use", close the window or program `
+        + 'showing it and run the rename again: what is already renamed is left as it is.',
+      confirmLabel: 'OK', danger: true });
+  } else toast(`${plan.id}: renamed on ${plans.length} drive${plans.length === 1 ? '' : 's'}`
+    + `${row.duration ? ` — ${row.duration}, ${row.clips} clip${Number(row.clips) === 1 ? '' : 's'}` : ''}.`, 'ok');
 }
 
 /** Ctrl+D (Cmd+D on the Mac), as in Excel: fill this cell from the one above. */

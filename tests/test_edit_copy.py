@@ -101,6 +101,32 @@ def test_run_copies_checks_and_never_overwrites(tmp_path, lengths):
     assert not list(out.glob("*.vingest-part"))
 
 
+def test_run_reports_speed_and_time_left(tmp_path, lengths):
+    src = card(tmp_path, ["a.mp4", "b.mp4"])
+    out = tmp_path / "server"
+    out.mkdir()
+    plan = edit_copy.build_plan({"source": str(src), "dest": str(out), "job_number": "3058",
+                                 "session_folder": SESSION})
+    seen = []
+    edit_copy.run(plan, "size", progress=seen.append)
+    copies = [d for d in seen if d.get("stage") == "copy"]
+    assert copies and all("rate_bps" in d and "eta_seconds" in d for d in copies)
+
+
+def test_run_copies_only_the_items_given(tmp_path, lengths):
+    # The window sends just the ticked clips; their numbers stay the whole card's.
+    src = card(tmp_path, ["a.mp4", "b.mp4", "c.mp4"])
+    out = tmp_path / "server"
+    out.mkdir()
+    plan = edit_copy.build_plan({"source": str(src), "dest": str(out), "job_number": "3058",
+                                 "session_folder": SESSION})
+    picked = [plan["items"][1]]
+    res = edit_copy.run({**plan, "items": picked}, "size")
+    assert res["copied"] == 1 and res["ok"]
+    assert [p.name for p in out.iterdir()] == [picked[0]["name"]]
+    assert "Clip-02" in picked[0]["name"]
+
+
 def test_engine_methods_are_registered():
     assert "edit_copy_plan" in server.METHODS and "edit_copy_run" in server.METHODS
 

@@ -181,6 +181,11 @@ def master_clip_name(folder_name: str, seconds: float | None,
 SESSION_INDICATOR_RE = re.compile(r"\s*\b([EM]\d*)\.\s*$")
 
 
+# The short event codes the schedule writes into session names (Janmajayanti,
+# Guru Purnima, Pran Pratishtha); kept when a ceremony tag replaces the topic.
+EVENT_CODES = ("JJ", "GP", "PP")
+
+
 def replace_topic(name: str, tag: str) -> str:
     """Swap a master name's middle 'topic' for `tag`, keeping the leading
     location word, the session indicator (E./M./E2.) and every date/Dur-/Clip-
@@ -207,9 +212,13 @@ def replace_topic(name: str, tag: str) -> str:
     if ind:
         indicator = f"{ind.group(1)}."
         head = head[:ind.start()].strip()
-    # The first word is the location; the remainder was the topic we replace.
-    location = head.split(" ", 1)[0] if head else ""
-    front = " ".join(p for p in (location, tag, indicator) if p)
+    # The first word is the location; the remainder was the topic we replace,
+    # except the event's short code (JJ, GP, PP), which names the event the
+    # ceremony belongs to: 'Anand JJ General Satsang E.' -> 'Anand JJ <tag> E.'
+    words = head.split()
+    location = words[0] if words else ""
+    events = [w for w in dict.fromkeys(words[1:]) if w in EVENT_CODES]
+    front = " ".join(p for p in (location, *events, tag, indicator) if p)
     return sanitize(" ".join(p for p in (front, tail) if p)) + ext
 
 

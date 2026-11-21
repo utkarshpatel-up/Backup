@@ -18,6 +18,7 @@ report: those come from the ProRes/H.265 masters.
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 from . import naming, probe
@@ -180,11 +181,20 @@ def run(plan: dict, verify: str = "size", progress=None, should_cancel=None) -> 
     results: list[dict] = []
     errors: list[str] = []
 
+    started = None   # when the first byte was copied: the speed is copy time only
+
     def on_chunk(n):
-        nonlocal done
+        nonlocal done, started
+        now = time.monotonic()
+        if started is None:
+            started = now
         done += n
+        elapsed = now - started
+        rate = done / elapsed if elapsed > 0.05 else 0
         emit({"stage": "copy", "percent": round(done * 100 / total, 1),
-              "bytes_done": done, "bytes_total": total, "current": current})
+              "bytes_done": done, "bytes_total": total, "current": current,
+              "rate_bps": rate,
+              "eta_seconds": round((total - done) / rate) if rate > 1 else None})
 
     current = ""
     try:

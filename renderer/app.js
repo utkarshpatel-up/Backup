@@ -410,10 +410,19 @@ function rootAssignedCount() {
   return cameraFiles(src).filter((f) => state.assign[f.path] === ROOT_CAM).length;
 }
 
+/**
+ * Informal with one camera folder at most, and no camera already filed: that
+ * one camera's clips go straight into the session folder (Root), not Cam-01.
+ * Adding a second camera turns camera folders back on.
+ */
+function informalSingleCam() {
+  return isInformal() && state.camCount <= 1 && filedCams().size === 0;
+}
+
 function defaultAssignmentFor(file) {
-  // A structure with no camera folders files everything into the session root
-  // until the operator adds a cam and moves clips into it.
-  const cam = isInformal() && state.camCount === 0 ? ROOT_CAM : firstEmptyCam();
+  // A structure with no camera folders, or just one, files everything into the
+  // session root until the operator adds a cam and moves clips into it.
+  const cam = informalSingleCam() ? ROOT_CAM : firstEmptyCam();
   if (file.manual) return cam;
   const day = sessionDate();
   if (!day) return cam;
@@ -693,6 +702,9 @@ function ceremonyTag(kind) {
   return `Pujyashree's ${kind}`;
 }
 
+/** Short event codes kept when a ceremony tag replaces the topic (mirrors naming.EVENT_CODES). */
+const EVENT_CODES = ['JJ', 'GP', 'PP'];
+
 // Swap a master name's middle topic for `tag`, keeping the location word, the
 // session indicator (E./M./E2.) and every date/Dur-/Clip- token. Mirrors
 // naming.replace_topic on the Python side so the preview matches the plan.
@@ -706,8 +718,11 @@ function replaceTopicWithTag(name, tag) {
   const ind = /\s*\b([EM]\d*)\.\s*$/.exec(head);
   const indicator = ind ? `${ind[1]}.` : '';
   const front = ind ? head.slice(0, ind.index).trim() : head;
-  const location = front ? front.split(' ')[0] : '';
-  const rebuilt = [location, tag, indicator, tail]
+  const words = front ? front.split(/\s+/) : [];
+  const location = words[0] || '';
+  // The event's short code (JJ, GP, PP) stays: 'Anand JJ General Satsang E.' -> 'Anand JJ <tag> E.'
+  const events = [...new Set(words.slice(1).filter((w) => EVENT_CODES.includes(w)))];
+  const rebuilt = [location, ...events, tag, indicator, tail]
     .filter(Boolean).join(' ').replace(/\s{2,}/g, ' ').trim();
   return rebuilt + ext;
 }
@@ -1720,7 +1735,7 @@ function ensureDefaultAssignments() {
 function selectDay(day) {
   const src = primarySource();
   if (!src) return;
-  const cam = firstEmptyCam();
+  const cam = informalSingleCam() ? ROOT_CAM : firstEmptyCam();
   for (const f of cameraFiles(src)) {
     state.assign[f.path] = (!day || f.shoot_date === day) ? cam : 'skip';
   }
@@ -1895,7 +1910,8 @@ function editedTemplateDirs(template) {
  * zip's layout is mirrored as it is, empty camera folders and all.
  */
 function plannedFolders(dirs, cams) {
-  return state.scheduleRun ? selectionRules.usedCamDirs(dirs, cams) : dirs;
+  // A one-camera Informal session filed into Root leaves no empty Cam-01 behind.
+  return state.scheduleRun || informalSingleCam() ? selectionRules.usedCamDirs(dirs, cams) : dirs;
 }
 
 /** The editable camera-folder skeleton when completing an existing folder. */
@@ -2422,10 +2438,13 @@ async function importCameraCards() {
       }));
 
     await applyDateSuggestion(src);
-    // Set the cams after the suggestion runs, so the card's letter wins.
+    // Set the cams after the suggestion runs, so the card's letter wins. A lone
+    // card in a one-camera Informal session files into Root; a second card
+    // moves the first back into its own Cam folder.
+    const lone = informalSingleCam() && Object.keys(state.cardCams).length === 1;
     for (const f of probed.files) {
       const cam = camByPath.get(pathKey(f.path));
-      if (cam) state.assign[f.path] = cam;
+      if (cam) state.assign[f.path] = lone ? ROOT_CAM : cam;
     }
     // Name a card's cam folder by what it holds — an audio recorder becomes
     // "(Audio)", a DJI card "(Drone)" / "(MM Drone)".
@@ -2954,6 +2973,14 @@ function wireCameras() {
       // chips below show the existing count beside the newly-assigned one.
       state.existingCamCounts = selectionRules.existingCamCounts(destinationPlan, state.camNames);
       const groups = camGroupsWithKind(clips);
+      // One camera in a one-camera Informal session: straight into Root.
+      if (groups.length === 1 && !occupied.length && informalSingleCam()) {
+        for (const f of groups[0].files) state.assign[f.path] = ROOT_CAM;
+        state.plan = null; state.namingPreview = null;
+        toast(`All ${clips.length} clip(s) look like one camera — filed straight into the session folder (Root).`);
+        render();
+        return;
+      }
       const previousCount = state.camCount;
       const suggestedCams = nextFreeCams(groups.length, occupied);
       groups.forEach((grp, i) => {

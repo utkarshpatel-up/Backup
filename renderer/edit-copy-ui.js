@@ -122,8 +122,10 @@ async function editCopyPreview() {
   e.plan = null; e.result = null; e.error = null;
   if (!e.source || !e.sessionName.trim()) { render(); return; }
   try {
+    // The ticked clips are numbered among themselves: Clip-01, 02 … with no gaps.
     e.plan = await call('edit_copy_plan', {
       source: e.source, dest: e.dest, job_number: e.jobNumber.trim(), session_folder: e.sessionName.trim(),
+      picked: [...(e.picked || [])],
     }, { label: 'Reading the H.264 clips' });
     // Keep the ticks on clips still on the card.
     const onCard = new Set(e.plan.items.map((i) => i.src));
@@ -136,8 +138,7 @@ async function editCopyPreview() {
 
 /** The clips this copy takes: the ticked ones, or every clip when none is ticked. */
 function editCopyChosen(e) {
-  const items = (e.plan && e.plan.items) || [];
-  return e.picked && e.picked.size ? items.filter((i) => e.picked.has(i.src)) : items;
+  return ((e.plan && e.plan.items) || []).filter((i) => i.status !== 'skip');
 }
 
 async function editCopyRun() {
@@ -154,7 +155,6 @@ async function editCopyRun() {
   });
   if (!ok) return;
   try {
-    // Clip numbers stay those of the whole card: only the list of files is narrowed.
     e.result = await call('edit_copy_run', { plan: { ...e.plan, items: chosen }, verify: e.verify },
       { label: 'Copying the H264 MM Backup' });
     const r = e.result;
@@ -174,7 +174,7 @@ function closeEditCopy() {
 }
 
 function editCopyItemsHtml(items, picked, busy) {
-  const label = { new: '', same: '<span class="badge">already there</span>',
+  const label = { new: '', skip: '<span class="hint">not copied</span>', same: '<span class="badge">already there</span>',
                   conflict: '<span class="badge warn">different file there</span>' };
   const all = items.length && items.every((i) => picked.has(i.src));
   return `<table class="rename-table">
@@ -306,11 +306,11 @@ function renderEditCopyModal() {
   $('ecHash')?.addEventListener('change', (ev) => { e.verify = ev.target.checked ? 'hash' : 'size'; });
   host.querySelectorAll('[data-ec-pick]').forEach((box) => box.addEventListener('change', () => {
     if (box.checked) e.picked.add(box.dataset.ecPick); else e.picked.delete(box.dataset.ecPick);
-    render();
+    editCopyPreview();    // renumber the ticked clips
   }));
   $('ecPickAll')?.addEventListener('change', (ev) => {
     e.picked = ev.target.checked ? new Set(plan.items.map((i) => i.src)) : new Set();
-    render();
+    editCopyPreview();
   });
   host.querySelectorAll('[data-ec-vol]').forEach((b) => b.addEventListener('click', () => editCopyChooseSource(b.dataset.ecVol)));
   $('ecSession')?.addEventListener('change', (ev) => { editCopyPickSession(ev.target.value); editCopyPreview(); });

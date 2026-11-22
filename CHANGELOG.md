@@ -4,6 +4,11 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.7
+
+- **H264 MM Backup: ticked clips are numbered without gaps.** Untick a clip and the ones you keep are numbered Clip-01, 02, 03 … in card order. An unticked clip stays in the list as "not copied", so you can tick it again.
+- **Event schedule: M before E on the same date.** When the schedule is sorted by date, a folder's sessions on one day always show in M, then E order (1, 2 … for Informal), however the rows were read or added.
+
 ## 2.0.6
 
 - **H264 MM Backup: copy only the clips you tick.** Each clip in the list has a tick box, with a tick-all box on top. With nothing ticked, every clip is copied as before. Clips keep their numbers from the whole card.

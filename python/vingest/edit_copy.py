@@ -75,7 +75,9 @@ def build_plan(params: dict, progress=None) -> dict:
 
     params: source (card or folder), dest (output folder), job_number,
     session_folder (the session's folder name, as the masters are named after
-    it), and optionally files (an explicit list in place of a card scan).
+    it), optionally files (an explicit list in place of a card scan), and
+    picked: the clips to copy. When some are picked, only those are numbered
+    (Clip-01, 02 … in card order) and the rest are listed as "skip".
     """
     emit = progress or (lambda _d: None)
     source = params.get("source") or ""
@@ -113,14 +115,24 @@ def build_plan(params: dict, progress=None) -> dict:
 
     items: list[dict] = []
     taken: set[str] = set()
-    count = len(files)
-    for index, path in enumerate(files, 1):
-        emit({"stage": "scan", "done": index, "total": count, "name": path.name})
+    picked = {str(p) for p in params.get("picked") or []}
+    numbered = [f for f in files if str(f) in picked] if picked & {str(f) for f in files} else files
+    count = len(numbered)
+    order = {str(f): i for i, f in enumerate(numbered, 1)}
+    for done, path in enumerate(files, 1):
+        emit({"stage": "scan", "done": done, "total": len(files), "name": path.name})
         seconds, family = _duration_and_codec(path)
+        size = path.stat().st_size
+        index = order.get(str(path))
+        if index is None:
+            # Not ticked: listed, never copied, and takes no number.
+            items.append({"src": str(path), "original_name": path.name, "name": "",
+                          "dst": "", "size": size, "duration": seconds, "codec": family,
+                          "status": "skip"})
+            continue
         name = naming.dedupe(
             output_name(job_number, session_folder, seconds, index, count, path.suffix), taken)
         taken.add(name.lower())
-        size = path.stat().st_size
         dst = (dest_path / name) if dest_path else None
         status = "new"
         if dst is not None and dst.exists():
@@ -143,6 +155,7 @@ def build_plan(params: dict, progress=None) -> dict:
     return {"source": source, "dest": dest, "job_number": job_number,
             "session_folder": session_folder, "items": items,
             "count": len(items), "total_bytes": sum(i["size"] for i in items),
+            "picked": count if picked else len(items),
             "to_copy_bytes": sum(i["size"] for i in items if i["status"] == "new"),
             "warnings": warnings}
 
@@ -172,7 +185,7 @@ def run(plan: dict, verify: str = "size", progress=None, should_cancel=None) -> 
     dest = Path(plan.get("dest") or "")
     if not str(dest) or not dest.is_dir():
         raise ValueError("Choose the output folder first.")
-    items = plan.get("items") or []
+    items = [i for i in plan.get("items") or [] if i.get("status") != "skip"]
     for item in items:
         _check_name(Path(item["dst"]))
 

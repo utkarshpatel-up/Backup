@@ -1547,6 +1547,6 @@
            learn, toIndian, fromIndian, sessionDay, half, camsFor, jobFolderName,
            sessionFolderName, folderPlan, sessionFromRecord, check, parseCities, findCity, cityOf, geolocation,
            parseReport, reportSheet, eventPartners, scheduleRecords, seriesOf, mergeReport, findGaps, filterReport,
-           reportDiff, keepExisting, nextStarts,
+           reportDiff, keepExisting, nextStarts, sessionRank,
            reportDate, TITLE_RULES, PLACE_RULES };
 });

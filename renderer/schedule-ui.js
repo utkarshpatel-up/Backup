@@ -1148,12 +1148,26 @@ function scheduleShownRows(nums, cities) {
       ? (/^\d{4}-\d{2}-\d{2}$/.test(row.date || '') ? row.date : '')
       : scheduleColumnText(row, col, nums.get(row.key) || {}, cities)]));
     const order = new Map(s.sessions.map((row, i) => [row.key, i]));
+    // On one date, the sessions of one folder stay together in M, E (1, 2 …)
+    // order, each folder where its first row is in the schedule. Otherwise a
+    // folder's M and E would show in whatever order they were read or added.
+    const group = (row) => { const n = nums.get(row.key) || {}; return `${row.type}|${n.folder ?? row.key}`; };
+    const groupAt = new Map();
+    for (const row of s.sessions) if (!groupAt.has(group(row))) groupAt.set(group(row), order.get(row.key));
+    const rank = (row) => SCHEDULE.sessionRank((nums.get(row.key) || {}).session);
     rows.sort((a, b) => {
       const x = text.get(a.key), y = text.get(b.key);
       // Empty cells go last either way; ties keep the schedule's order.
       if (!x !== !y) return x ? -1 : 1;
       const c = x.localeCompare(y, undefined, { numeric: true, sensitivity: 'base' });
-      return (dir === 'desc' ? -c : c) || order.get(a.key) - order.get(b.key);
+      if (c) return dir === 'desc' ? -c : c;
+      if (byDate) {
+        const g = groupAt.get(group(a)) - groupAt.get(group(b));
+        if (g) return g;
+        const r = rank(a) - rank(b);
+        if (r) return r;
+      }
+      return order.get(a.key) - order.get(b.key);
     });
   }
   return rows;

@@ -127,6 +127,23 @@ def test_run_copies_only_the_items_given(tmp_path, lengths):
     assert "Clip-02" in picked[0]["name"]
 
 
+def test_only_the_ticked_clips_are_numbered(tmp_path, lengths):
+    src = card(tmp_path, ["a.mp4", "b.mp4", "c.mp4", "d.mp4"])
+    out = tmp_path / "server"
+    out.mkdir()
+    lengths.update({"a.mp4": 177, "b.mp4": 2754, "c.mp4": 12, "d.mp4": 3287})
+    params = {"source": str(src), "dest": str(out), "job_number": "3069", "session_folder": SESSION,
+              "picked": [str(src / n) for n in ("a.mp4", "b.mp4", "d.mp4")]}
+    plan = edit_copy.build_plan(params)
+    assert [i["status"] for i in plan["items"]] == ["new", "new", "skip", "new"]
+    names = [i["name"] for i in plan["items"]]
+    assert names[0].endswith("Clip-01.mp4") and names[1].endswith("Clip-02.mp4")
+    assert names[2] == "" and names[3].endswith("Clip-03.mp4")
+    res = edit_copy.run(plan, "size")
+    assert res["copied"] == 3 and res["ok"]
+    assert sorted(p.name for p in out.iterdir()) == sorted(n for n in names if n)
+
+
 def test_engine_methods_are_registered():
     assert "edit_copy_plan" in server.METHODS and "edit_copy_run" in server.METHODS
 

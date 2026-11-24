@@ -190,7 +190,9 @@ async function call(method, params = {}, opts = {}) {
   let id = null;
   if (opts.label) {
     id = await window.api.reserveId();
-    state.busy = { label: opts.label, id, percent: null, detail: '' };
+    // `uses`: the paths this job reads or writes, so Eject card can leave
+    // the other drives free. A job without it holds every drive.
+    state.busy = { label: opts.label, id, percent: null, detail: '', uses: opts.uses || null };
     window.api.setBusy(true);
     render();
   }
@@ -3643,7 +3645,7 @@ async function doRun() {
   try {
     state.runResult = null;
     state.runResult = await call('execute_plan', { plan: p, write_manifest: true },
-      { label: 'Copying' });
+      { label: 'Copying', uses: planPaths(p) });
     const r = state.runResult;
     if (!r.failed && !r.cancelled) {
       await reconcileRunState(p, r);
@@ -3758,6 +3760,9 @@ function renderVerify() {
         <button class="sm" id="btnCompare" ${roots.length < 2 ? 'disabled' : ''}>Compare (fast)</button>
         <button class="sm" id="btnDeep" ${roots.length < 2 ? 'disabled' : ''}>Checksum verify…</button>
       </div>
+      ${state.ejectShortcut ? `<p class="hint" style="margin:8px 0 0">Compare reads only these folders, so the camera
+        card can be ejected meanwhile: select it in Explorer and press <b>${esc(state.ejectShortcut)}</b>
+        (works from Explorer while AV Backup is open), or press it here to eject this backup's cards.</p>` : ''}
     </div>
     ${state.compare ? renderCompareResult() : ''}
     ${state.deep ? renderDeepResult() : ''}
@@ -3850,7 +3855,8 @@ function wireVerify() {
       state.pairVerify = await call('verify_pairs',
         { pairs: checks.map((c) => [c.source, c.copy]), mode,
           labels: checks.map((c) => `${c.name} → ${c.role}`) },
-        { label: mode === 'hash' ? 'Checksumming against the card' : 'Verifying against the card' });
+        { label: mode === 'hash' ? 'Checksumming against the card' : 'Verifying against the card',
+          uses: checks.flatMap((c) => [c.source, c.copy]) });
       toast(state.pairVerify.ok ? 'Every copy matches the camera card.'
         : `${state.pairVerify.mismatched.length} ${state.pairVerify.mismatched.length === 1 ? "copy doesn't" : "copies don't"} match the card.`,
         state.pairVerify.ok ? 'ok' : 'err');
@@ -3880,7 +3886,7 @@ function wireVerify() {
     try {
       state.deep = null;
       state.compare = await call('compare', { roots: state.compareRoots },
-        { label: 'Comparing folders' });
+        { label: 'Comparing folders', uses: state.compareRoots.slice() });
       toast(state.compare.ok ? 'Folders match.' : 'Differences found — see the report.',
         state.compare.ok ? 'ok' : 'err');
       render();
@@ -3899,7 +3905,7 @@ function wireVerify() {
     if (!ok) return;
     try {
       state.deep = await call('deep_verify', { roots: state.compareRoots.slice(0, 2) },
-        { label: 'Checksumming' });
+        { label: 'Checksumming', uses: state.compareRoots.slice(0, 2) });
       render();
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -4533,6 +4539,68 @@ if (typeof window.api.onBeforeClose === 'function') window.api.onBeforeClose(asy
   if (typeof colWidthSaveTimer !== 'undefined') clearTimeout(colWidthSaveTimer);
   if (state.colWidths) await window.api.setSettings({ colWidths: state.colWidths });
 });
+
+/* ------------------------------------------------------- eject card shortcut */
+
+/** The drive a path is on: 'M:' on Windows, '/Volumes/NAME' on the Mac. */
+function driveOfPath(p) {
+  const s = String(p || '');
+  if (window.api.platform === 'win32') { const m = /^([A-Za-z]):/.exec(s); return m ? `${m[1].toUpperCase()}:` : ''; }
+  const m = /^\/Volumes\/[^/]+/.exec(s);
+  return m ? m[0] : '';
+}
+
+/** Every path a copy plan reads or writes. */
+function planPaths(p) {
+  return ((p && p.targets) || []).flatMap((t) => [t.session_path, t.staging_path, t.source_root, t.dest_root,
+    ...(t.items || []).flatMap((i) => [i.src, i.dst])]).filter(Boolean);
+}
+
+/** The camera cards loaded into the backup on screen (and the H264 window's card). */
+function backupCardDrives() {
+  const files = Object.values(state.extraFiles || {}).flat().filter((f) => f && f.origin === 'camera-card');
+  const paths = files.map((f) => f.card_volume || f.path);
+  if (state.editCopy && state.editCopy.open && state.editCopy.source) paths.push(state.editCopy.source);
+  return [...new Set(paths.map(driveOfPath).filter(Boolean))];
+}
+
+/**
+ * The shortcut was pressed. `drives` come from the Explorer window in front;
+ * with none, the backup's cards are ejected. A drive the running job reads or
+ * writes is left alone, and a job that names no drives holds them all.
+ */
+async function ejectFromShortcut({ drives = [], ambiguous = [] } = {}) {
+  const notes = [];
+  const say = (text, kind) => { notes.push(text); toast(text, kind); };
+  let list = drives;
+  if (ambiguous.length) {
+    say(`Explorer shows ${ambiguous.join(' and ')}: select the one drive to eject, then press the shortcut again.`, 'warn');
+    return window.api.ejectDrives([], notes);
+  }
+  if (!list.length) list = backupCardDrives();
+  if (!list.length) {
+    say('Nothing to eject: select the card in Explorer (This PC), then press the shortcut again.', 'warn');
+    return window.api.ejectDrives([], notes);
+  }
+  if (state.busy) {
+    const uses = state.busy.uses ? new Set(state.busy.uses.map(driveOfPath).filter(Boolean)) : null;
+    const held = uses ? list.filter((d) => uses.has(d)) : list;
+    if (held.length) say(`${held.join(', ')} is in use by “${state.busy.label}”. Eject it when that finishes.`, 'warn');
+    list = list.filter((d) => !held.includes(d));
+    if (!list.length) return window.api.ejectDrives([], notes);
+  }
+  const results = await window.api.ejectDrives(list, notes);
+  for (const r of results || []) {
+    toast(r.ejected ? `Safe to remove ${r.drive}.` : `${r.drive} not ejected: ${r.error}`, r.ejected ? 'ok' : 'err');
+  }
+  return results;
+}
+if (typeof window.api.onEjectRequest === 'function') window.api.onEjectRequest((req) => { ejectFromShortcut(req); });
+if (typeof window.api.ejectShortcut === 'function') {
+  window.api.ejectShortcut().then((acc) => {
+    state.ejectShortcut = String(acc || '').replace('Control', 'Ctrl').replace('Command', 'Cmd');
+  }).catch(() => {});
+}
 
 window.api.onProgress(({ id, data }) => {
   if (!state.busy || state.busy.id !== id) return;

@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage, safeStorage, net } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, nativeTheme, nativeImage, safeStorage, net, globalShortcut, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -14,6 +14,7 @@ const { registerSyncIpc } = require('./sync/ipc');
 const { writeAtomic } = require('./sync/vault');
 const { createUpdater } = require('./updater');
 const { teamServerStatus } = require('./team-server');
+const eject = require('./eject');
 app.setName('AV Backup');
 const primaryInstance = app.requestSingleInstanceLock();
 if (!primaryInstance) app.quit();
@@ -106,10 +107,42 @@ function buildMenu() {
         { role: 'togglefullscreen' },
       ],
     },
+    {
+      label: 'Drive',
+      submenu: [{
+        // The shortcut itself is system-wide (registered below), so it is shown
+        // in the label rather than set as this item's accelerator.
+        label: `Eject card${ejectAccelerator ? `  (${ejectAccelerator.replace('Control', 'Ctrl').replace('Command', 'Cmd')})` : ''}`,
+        click: () => ejectPressed(),
+      }],
+    },
     { role: 'windowMenu' },
     { role: 'help', submenu: [{ role: 'about' }] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// --------------------------------------------------------------- eject card
+// One system-wide shortcut while the app runs: it works from Explorer too.
+let ejectAccelerator = '';
+function registerEjectShortcut() {
+  for (const acc of eject.ACCELERATORS) {
+    try { if (globalShortcut.register(acc, ejectPressed)) { ejectAccelerator = acc; break; } } catch (_) { /* taken */ }
+  }
+  buildMenu();   // the menu shows the shortcut that was free
+}
+let ejectRunning = false;
+async function ejectPressed() {
+  if (ejectRunning || !win || win.isDestroyed()) return;
+  ejectRunning = true;
+  try {
+    const target = await eject.frontExplorerTarget();
+    // The page knows what is in use; it answers through eject:drives.
+    send('eject:request', eject.pickDrives(target));
+  } finally { ejectRunning = false; }
+}
+function ejectNotify(body) {
+  try { if (Notification.isSupported()) new Notification({ title: 'AV Backup', body }).show(); } catch (_) { /* toast only */ }
 }
 
 function createWindow() {
@@ -186,6 +219,7 @@ app.whenReady().then(() => {
     },
   });
   createWindow();
+  registerEjectShortcut();
   // Look once shortly after start; a failed check only shows in the sidebar.
   if (app.isPackaged) setTimeout(() => updater.check(), 10000);
   app.on('activate', () => {
@@ -201,6 +235,8 @@ app.on('before-quit', (event) => {
     if (ok) { quittingApproved = true; global.__vingestBusy = false; app.quit(); }
   }).finally(() => { quitPending = null; });
 });
+
+app.on('will-quit', () => globalShortcut.unregisterAll());
 
 app.on('window-all-closed', () => {
   if (bridge) bridge.stop();
@@ -329,6 +365,20 @@ handle('dialog:confirm', async (_e, { message, detail, confirmLabel, cancelLabel
   });
   return r.response === 0;
 });
+
+// The page's answer to an eject request: the drives to eject, and why others were not.
+handle('eject:drives', async (_e, drives, notes) => {
+  const list = (Array.isArray(drives) ? drives : []).filter((d) => typeof d === 'string').slice(0, 12);
+  const results = [];
+  for (const d of list) results.push(await eject.ejectDrive(d));
+  const lines = [
+    ...results.map((r) => (r.ejected ? `Safe to remove ${r.drive}` : `${r.drive} not ejected: ${r.error}`)),
+    ...(Array.isArray(notes) ? notes.filter((n) => typeof n === 'string').slice(0, 4) : []),
+  ];
+  if (lines.length) ejectNotify(lines.join('\n'));
+  return results;
+});
+handle('eject:shortcut', () => ejectAccelerator);
 
 handle('shell:reveal', (_e, p) => {
   fs.existsSync(p) ? shell.showItemInFolder(p) : shell.openPath(path.dirname(p));

@@ -4,6 +4,12 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.9
+
+- **Eject card with one shortcut: Ctrl+Alt+E** (Cmd+Alt+E on the Mac). It works from Explorer too, while AV Backup is open. Select the SD card in Explorer (This PC), or open it, and press the shortcut. Pressed in AV Backup itself, it ejects the camera cards of the backup on screen. A Windows notification says "Safe to remove M:" or why it could not. Also in the new **Drive** menu.
+- **Ejecting is blocked only where it matters.** A drive the running job reads or writes is never ejected: a copy, the H264 MM Backup, Verify against the card. **Compare** reads only the folders it compares, so the camera card can be ejected while it runs. Windows' own drive is never ejected.
+- If Ctrl+Alt+E is already taken by another program, the shortcut is Ctrl+Alt+J instead; the Drive menu shows which one.
+
 ## 2.0.8
 
 - **Rename backed-up folder to this row: Informal clips are renamed too.** Every clip in every camera folder takes the row's name, as the backup names it: Cam-01 … Clip-001, numbered by date modified, and a session's only clip without a number. Clips that still had a camera's own name (C0007.MP4) are renamed as well, and the folder's Clips- count is corrected.

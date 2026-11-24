@@ -75,6 +75,10 @@ contextBridge.exposeInMainWorld('api', {
   openFolderGroups: (groups, options) => ipcRenderer.invoke('shell:openFolderGroups', groups, options),
 
   setBusy: (busy) => ipcRenderer.invoke('app:setBusy', busy),
+  // The system-wide Eject card shortcut: main asks, the page decides what is safe.
+  onEjectRequest: (fn) => subscribe('eject:request', fn),
+  ejectDrives: (drives, notes) => ipcRenderer.invoke('eject:drives', drives, notes),
+  ejectShortcut: () => ipcRenderer.invoke('eject:shortcut'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   onBeforeClose: (fn) => {

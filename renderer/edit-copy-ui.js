@@ -156,7 +156,7 @@ async function editCopyRun() {
   if (!ok) return;
   try {
     e.result = await call('edit_copy_run', { plan: { ...e.plan, items: chosen }, verify: e.verify },
-      { label: 'Copying the H264 MM Backup' });
+      { label: 'Copying the H264 MM Backup', uses: [e.source, e.dest] });
     const r = e.result;
     if (r.cancelled) toast('H264 MM Backup cancelled. Run it again to finish.', 'warn');
     else if (r.ok) toast(`H264 MM Backup done: ${r.copied} copied, ${r.verified} checked.`, 'ok');

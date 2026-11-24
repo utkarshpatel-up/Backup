@@ -23,11 +23,15 @@ import os
 import re
 from pathlib import Path
 
-from . import naming
+from . import naming, structure
+from .session_scan import PROJECT_DIR_RE
 from .ingest import CLIP_COUNT_EXTS, _count_clip_files
 
 # A camera folder inside a job or session: 'Cam-01', 'Cam-07 (Drone)'.
 CAM_DIR_RE = re.compile(r"^Cam-\d+\b", re.IGNORECASE)
+# An Informal clip the app named: '[Cam-01 ]<event>[ Clip-001][ (2)]'.
+INFORMAL_STEM_RE = re.compile(
+    r"^(?P<cam>Cam-\d+\s)?(?P<event>.+?)(?P<clip>\sClip-\d{3,})?(?P<dup>\s\(\d+\))?$", re.IGNORECASE)
 
 
 def _cam_label(folder_name: str):
@@ -216,90 +220,199 @@ def apply_rename(plan: dict) -> dict:
 
 # ------------------------------------------- rename a filed session to a row
 
+# Left by Explorer/Finder in a folder; an old job folder holding only these is empty.
+SYSTEM_FILES = {"thumbs.db", "desktop.ini", ".ds_store"}
+# The ceremony tag a Formal master's topic was swapped for (Pujyashree's Entry …).
+CEREMONY_RE = re.compile(r"\bPujyashree[’']s (?:Welcome|Entry|Exit)\b", re.IGNORECASE)
+
+
+def _media(files):
+    return [f for f in files if not f.startswith(".")
+            and os.path.splitext(f)[1].lower() in CLIP_COUNT_EXTS]
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _informal_renames(session: Path, new_folder: str) -> list[tuple[str, str]]:
+    """Every clip of an Informal session renamed as the backup names it, after
+    `new_folder`: 'Cam-01 <event> Clip-001' in each camera folder (no Cam-
+    prefix in the session folder itself), numbered by date modified, and the
+    session's only clip left unnumbered. Camera names like C0007.MP4 included:
+    an Informal backup renames every clip, so any other name was put there by hand."""
+    groups = []
+    for dirpath, dirnames, filenames in os.walk(session):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        media = _media(filenames)
+        if media:
+            groups.append((dirpath, media))
+    lone = sum(len(m) for _, m in groups) == 1
+    out = []
+    for dirpath, media in groups:
+        base = os.path.basename(dirpath)
+        cam = base if _cam_label(base) else ""
+        ordered = sorted(media, key=lambda f: (_mtime(os.path.join(dirpath, f)), f.lower()))
+        for index, f in enumerate(ordered, 1):
+            new = naming.informal_clip_name(new_folder, cam, None if lone else index,
+                                            os.path.splitext(f)[1])
+            if new != f:
+                out.append((os.path.join(dirpath, f), os.path.join(dirpath, new)))
+    return out
+
+
+def _formal_renames(session: Path, old_folder: str, new_folder: str) -> tuple[list, int]:
+    """The masters of a Formal session (media in the session folder itself),
+    renamed after `new_folder` with their own Dur-/Clip- kept: the ordinary ones
+    take the new name, and an Entry/Welcome/Exit master keeps its ceremony tag
+    in place of the topic. Camera clips in 'Clips for Insert' keep their names.
+    Returns (renames, files left alone)."""
+    def core(name):      # a master's name before its Dur-/Clip- tokens, date included
+        return naming.LEADING_INDEX_RE.sub("", naming.session_base(name)).strip()
+    new_core = core(new_folder)
+    out, kept = [], 0
+    for dirpath, dirnames, filenames in os.walk(session):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for f in sorted(_media(filenames)):
+            stem, ext = os.path.splitext(f)
+            date = naming.DATE_TOKEN_RE.search(stem)
+            if Path(dirpath) != session or not date:
+                kept += 1
+                continue
+            new = naming.sanitize(f"{new_core} {stem[date.end():].strip()}".strip()) + ext
+            tag = CEREMONY_RE.search(stem[:date.start()])
+            if tag:
+                new = naming.replace_topic(new, tag.group(0))
+            if new != f:
+                out.append((os.path.join(dirpath, f), os.path.join(dirpath, new)))
+    return out, kept
+
+
 def plan_session_rename(session_path: str, new_session: str,
                         new_job: str = "") -> dict:
     """Preview renaming an already backed-up session folder to an event
     schedule row's name, without touching anything.
 
-    The folder keeps its own Dur- and Clips- tokens (they describe what is in
-    it) and takes the row's name in front of them. Files named after the folder
-    follow it: Formal masters ('Anand JJ … E. Dt-21-Nov-26 Dur-46m41s Clip-02')
-    and Informal clips ('Cam-01 Anand JJ … Clip-001'). Anything else, such as
-    Formal camera clips keeping their card names, is left alone. The job folder
-    takes the row's job name too, but only when this session is the only one
-    in it: renaming a shared job folder would relabel the other sessions.
+    - The session folder takes the row's name and keeps its Dur- token; an
+      Informal session's Clips- count is re-tallied, a Formal one's kept.
+    - Informal: every clip is renamed as the backup names it (see
+      _informal_renames). Formal: the masters are, ceremony ones keeping
+      their tag; camera clips keep their card names.
+    - Job folder: when the session is alone in its job folder and the row's job
+      folder is not on the drive, the job folder is renamed. Otherwise the
+      session moves into the row's job folder beside it (made when missing),
+      leaving the other sessions where they are; an old job folder left empty
+      is removed. A move stays on the same drive, so nothing is copied.
     """
     session = Path(os.path.abspath(session_path))
     if not session.is_dir():
         raise ValueError(f"“{session}” is not a folder.")
     old_name = session.name
-    base = naming.session_base(naming.sanitize(new_session or ""))
+    base = naming.session_base(naming.sanitize(new_session)) if str(new_session or "").strip() else ""
     if not base:
         raise ValueError("The row has no session name.")
-    tokens = [m.group(0).strip() for m in (naming.DUR_TOKEN_RE.search(old_name),
-                                            naming.CLIPS_TOKEN_RE.search(old_name)) if m]
-    new_name = naming.sanitize(" ".join([base, *tokens]))
+    dur = naming.DUR_TOKEN_RE.search(old_name)
+    new_name = naming.sanitize(" ".join([base, *([dur.group(0).strip()] if dur else [])]))
+    _, tag = structure._date_and_tag(old_name)
+    informal = tag is None
+    if informal:
+        renames, kept = _informal_renames(session, new_name), 0
+        count = _count_clip_files(str(session))
+        new_name = naming.set_clips_count(new_name, count)
+    else:
+        renames, kept = _formal_renames(session, old_name, new_name)
+        clips = naming.CLIPS_TOKEN_RE.search(old_name)
+        if clips:
+            new_name = naming.sanitize(f"{new_name} {clips.group(0).strip()}")
 
-    def core(name):      # a master's name before its Dur-/Clip- tokens
-        return naming.LEADING_INDEX_RE.sub("", naming.session_base(name)).strip()
+    # A new name may be another clip's old one (renumbering): those are freed by
+    # the rename itself, which goes through temporary names.
+    leaving = {os.path.normcase(a) for a, _ in renames}
+    files, landing = [], set()
+    for old, new in renames:
+        key = os.path.normcase(new)
+        if key in landing or (os.path.exists(new) and key not in leaving):
+            raise ValueError(f"“{os.path.basename(new)}” is already there — nothing renamed.")
+        landing.add(key)
+        files.append({"old_path": old, "new_path": new,
+                      "rel_old": os.path.relpath(old, session.parent),
+                      "rel_new": os.path.relpath(new, session.parent)})
 
-    swaps = [(core(old_name), core(new_name)),
-             (naming.informal_event_name(old_name), naming.informal_event_name(new_name))]
-    swaps = [(a, b) for a, b in swaps if a and a != b]
-
-    files, kept = [], 0
-    taken = set()
-    for dirpath, dirnames, filenames in os.walk(session):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        for f in sorted(filenames):
-            stem, ext = os.path.splitext(f)
-            if f.startswith(".") or ext.lower() not in CLIP_COUNT_EXTS:
-                continue
-            new_stem = next((stem.replace(a, b, 1) for a, b in swaps if a in stem), None)
-            if new_stem is None:
-                kept += 1
-                continue
-            new_file = naming.sanitize(new_stem) + ext
-            old_path = os.path.join(dirpath, f)
-            new_path = os.path.join(dirpath, new_file)
-            key = os.path.normcase(new_path)
-            if key in taken or (os.path.exists(new_path)
-                                and os.path.normcase(new_path) != os.path.normcase(old_path)):
-                raise ValueError(f"“{new_file}” is already there — nothing renamed.")
-            taken.add(key)
-            files.append({"old_path": old_path, "new_path": new_path,
-                          "rel_old": os.path.relpath(old_path, session.parent),
-                          "rel_new": os.path.relpath(new_path, session.parent)})
-
-    folders, notes = [], []
-    if new_name != old_name:
-        target = session.with_name(new_name)
-        if target.exists() and os.path.normcase(str(target)) != os.path.normcase(str(session)):
-            raise ValueError(f"“{new_name}” is already there — nothing renamed.")
-        folders.append({"old_path": str(session), "new_path": str(target),
-                        "rel_old": old_name, "rel_new": new_name})
-
-    job = session.parent
-    job_new = naming.sanitize(new_job or "")
-    if job_new and job_new != job.name:
+    job, drive = session.parent, session.parent.parent
+    folders, notes, make, remove = [], [], [], []
+    job_new = naming.sanitize(new_job) if str(new_job or "").strip() else ""   # sanitize("") is "untitled"
+    number = (PROJECT_DIR_RE.match(job_new) or [None, None])[1] if job_new else None
+    if not job_new or job_new == job.name:
+        target_job = job
+    else:
         try:
             siblings = [c for c in job.iterdir() if c.is_dir() and c != session
                         and not c.name.startswith(".") and not CAM_DIR_RE.match(c.name)]
         except OSError:
             siblings = []
-        if siblings:
-            notes.append(f"The job folder “{job.name}” holds other sessions too, so it keeps "
-                         f"its name (the row's is “{job_new}”).")
-        elif job.with_name(job_new).exists():
-            notes.append(f"“{job_new}” is already there, so “{job.name}” keeps its name.")
+        # The row's job folder already on the drive: by name, else by its number.
+        existing = drive / job_new
+        if not existing.is_dir() and number:
+            existing = next((c for c in sorted(drive.iterdir()) if c.is_dir() and c != job
+                             and (m := PROJECT_DIR_RE.match(c.name)) and m.group(1) == number),
+                            drive / job_new)
+        if not siblings and not existing.is_dir():
+            target_job = job          # renamed below, after the session inside it
         else:
-            folders.append({"old_path": str(job), "new_path": str(job.with_name(job_new)),
-                            "rel_old": job.name, "rel_new": job_new})
-    if kept:
-        notes.append(f"{kept} file(s) not named after the folder keep their names.")
+            target_job = existing
+            if not existing.is_dir():
+                make.append(str(existing))
+                notes.append(f"Makes the job folder “{existing.name}”.")
+            if siblings:
+                notes.append(f"The other session(s) in “{job.name}” stay there.")
+            else:
+                remove.append(str(job))
+                notes.append(f"“{job.name}” is removed once it is empty.")
 
-    final_session = Path(folders[-1]["new_path"]) / new_name \
-        if folders and folders[-1]["old_path"] == str(job) else session.with_name(new_name)
+    final = target_job / new_name
+    if os.path.normcase(str(final)) != os.path.normcase(str(session)):
+        if final.exists():
+            raise ValueError(f"“{final.parent.name}/{final.name}” is already there — nothing renamed.")
+        folders.append({"old_path": str(session), "new_path": str(final),
+                        "rel_old": os.path.relpath(session, drive),
+                        "rel_new": os.path.relpath(final, drive)})
+    if target_job == job and job_new and job_new != job.name:
+        folders.append({"old_path": str(job), "new_path": str(drive / job_new),
+                        "rel_old": job.name, "rel_new": job_new})
+        final = drive / job_new / new_name
+    if kept:
+        notes.append(f"{kept} camera clip(s) keep their names.")
     return {"root": str(session), "old_name": old_name, "new_name": new_name,
             "job_old": job.name, "files": files, "folders": folders, "notes": notes,
-            "final_path": str(final_session)}
+            "make_dirs": make, "remove_if_empty": remove, "final_path": str(final)}
+
+
+def apply_session_rename(plan: dict) -> dict:
+    """Perform a plan_session_rename plan: make the row's job folder when it is
+    new, rename the files then the folders, and remove an old job folder the
+    session left empty (system files such as Thumbs.db do not count)."""
+    errors = []
+    for d in plan.get("make_dirs") or []:
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError as e:
+            errors.append(f"{os.path.basename(d)}: {e}")
+    if errors:
+        return {"renamed_files": 0, "renamed_folders": 0, "removed": [], "errors": errors}
+    result = apply_rename(plan)
+    removed = []
+    for d in plan.get("remove_if_empty") or []:
+        try:
+            names = os.listdir(d)
+            if all(n.lower() in SYSTEM_FILES or n.startswith("._") for n in names):
+                for n in names:
+                    os.remove(os.path.join(d, n))
+                os.rmdir(d)
+                removed.append(os.path.basename(d))
+        except OSError:
+            pass                       # left in place: it is not empty, or still in use
+    result["removed"] = removed
+    return result

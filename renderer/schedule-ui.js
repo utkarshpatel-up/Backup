@@ -1730,7 +1730,7 @@ async function scheduleRenameFolderInner(key) {
   const lines = plans.map((p) => [
     p.root,
     ...p.folders.map((f) => `  ${f.rel_old}\n    → ${f.rel_new}`),
-    `  ${p.files.length} file${p.files.length === 1 ? '' : 's'} renamed with the folder`,
+    `  ${p.files.length} clip${p.files.length === 1 ? '' : 's'} renamed`,
     ...p.notes.map((n) => `  ${n}`),
   ].join('\n'));
   const ok = await window.api.confirm({
@@ -1742,10 +1742,12 @@ async function scheduleRenameFolderInner(key) {
   try { if (typeof syncProtect === 'function') await syncProtect(s, row); }
   catch (e) { toast(scheduleError(e), 'err'); return; }
   const errors = [];
+  const removed = [];
   for (const p of plans) {
     try {
       const r = await call('apply_session_rename', { plan: p }, { label: `Renaming ${p.old_name}` });
       errors.push(...r.errors);
+      removed.push(...(r.removed || []));
     } catch (e) { errors.push(scheduleError(e)); }
   }
   // The row takes its duration and clips from the renamed folder, an SSD first.
@@ -1776,7 +1778,8 @@ async function scheduleRenameFolderInner(key) {
         + 'showing it and run the rename again: what is already renamed is left as it is.',
       confirmLabel: 'OK', danger: true });
   } else toast(`${plan.id}: renamed on ${plans.length} drive${plans.length === 1 ? '' : 's'}`
-    + `${row.duration ? ` — ${row.duration}, ${row.clips} clip${Number(row.clips) === 1 ? '' : 's'}` : ''}.`, 'ok');
+    + `${row.duration ? ` — ${row.duration}, ${row.clips} clip${Number(row.clips) === 1 ? '' : 's'}` : ''}.`
+    + `${removed.length ? ` Removed the empty ${removed.join(', ')}.` : ''}`, 'ok');
 }
 
 /** Ctrl+D (Cmd+D on the Mac), as in Excel: fill this cell from the one above. */

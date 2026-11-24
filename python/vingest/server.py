@@ -299,7 +299,7 @@ def m_plan_session_rename(p, _id):
 
 def m_apply_session_rename(p, _id):
     """Perform a plan from plan_session_rename (files first, then folders)."""
-    return organize.apply_rename(p["plan"])
+    return organize.apply_session_rename(p["plan"])
 
 
 def m_edit_copy_plan(p, req_id):

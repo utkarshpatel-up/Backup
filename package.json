@@ -1,6 +1,6 @@
 {
   "name": "av-backup",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "description": "Organise camera-original footage into the house folder structure",
   "main": "electron/main.js",
   "scripts": {

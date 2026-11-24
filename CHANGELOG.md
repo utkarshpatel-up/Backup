@@ -4,6 +4,12 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.0.8
+
+- **Rename backed-up folder to this row: Informal clips are renamed too.** Every clip in every camera folder takes the row's name, as the backup names it: Cam-01 … Clip-001, numbered by date modified, and a session's only clip without a number. Clips that still had a camera's own name (C0007.MP4) are renamed as well, and the folder's Clips- count is corrected.
+- **Formal: the Entry / Welcome / Exit masters are renamed too**, keeping their "Pujyashree's Entry" in place of the topic. Camera clips in Clips for Insert keep their card names, as before.
+- **A session in the wrong job folder moves to the row's.** When its job folder holds other sessions, or the row's job folder is already on the drive, the session moves into the row's job folder (made when missing) instead of staying behind. The other sessions stay where they are, and a job folder left empty is removed. The move stays on the same drive, so nothing is copied. A job folder holding only this session is still simply renamed.
+
 ## 2.0.7
 
 - **H264 MM Backup: ticked clips are numbered without gaps.** Untick a clip and the ones you keep are numbered Clip-01, 02, 03 … in card order. An unticked clip stays in the list as "not copied", so you can tick it again.

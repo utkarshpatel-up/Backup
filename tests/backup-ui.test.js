@@ -122,3 +122,32 @@ test('#41 clips-only knows the session date on first load, and Folder never re-d
   // Detecting would adopt a master and reset the operator's cam assignments.
   assert.deepEqual(calls, []);
 });
+
+test('the clip list ticks clips from the keyboard: arrows move, Space ticks, Shift+arrows tick as they go', () => {
+  const run = setup();
+  // A stand-in page: four clip rows, nothing focused, nothing open.
+  run(`var rows = ['a','b','c','d'].map((p) => ({ dataset: { path: p } }));
+    var document = { querySelectorAll: (q) => (q === '.rowsel' || q === 'tr[data-path]'
+      ? rows.map((r) => ({ ...r, scrollIntoView() {} })) : []), getElementById: () => null };
+    render = () => {};
+    state.view = 'steps'; state.step = 2; state.busy = null; state.selection = []; state.clipCursor = null;
+    var key = (k, shift = false) => clipListKey({ key: k, shiftKey: shift, target: { tagName: 'BODY' },
+      preventDefault() {} });`);
+  run(`key('ArrowDown'); key(' ');`);                        // first clip highlighted, ticked
+  assert.equal(run('state.clipCursor'), 'a');
+  assert.equal(run('JSON.stringify(state.selection)'), '["a"]');
+  run(`key('ArrowDown'); key('ArrowDown'); key(' ');`);      // skip b, tick c
+  assert.equal(run('JSON.stringify(state.selection.sort())'), '["a","c"]');
+  run(`key(' ');`);                                          // Space again unticks
+  assert.equal(run('JSON.stringify(state.selection)'), '["a"]');
+  run(`key('ArrowUp', true); key('ArrowUp', true);`);        // Shift+Up from c ticks c, b, a
+  assert.equal(run('JSON.stringify(state.selection.sort())'), '["a","b","c"]');
+  run(`key('End');`);
+  assert.equal(run('state.clipCursor'), 'd');
+  // Typing in a filter box is left alone.
+  run(`clipListKey({ key: ' ', target: { tagName: 'INPUT', type: 'text', classList: { contains: () => false } },
+    preventDefault() { throw new Error('should not handle'); } });`);
+  // Other pages are left alone.
+  run(`state.step = 1; key(' ');`);
+  assert.equal(run('JSON.stringify(state.selection.sort())'), '["a","b","c"]');
+});

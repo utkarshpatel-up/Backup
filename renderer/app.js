@@ -2710,10 +2710,10 @@ function renderCameras() {
 
   const rows = shownFiles.map((f) => {
     const a = state.assign[f.path] ?? 'skip';
-    return `<tr class="${picked.has(f.path) ? 'sel' : ''}" data-path="${esc(f.path)}">
+    return `<tr class="${picked.has(f.path) ? 'sel' : ''} ${state.clipCursor === f.path ? 'cursor' : ''}" data-path="${esc(f.path)}">
       <td style="width:1%"><input type="checkbox" class="rowsel" data-path="${esc(f.path)}"
           ${picked.has(f.path) ? 'checked' : ''} style="width:auto"
-          title="Include this clip in the backup. Shift-click for a range." /></td>
+          title="Include this clip in the backup. Shift-click for a range; ↑/↓ and Space from the keyboard." /></td>
       <td><div style="font-weight:600">${esc(f.name)}</div>
           <div class="hint" style="margin:0">${esc(f.width || '?')}×${esc(f.height || '?')}
           @ ${esc(f.fps ?? '?')} · <span class="badge ${f.family}">${esc(f.video_codec || '?')}</span></div></td>
@@ -2826,7 +2826,7 @@ function renderCameras() {
         ${cams.map((n) => `<button class="sm" data-batch="${n}">${esc(camLabel(n))}</button>`).join('')}
         <button class="sm" data-batch="skip">Skip</button>
         <button class="sm ghost" id="btnClearSel">Clear selection</button>`
-        : '<span class="hint" style="margin:0">Nothing ticked means every shown clip is copied to its camera. Tick clips to back up only those.</span>'}
+        : '<span class="hint" style="margin:0">Nothing ticked means every shown clip is copied to its camera. Tick clips to back up only those — or use the keyboard: ↑/↓ to move, Space to tick, Shift+↑/↓ to tick as you go.</span>'}
     </div>`}
     ${!noClips && !shownFiles.length ? '<div class="empty"><div>No files match these filters.</div></div>' : ''}
     <div class="scroll" ${noClips || !shownFiles.length ? 'style="display:none"' : ''}><table>
@@ -2909,6 +2909,7 @@ function wireCameras() {
     } else if (sel.has(path)) sel.delete(path);
     else sel.add(path);
     state.lastPicked = path;
+    state.clipCursor = path;      // the keyboard carries on from the clicked clip
     state.selection = [...sel];
     state.plan = null; state.namingPreview = null;
     render();
@@ -4539,6 +4540,54 @@ if (typeof window.api.onBeforeClose === 'function') window.api.onBeforeClose(asy
   if (typeof colWidthSaveTimer !== 'undefined') clearTimeout(colWidthSaveTimer);
   if (state.colWidths) await window.api.setSettings({ colWidths: state.colWidths });
 });
+
+/* ------------------------------------------------ clip list keyboard */
+
+// On the Cameras page: ↑/↓ move a highlight through the clips shown, Space
+// ticks or unticks the highlighted clip, Shift+↑/↓ ticks each clip passed on
+// the way (as in a file list), Home/End jump to the first/last. Typing in a box
+// and an open window are left alone.
+function clipListKey(e) {
+  if (state.view === 'schedule' || state.view === 'report' || state.step !== 2 || state.busy) return;
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  if (!['ArrowDown', 'ArrowUp', ' ', 'Home', 'End'].includes(e.key)) return;
+  if ($('modal')?.classList.contains('show') || document.getElementById('schRowMenu')) return;
+  const t = e.target;
+  const typing = t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'
+    || (t.tagName === 'INPUT' && !(t.type === 'checkbox' && t.classList.contains('rowsel'))));
+  if (typing) return;
+  // Space on a focused button presses it; only the clip list's own boxes and the page take it here.
+  if (e.key === ' ' && t && t.tagName === 'BUTTON') return;
+  const order = [...document.querySelectorAll('.rowsel')].map((x) => x.dataset.path);
+  if (!order.length) return;
+  e.preventDefault();                 // no page scroll, no native checkbox toggle
+  let at = order.indexOf(state.clipCursor);
+  const sel = new Set(state.selection);
+  if (e.key === ' ') {
+    if (at < 0) at = 0;
+    const p = order[at];
+    if (sel.has(p)) sel.delete(p); else sel.add(p);
+    state.lastPicked = p;
+  } else {
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? order.length - 1
+      : at < 0 ? 0 : Math.max(0, Math.min(order.length - 1, at + (e.key === 'ArrowDown' ? 1 : -1)));
+    if (e.shiftKey) {
+      // Tick the clip left and every clip passed, through the one arrived at.
+      const from = at < 0 ? next : at;
+      const [lo, hi] = from < next ? [from, next] : [next, from];
+      for (let k = lo; k <= hi; k += 1) sel.add(order[k]);
+      state.lastPicked = order[next];
+    }
+    at = next;
+  }
+  state.clipCursor = order[at];
+  const changed = sel.size !== state.selection.length || [...sel].some((p) => !state.selection.includes(p));
+  if (changed) { state.selection = [...sel]; state.plan = null; state.namingPreview = null; }
+  render();
+  const row = [...document.querySelectorAll('tr[data-path]')].find((r) => r.dataset.path === state.clipCursor);
+  row?.scrollIntoView({ block: 'nearest' });
+}
+if (typeof document !== 'undefined') document.addEventListener('keydown', clipListKey);
 
 /* ------------------------------------------------------- eject card shortcut */
 

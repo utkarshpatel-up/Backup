@@ -3969,11 +3969,14 @@ function render() {
       <span class="num">≡</span><span>Event schedule</span></li>
     ${run ? `<li class="step-note mono" title="This backup was started from the event schedule">${esc(typeof syncAccount === 'function' && syncAccount() && !syncAvailable() ? 'Backup in progress' : run.id)}</li>` : ''}`
     + STEPS.map((s, i) => `
-    <li class="${!onSchedule && !onReport && i === state.step ? 'active' : ''} ${state.busy || !stepReady(i) ? 'disabled' : ''}
+    <li class="${!onSchedule && !onReport && state.view !== 'help' && i === state.step ? 'active' : ''} ${state.busy || !stepReady(i) ? 'disabled' : ''}
         ${i < state.step && stepReady(i) ? 'done' : ''}" data-step="${i}">
       <span class="num">${i + 1}</span><span>${s.label}</span></li>`).join('')
     + `<li class="${onReport ? 'active' : ''} ${state.busy ? 'disabled' : ''}" data-view="report">
-      <span class="num">▤</span><span>Report</span></li>`;
+      <span class="num">▤</span><span>Report</span></li>`
+    // Help is read-only, so it opens even while a copy runs.
+    + `<li class="${state.view === 'help' ? 'active' : ''}" data-view="help">
+      <span class="num">?</span><span>Help</span></li>`;
   // The nav and top buttons are rewritten only when they change: a background redraw
   // must not knock the keyboard focus off them.
   if (PAINT.setHtml($('steps'), steps)) {
@@ -3981,6 +3984,7 @@ function render() {
       li.addEventListener('click', () => goStep(Number(li.dataset.step))));
     document.querySelector('[data-view="schedule"]')?.addEventListener('click', showSchedule);
     document.querySelector('[data-view="report"]')?.addEventListener('click', showReport);
+    document.querySelector('[data-view="help"]')?.addEventListener('click', () => showHelp());
   }
 
   const topActions = `
@@ -4021,6 +4025,14 @@ function render() {
     $('content').innerHTML = recordHistoryHtml();
     $('footer').innerHTML = '<button id="histBack">← Report</button>';
     $('histBack').addEventListener('click', showReport);
+    return;
+  }
+  if (state.view === 'help') {
+    $('stepTitle').textContent = 'Help';
+    $('stepHint').textContent = 'How a Formal and an Informal backup go, from the event schedule to the report.';
+    helpPaint();
+    renderFooter();
+    renderModals();
     return;
   }
   if (onSchedule) {
@@ -4105,6 +4117,7 @@ function renderFooter() {
     });
     return;
   }
+  if (state.view === 'help') { $('footer').innerHTML = ''; return; }
   if (state.view === 'schedule') {
     $('footer').innerHTML = scheduleFooterHtml();
     wireScheduleFooter();

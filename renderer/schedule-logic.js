@@ -1461,9 +1461,14 @@
       rows: (records || []).map((r) => REPORT_SHEET.map(([, k]) => value(r, k))) };
   }
 
+  // Columns never compared. Frappe's Data Import has no "No of cameras" column yet, so an
+  // entry uploaded from Save as Excel always reads back with it empty: a schedule row that
+  // matches in everything else is the same entry, not one to replace it.
+  const REPORT_UNCOMPARED = new Set(['cameras']);
+
   /**
    * The report sheet columns two records write differently, in sheet order: case, extra spaces,
-   * the order of a list and the duration's hh:mm:ss form do not count.
+   * the order of a list and the duration's hh:mm:ss form do not count, nor REPORT_UNCOMPARED.
    */
   function reportDiff(a, b) {
     const norm = (r, k) => {
@@ -1472,7 +1477,7 @@
       if (Array.isArray(v)) v = v.map((x) => String(x).trim().toLowerCase()).filter(Boolean).sort().join('|');
       return String(v ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
     };
-    return REPORT_SHEET.map(([, k]) => k).filter((k) => norm(a, k) !== norm(b, k));
+    return REPORT_SHEET.map(([, k]) => k).filter((k) => !REPORT_UNCOMPARED.has(k) && norm(a, k) !== norm(b, k));
   }
 
   /** Whether two records would write the same report sheet row (see reportDiff). */

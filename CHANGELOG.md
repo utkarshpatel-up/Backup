@@ -4,6 +4,17 @@ Each release's section is what the app shows under "What's new" when it offers t
 update. Add a `## <version>` section here before pushing the version tag (see
 [docs/RELEASING.md](docs/RELEASING.md)); the release build stops if it is missing.
 
+## 2.1.0
+
+- **New Help page** (? Help in the sidebar) for anyone new to the team's backup scheme, drawn rather than written out:
+  - **The big picture:** what is recorded at an event (ProRes and H.265 recorders, the HyperDeck, cameras, audio and drone cards), what AV Backup does with it, and where it ends up: two identical SSDs, the H264 folder, the Report and Frappe.
+  - **Formal or Informal**, side by side: what each is, its IDs, folder numbers and folder layout.
+  - **Reading the names:** the Raw Video ID, job and session folders, masters, Informal clips and H264 files, each part coloured with what it means.
+  - **Where the files go**, **How to…** (nine everyday jobs as step-by-step chains), and **Report colours**.
+  - It opens even while a copy runs.
+- **Topic, Place Detail and City boxes no longer hang.** Their lists held tens of thousands of values (every topic in the report), more than the built-in drop-down can handle: it was slow to open, hard to pick from, and could freeze until the app was restarted. They now show the 50 closest matches as you type, best first; ↑/↓ to move, Enter or a click to pick, Esc to close. The Report's filter and edit boxes work the same way.
+- **Report: No of cameras is no longer compared.** Frappe's import has no No of cameras column yet, so an uploaded entry always reads back without it. A schedule row matching Frappe in everything else now shows white, as existing data, instead of purple, and Save as Excel leaves it out.
+
 ## 2.0.10
 
 - **Tick clips from the keyboard on the Cameras page.** ↑/↓ move a highlight through the clips shown, **Space** ticks or unticks the highlighted clip, and **Shift+↑/↓** ticks every clip you pass, for a run of clips in one go. Home/End jump to the first or last clip. After a click, the keys carry on from that clip. With a filter on, only the clips shown are stepped through.

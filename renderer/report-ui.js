@@ -368,7 +368,7 @@ function reportRegions() {
 function reportFiltersHtml(all, values) {
   return REPORT_FILTERS.map(([k, label, kind]) => {
     const v = values[k] ?? '';
-    const list = REPORT_LISTS.includes(k) ? ` list="repList_${k}"` : '';
+    const list = REPORT_LISTS.includes(k) ? ` data-suggest="repList_${k}" autocomplete="off"` : '';
     if (kind === 'menu') {
       // A short list (Activity, Author): every value in the data, in a menu.
       const options = reportMenu(all, k);
@@ -596,7 +596,7 @@ function wireReportPage() {
     const id = td.parentElement.dataset.id, k = td.dataset.k, old = td.textContent;
     const input = Object.assign(document.createElement('input'), { className: 'sch-in rep-in', value: old });
     // The values already in the report drop down as you type, as in the event schedule.
-    if (REPORT_EDIT_LISTS.includes(k)) input.setAttribute('list', `repList_${k}`);
+    if (REPORT_EDIT_LISTS.includes(k)) { input.dataset.suggest = `repList_${k}`; input.autocomplete = 'off'; }
     td.textContent = ''; td.appendChild(input); input.focus(); input.select();
     let done = false;
     // The old text goes back first: a no-op edit repaints nothing, so the cell must not keep the box.
@@ -614,6 +614,7 @@ function wireReportPage() {
       else if (ev.key === 'Escape') finish(false);
     });
     input.addEventListener('blur', () => finish(true));
+    input.addEventListener('suggest-pick', () => finish(true));   // a value clicked in the list
   });
   // Ctrl+D on a clicked (not opened) cell fills it from the cell above too.
   document.querySelector('.rep-table tbody')?.addEventListener('keydown', (e) => {

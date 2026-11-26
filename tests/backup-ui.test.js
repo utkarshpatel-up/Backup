@@ -151,3 +151,20 @@ test('the clip list ticks clips from the keyboard: arrows move, Space ticks, Shi
   run(`state.step = 1; key(' ');`);
   assert.equal(run('JSON.stringify(state.selection.sort())'), '["a","b","c"]');
 });
+
+test('the Help page explains the scheme: picture, types, names, files, how-tos and colours', () => {
+  const run = setup();
+  run(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'help-ui.js'), 'utf8'));
+  const html = run('helpHtml()');
+  for (const id of ['help-picture', 'help-types', 'help-names', 'help-files', 'help-howto', 'help-colours']) {
+    assert.ok(html.includes(`id="${id}"`), `${id} section`);
+    assert.ok(html.includes(`href="#${id}"`), `${id} in the contents`);
+  }
+  // The Raw Video ID is taken apart into its five parts.
+  for (const part of ['author', 'F Formal · I Informal', 'format: HD or 4K', 'folder number', 'session: M / E, or 1, 2, 3']) {
+    assert.ok(html.includes(part), part);
+  }
+  assert.equal((html.match(/class="help-howto"/g) || []).length, run('HELP_HOWTO.length'));
+  assert.ok(html.includes('Ctrl+Alt+E') && html.includes('No of cameras is never compared'));
+  assert.ok(!html.includes('help-rail'), 'no progress rail');
+});

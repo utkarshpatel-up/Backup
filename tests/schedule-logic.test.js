@@ -270,6 +270,30 @@ test('a schedule row the existing data already holds unchanged shows as existing
   assert.equal(changed[0].alsoExisting, true);
 });
 
+test('No of cameras is never compared: Frappe\'s import has no such column, so it reads back empty', () => {
+  const sched = [{ id: 'DD-I-4K-2632-3', folder: 2632, format: '4K', session: '3', author: 'DD', type: 'Informal',
+    date: '2026-11-24', duration: '1h 50m 47s', activity: 'General', place: 'JJ Ground', topic: 'Pujyashree\'s Visit to Anoopam Mission',
+    clips: 34, cameras: 3, remarks: '', events: ['Janma Jayanti', 'Visit'], languages: ['Gujarati'],
+    city: 'Anand', state: 'Gujarat', country: 'India', source: 'schedule', schedule: 'Nov', uid: 'u2' }];
+  for (const readBack of ['', '0']) {
+    const sheet = S.reportSheet(sched);
+    const row = sheet.rows[0].map(String);
+    row[sheet.columns.indexOf('No of cameras')] = readBack;
+    const existing = S.parseReport([sheet.columns, row], []);
+    const [merged] = S.mergeReport(existing, sched);
+    assert.equal(merged.source, 'existing', `cameras "${readBack}" vs 3: still the same entry (white, not purple)`);
+    assert.deepEqual(S.reportDiff(sched[0], existing[0]), []);
+  }
+  // Any other difference still makes it purple, and cameras is not listed among the differences.
+  const sheet = S.reportSheet(sched);
+  const row = sheet.rows[0].map(String);
+  row[sheet.columns.indexOf('No of cameras')] = '';
+  row[sheet.columns.indexOf('No of clips')] = '30';
+  const [merged] = S.mergeReport(S.parseReport([sheet.columns, row], []), sched);
+  assert.equal(merged.source, 'schedule');
+  assert.deepEqual(S.reportDiff(merged, merged.existing), ['clips']);
+});
+
 test('a purple row carries the existing entry it replaces, and which cells differ', () => {
   const base = { id: 'DD-I-HD-2625-2', folder: 2625, format: 'HD', session: '2', author: 'DD', type: 'Informal',
     date: '2026-11-11', duration: '1h 8m 40s', activity: 'General', place: 'Vatsalya', topic: 'Bhai Beej',

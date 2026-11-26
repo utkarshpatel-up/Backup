@@ -924,7 +924,13 @@ async function scheduleAfterRun(plan) {
 const datalistSigs = new Map();
 
 /** Fill <datalist id> with `options` ([value] or [[value, label]]) if they changed. */
+// Lists still drawn by the browser's own <datalist>: short ones, where its
+// popup is fine. Every other list is offered by suggest.js instead.
+const NATIVE_DATALISTS = new Set(['schEventPick', 'schEvents', 'schLanguages', 'schAuthors']);
+
 function setDatalist(id, options) {
+  if (typeof suggestSetList === 'function') suggestSetList(id, options);
+  if (!NATIVE_DATALISTS.has(id)) return;
   let host = $('datalists');
   if (!host) {
     host = document.createElement('div');
@@ -1198,7 +1204,7 @@ function scheduleTableParts(problems) {
     // Hovering a text box shows its whole text, however narrow the column.
     const hint = [p ? p.msg : '', opts.title || '', LONG.has(field) && text ? text : ''].filter(Boolean).join('\n');
     return `<td class="c-${field} ${opts.td || ''}"><input class="sch-in ${opts.cls || WIDTH[field] || ''} ${p ? `flag${p.hard ? ' err' : ''}` : ''}" data-k="${row.key}"
-      data-f="${field}" value="${esc(text)}" ${opts.list ? `list="${opts.list}"` : ''}
+      data-f="${field}" value="${esc(text)}" ${opts.list ? `data-suggest="${opts.list}" autocomplete="off"` : ''}
       ${opts.placeholder ? `placeholder="${esc(opts.placeholder)}"` : ''}
       title="${esc(hint)}"></td>`;
   };
